@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026 Loomantix
+
+//! Hash-based ID generation for sparks and other entities.
+
+use uuid::Uuid;
+
+/// Generate a spark ID like `sp-a1b2`.
+pub fn generate_spark_id() -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("sp-{}", &hex[..4])
+}
+
+/// Generate a generic short ID for comments, embers, alloys, etc.
+pub fn generate_id(prefix: &str) -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("{}-{}", prefix, &hex[..8])
+}

@@ -2,6 +2,9 @@
 // Copyright 2026 Loomantix
 
 pub mod config;
+pub mod db;
 pub mod git;
+pub mod github;
+pub mod sparks;
 
 pub use config::Config;

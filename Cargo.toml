@@ -47,6 +47,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 iced_term = "0.8.0"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 rfd = "0.17.2"
 
 [build-dependencies]

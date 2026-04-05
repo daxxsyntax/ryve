@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright 2026 Loomantix
+
+//! Sparks — Forge's embedded issue tracker with dependency graph.
+
+pub mod alloy_repo;
+pub mod bond_repo;
+pub mod comment_repo;
+pub mod ember_repo;
+pub mod engraving_repo;
+pub mod error;
+pub mod event_repo;
+pub mod graph;
+pub mod id;
+pub mod spark_repo;
+pub mod stamp_repo;
+pub mod types;
+
+pub use error::SparksError;
+pub use types::*;

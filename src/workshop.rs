@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::coding_agents::CodingAgent;
@@ -20,6 +21,8 @@ pub struct Workshop {
     pub terminals: HashMap<u64, iced_term::Terminal>,
     pub agent_sessions: Vec<AgentSession>,
     pub sidebar_split: f32,
+    /// Sparks database for this workshop (initialized lazily).
+    pub sparks_db: Option<SqlitePool>,
 }
 
 impl Workshop {
@@ -31,7 +34,15 @@ impl Workshop {
             terminals: HashMap::new(),
             agent_sessions: Vec::new(),
             sidebar_split: 0.65,
+            sparks_db: None,
         }
+    }
+
+    /// Initialize the sparks database for this workshop.
+    pub async fn init_sparks_db(&mut self) -> Result<(), data::sparks::SparksError> {
+        let pool = data::db::open_sparks_db(&self.directory).await?;
+        self.sparks_db = Some(pool);
+        Ok(())
     }
 
     /// Human-readable name (last path component).
