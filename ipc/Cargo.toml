@@ -1,0 +1,16 @@
+[package]
+name = "ipc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Forge inter-process communication"
+
+[dependencies]
+dirs = "6"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["net", "io-util"] }
