@@ -1,5 +1,5 @@
 use data::sparks::types::*;
-use data::sparks::{bond_repo, spark_repo, graph};
+use data::sparks::{bond_repo, graph, spark_repo};
 
 async fn make_spark_with(
     pool: &sqlx::SqlitePool,
@@ -69,7 +69,9 @@ async fn test_hot_includes_unblocked_after_close(pool: sqlx::SqlitePool) {
         .unwrap();
 
     // Close the blocker
-    spark_repo::close(&pool, &blocker, "done", "test").await.unwrap();
+    spark_repo::close(&pool, &blocker, "done", "test")
+        .await
+        .unwrap();
 
     let hot = graph::hot_sparks(&pool, "ws-hot").await.unwrap();
     let hot_ids: Vec<&str> = hot.iter().map(|s| s.id.as_str()).collect();
@@ -134,8 +136,12 @@ async fn test_hot_complex_graph(pool: sqlx::SqlitePool) {
     let d = make_spark_with(&pool, "D", 1, "open").await;
     let e = make_spark_with(&pool, "E", 0, "open").await;
 
-    bond_repo::create(&pool, &a, &b, BondType::Blocks).await.unwrap();
-    bond_repo::create(&pool, &b, &c, BondType::Blocks).await.unwrap();
+    bond_repo::create(&pool, &a, &b, BondType::Blocks)
+        .await
+        .unwrap();
+    bond_repo::create(&pool, &b, &c, BondType::Blocks)
+        .await
+        .unwrap();
 
     spark_repo::update(
         &pool,

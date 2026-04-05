@@ -28,14 +28,13 @@ pub async fn record(pool: &SqlitePool, new: NewEvent) -> Result<(), SparksError>
     Ok(())
 }
 
-pub async fn list_for_spark(
-    pool: &SqlitePool,
-    spark_id: &str,
-) -> Result<Vec<Event>, SparksError> {
-    Ok(sqlx::query_as::<_, Event>(
-        "SELECT * FROM events WHERE spark_id = ? ORDER BY timestamp ASC",
+pub async fn list_for_spark(pool: &SqlitePool, spark_id: &str) -> Result<Vec<Event>, SparksError> {
+    Ok(
+        sqlx::query_as::<_, Event>(
+            "SELECT * FROM events WHERE spark_id = ? ORDER BY timestamp ASC",
+        )
+        .bind(spark_id)
+        .fetch_all(pool)
+        .await?,
     )
-    .bind(spark_id)
-    .fetch_all(pool)
-    .await?)
 }

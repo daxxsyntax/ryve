@@ -1,0 +1,25 @@
+[github]
+auto_sync = false
+
+[layout]
+sidebar_width = 250.0
+sparks_width = 280.0
+sidebar_split = 0.65
+
+[explorer]
+ignore = [
+    ".git",
+    "node_modules",
+    "target",
+    ".DS_Store",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+]

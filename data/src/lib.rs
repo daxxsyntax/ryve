@@ -7,5 +7,6 @@ pub mod forge_dir;
 pub mod git;
 pub mod github;
 pub mod sparks;
+pub mod unsplash;
 
 pub use config::Config;

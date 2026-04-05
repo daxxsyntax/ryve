@@ -10,12 +10,17 @@ use std::path::PathBuf;
 
 use data::forge_dir::{AgentDef, ForgeDir, WorkshopConfig};
 use data::sparks::types::Spark;
+use iced::Theme;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::coding_agents::CodingAgent;
 use crate::screen::agents::AgentSession;
+use crate::screen::background_picker::PickerState;
 use crate::screen::bench::{BenchState, TabKind};
+use crate::screen::file_explorer::FileExplorerState;
+
+const BOTTOM_PIN_NEWLINES: usize = 200;
 
 pub struct Workshop {
     pub id: Uuid,
@@ -25,6 +30,8 @@ pub struct Workshop {
     pub bench: BenchState,
     pub terminals: HashMap<u64, iced_term::Terminal>,
     pub agent_sessions: Vec<AgentSession>,
+    /// File explorer state for this workshop.
+    pub file_explorer: FileExplorerState,
     /// Sparks database for this workshop.
     pub sparks_db: Option<SqlitePool>,
     /// Cached sparks for display (loaded from DB).
@@ -33,6 +40,10 @@ pub struct Workshop {
     pub custom_agents: Vec<AgentDef>,
     /// Agent context from `.forge/context/AGENTS.md`.
     pub agent_context: Option<String>,
+    /// Loaded background image handle.
+    pub background_handle: Option<iced::widget::image::Handle>,
+    /// Background picker modal state.
+    pub background_picker: PickerState,
 }
 
 impl Workshop {
@@ -46,24 +57,24 @@ impl Workshop {
             bench: BenchState::new(),
             terminals: HashMap::new(),
             agent_sessions: Vec::new(),
+            file_explorer: FileExplorerState::new(),
             sparks_db: None,
             sparks: Vec::new(),
             custom_agents: Vec::new(),
             agent_context: None,
+            background_handle: None,
+            background_picker: PickerState::new(),
         }
     }
 
     /// Display name — from config, or last path component.
     pub fn name(&self) -> &str {
-        self.config
-            .name
-            .as_deref()
-            .unwrap_or_else(|| {
-                self.directory
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("workshop")
-            })
+        self.config.name.as_deref().unwrap_or_else(|| {
+            self.directory
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workshop")
+        })
     }
 
     /// Sidebar split ratio from config.
@@ -99,15 +110,16 @@ impl Workshop {
 
         let mut settings = iced_term::settings::Settings::default();
         settings.font.size = 14.0;
+        settings.theme.color_pallete.background = app_background_color();
         settings.backend.working_directory = Some(self.directory.clone());
 
         if let Some(agent) = agent {
-            settings.backend.program = agent.command.clone();
-            settings.backend.args = agent.args.clone();
+            (settings.backend.program, settings.backend.args) =
+                wrap_command_with_bottom_pin(&agent.command, &agent.args);
         } else {
-            let shell = std::env::var("SHELL")
-                .unwrap_or_else(|_| "/bin/bash".to_string());
-            settings.backend.program = shell;
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            (settings.backend.program, settings.backend.args) =
+                wrap_command_with_bottom_pin(&shell, &[]);
         }
 
         if let Ok(term) = iced_term::Terminal::new(tab_id, settings) {
@@ -118,11 +130,7 @@ impl Workshop {
     }
 
     /// Spawn a terminal for a custom agent definition.
-    pub fn spawn_custom_agent(
-        &mut self,
-        def: &AgentDef,
-        next_terminal_id: &mut u64,
-    ) -> u64 {
+    pub fn spawn_custom_agent(&mut self, def: &AgentDef, next_terminal_id: &mut u64) -> u64 {
         let tab_id = *next_terminal_id;
         *next_terminal_id += 1;
         self.bench.create_tab(
@@ -137,9 +145,10 @@ impl Workshop {
 
         let mut settings = iced_term::settings::Settings::default();
         settings.font.size = 14.0;
+        settings.theme.color_pallete.background = app_background_color();
         settings.backend.working_directory = Some(self.directory.clone());
-        settings.backend.program = def.command.clone();
-        settings.backend.args = def.args.clone();
+        (settings.backend.program, settings.backend.args) =
+            wrap_command_with_bottom_pin(&def.command, &def.args);
         for (k, v) in &def.env {
             settings.backend.env.insert(k.clone(), v.clone());
         }
@@ -152,11 +161,7 @@ impl Workshop {
     }
 
     /// Handle terminal shutdown/title-change for a given terminal id.
-    pub fn handle_terminal_action(
-        &mut self,
-        id: u64,
-        action: iced_term::actions::Action,
-    ) {
+    pub fn handle_terminal_action(&mut self, id: u64, action: iced_term::actions::Action) {
         match action {
             iced_term::actions::Action::Shutdown => {
                 self.terminals.remove(&id);
@@ -164,15 +169,45 @@ impl Workshop {
                 self.bench.close_tab(id);
             }
             iced_term::actions::Action::ChangeTitle(title) => {
-                if let Some(tab) =
-                    self.bench.tabs.iter_mut().find(|t| t.id == id)
-                {
-                    tab.title = title;
+                if let Some(tab) = self.bench.tabs.iter_mut().find(|t| t.id == id) {
+                    tab.title = title.clone();
+                }
+                if let Some(session) = self.agent_sessions.iter_mut().find(|s| s.tab_id == id) {
+                    session.name = title;
                 }
             }
             iced_term::actions::Action::Ignore => {}
         }
     }
+}
+
+fn wrap_command_with_bottom_pin(program: &str, args: &[String]) -> (String, Vec<String>) {
+    let mut command = format!(
+        "i=0; while [ \"$i\" -lt {BOTTOM_PIN_NEWLINES} ]; do printf '\\n'; i=$((i+1)); done; exec {}",
+        shell_quote(program)
+    );
+
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+
+    ("/bin/sh".to_string(), vec!["-lc".to_string(), command])
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn app_background_color() -> String {
+    let color = Theme::Dark.palette().background;
+
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (color.r * 255.0).round() as u8,
+        (color.g * 255.0).round() as u8,
+        (color.b * 255.0).round() as u8,
+    )
 }
 
 /// Result of async workshop initialization.
@@ -185,9 +220,7 @@ pub struct WorkshopInit {
 
 /// Initialize a workshop's `.forge/` directory, DB, and load config.
 /// This is the single async entry point called when a workshop opens.
-pub async fn init_workshop(
-    directory: PathBuf,
-) -> Result<WorkshopInit, data::sparks::SparksError> {
+pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::sparks::SparksError> {
     let forge_dir = ForgeDir::new(&directory);
 
     // Create directory structure + default files

@@ -1,6 +1,6 @@
+use data::sparks::alloy_repo::AlloyMemberInput;
 use data::sparks::types::*;
 use data::sparks::{alloy_repo, spark_repo};
-use data::sparks::alloy_repo::AlloyMemberInput;
 
 async fn make_spark(pool: &sqlx::SqlitePool, title: &str) -> String {
     spark_repo::create(
@@ -39,9 +39,21 @@ async fn test_create_scatter_alloy(pool: sqlx::SqlitePool) {
             workshop_id: "ws-alloy".to_string(),
         },
         vec![
-            AlloyMemberInput { spark_id: s1.clone(), bond_type: AlloyBondType::Parallel, position: 0 },
-            AlloyMemberInput { spark_id: s2.clone(), bond_type: AlloyBondType::Parallel, position: 1 },
-            AlloyMemberInput { spark_id: s3.clone(), bond_type: AlloyBondType::Parallel, position: 2 },
+            AlloyMemberInput {
+                spark_id: s1.clone(),
+                bond_type: AlloyBondType::Parallel,
+                position: 0,
+            },
+            AlloyMemberInput {
+                spark_id: s2.clone(),
+                bond_type: AlloyBondType::Parallel,
+                position: 1,
+            },
+            AlloyMemberInput {
+                spark_id: s3.clone(),
+                bond_type: AlloyBondType::Parallel,
+                position: 2,
+            },
         ],
     )
     .await
@@ -71,9 +83,21 @@ async fn test_create_chain_alloy(pool: sqlx::SqlitePool) {
             workshop_id: "ws-alloy".to_string(),
         },
         vec![
-            AlloyMemberInput { spark_id: s1, bond_type: AlloyBondType::Sequential, position: 0 },
-            AlloyMemberInput { spark_id: s2, bond_type: AlloyBondType::Sequential, position: 1 },
-            AlloyMemberInput { spark_id: s3, bond_type: AlloyBondType::Sequential, position: 2 },
+            AlloyMemberInput {
+                spark_id: s1,
+                bond_type: AlloyBondType::Sequential,
+                position: 0,
+            },
+            AlloyMemberInput {
+                spark_id: s2,
+                bond_type: AlloyBondType::Sequential,
+                position: 1,
+            },
+            AlloyMemberInput {
+                spark_id: s3,
+                bond_type: AlloyBondType::Sequential,
+                position: 2,
+            },
         ],
     )
     .await
@@ -98,7 +122,11 @@ async fn test_delete_alloy_cascades(pool: sqlx::SqlitePool) {
             parent_spark_id: None,
             workshop_id: "ws-alloy".to_string(),
         },
-        vec![AlloyMemberInput { spark_id: s1, bond_type: AlloyBondType::Parallel, position: 0 }],
+        vec![AlloyMemberInput {
+            spark_id: s1,
+            bond_type: AlloyBondType::Parallel,
+            position: 0,
+        }],
     )
     .await
     .unwrap();

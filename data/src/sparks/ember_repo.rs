@@ -40,10 +40,7 @@ pub async fn create(pool: &SqlitePool, new: NewEmber) -> Result<Ember, SparksErr
 }
 
 /// List embers that have not yet expired.
-pub async fn list_active(
-    pool: &SqlitePool,
-    workshop_id: &str,
-) -> Result<Vec<Ember>, SparksError> {
+pub async fn list_active(pool: &SqlitePool, workshop_id: &str) -> Result<Vec<Ember>, SparksError> {
     let now = Utc::now().to_rfc3339();
     Ok(sqlx::query_as::<_, Ember>(
         "SELECT * FROM embers WHERE workshop_id = ? AND datetime(created_at, '+' || ttl_seconds || ' seconds') > datetime(?) ORDER BY created_at DESC",

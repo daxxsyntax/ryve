@@ -1,5 +1,5 @@
-use data::sparks::types::*;
 use data::sparks::engraving_repo;
+use data::sparks::types::*;
 
 #[sqlx::test]
 async fn test_upsert_and_get(pool: sqlx::SqlitePool) {
@@ -66,8 +66,12 @@ async fn test_workshop_isolation(pool: sqlx::SqlitePool) {
     .await
     .unwrap();
 
-    let a = engraving_repo::get(&pool, "shared_key", "ws-a").await.unwrap();
-    let b = engraving_repo::get(&pool, "shared_key", "ws-b").await.unwrap();
+    let a = engraving_repo::get(&pool, "shared_key", "ws-a")
+        .await
+        .unwrap();
+    let b = engraving_repo::get(&pool, "shared_key", "ws-b")
+        .await
+        .unwrap();
 
     assert_eq!(a.value, "value-a");
     assert_eq!(b.value, "value-b");
@@ -87,7 +91,9 @@ async fn test_delete(pool: sqlx::SqlitePool) {
     .await
     .unwrap();
 
-    engraving_repo::delete(&pool, "temp", "ws-eng").await.unwrap();
+    engraving_repo::delete(&pool, "temp", "ws-eng")
+        .await
+        .unwrap();
 
     let result = engraving_repo::get(&pool, "temp", "ws-eng").await;
     assert!(result.is_err());

@@ -3,8 +3,8 @@
 
 //! LLM client wrapping the genai crate for multi-provider chat.
 
-use genai::chat::{ChatMessage, ChatRequest};
 use genai::Client;
+use genai::chat::{ChatMessage, ChatRequest};
 
 use crate::proto::{Agent, Message, Role};
 
@@ -20,11 +20,7 @@ impl ForgeClient {
     }
 
     /// Send a list of messages to the given agent's model and return the response.
-    pub async fn chat(
-        &self,
-        agent: &Agent,
-        messages: &[Message],
-    ) -> Result<String, ClientError> {
+    pub async fn chat(&self, agent: &Agent, messages: &[Message]) -> Result<String, ClientError> {
         let model = &agent.model;
 
         let mut request = ChatRequest::default();
@@ -48,9 +44,7 @@ impl ForgeClient {
             .await
             .map_err(ClientError::Genai)?;
 
-        response
-            .into_first_text()
-            .ok_or(ClientError::EmptyResponse)
+        response.into_first_text().ok_or(ClientError::EmptyResponse)
     }
 }
 

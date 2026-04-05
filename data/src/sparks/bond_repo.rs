@@ -25,14 +25,12 @@ pub async fn create(
         }
     }
 
-    sqlx::query(
-        "INSERT INTO bonds (from_id, to_id, bond_type) VALUES (?, ?, ?)",
-    )
-    .bind(from_id)
-    .bind(to_id)
-    .bind(bond_type.as_str())
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO bonds (from_id, to_id, bond_type) VALUES (?, ?, ?)")
+        .bind(from_id)
+        .bind(to_id)
+        .bind(bond_type.as_str())
+        .execute(pool)
+        .await?;
 
     // Fetch the created bond
     let bond = sqlx::query_as::<_, Bond>(
@@ -60,27 +58,19 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), SparksError> {
 }
 
 /// List all bonds where from_id or to_id matches the given spark.
-pub async fn list_for_spark(
-    pool: &SqlitePool,
-    spark_id: &str,
-) -> Result<Vec<Bond>, SparksError> {
+pub async fn list_for_spark(pool: &SqlitePool, spark_id: &str) -> Result<Vec<Bond>, SparksError> {
     Ok(
-        sqlx::query_as::<_, Bond>(
-            "SELECT * FROM bonds WHERE from_id = ? OR to_id = ?",
-        )
-        .bind(spark_id)
-        .bind(spark_id)
-        .fetch_all(pool)
-        .await?,
+        sqlx::query_as::<_, Bond>("SELECT * FROM bonds WHERE from_id = ? OR to_id = ?")
+            .bind(spark_id)
+            .bind(spark_id)
+            .fetch_all(pool)
+            .await?,
     )
 }
 
 /// List sparks that block the given spark (i.e., bonds where to_id = spark_id
 /// and bond_type is blocking).
-pub async fn list_blockers(
-    pool: &SqlitePool,
-    spark_id: &str,
-) -> Result<Vec<Bond>, SparksError> {
+pub async fn list_blockers(pool: &SqlitePool, spark_id: &str) -> Result<Vec<Bond>, SparksError> {
     Ok(sqlx::query_as::<_, Bond>(
         "SELECT * FROM bonds WHERE to_id = ? AND bond_type IN ('blocks', 'conditional_blocks')",
     )

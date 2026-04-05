@@ -1,5 +1,5 @@
-use data::sparks::types::*;
 use data::sparks::bond_repo;
+use data::sparks::types::*;
 
 #[sqlx::test(fixtures("seed_sparks"))]
 async fn test_create_bond(pool: sqlx::SqlitePool) {
@@ -41,7 +41,9 @@ async fn test_delete_bond(pool: sqlx::SqlitePool) {
 #[sqlx::test(fixtures("seed_sparks"))]
 async fn test_cascade_delete_on_spark(pool: sqlx::SqlitePool) {
     // Deleting sp-0002 should cascade-delete its bonds
-    data::sparks::spark_repo::delete(&pool, "sp-0002").await.unwrap();
+    data::sparks::spark_repo::delete(&pool, "sp-0002")
+        .await
+        .unwrap();
 
     let blockers = bond_repo::list_blockers(&pool, "sp-0003").await.unwrap();
     assert!(blockers.is_empty());

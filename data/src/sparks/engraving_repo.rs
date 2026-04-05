@@ -36,21 +36,15 @@ pub async fn get(
     key: &str,
     workshop_id: &str,
 ) -> Result<Engraving, SparksError> {
-    sqlx::query_as::<_, Engraving>(
-        "SELECT * FROM engravings WHERE key = ? AND workshop_id = ?",
-    )
-    .bind(key)
-    .bind(workshop_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| SparksError::NotFound(format!("engraving {key}")))
+    sqlx::query_as::<_, Engraving>("SELECT * FROM engravings WHERE key = ? AND workshop_id = ?")
+        .bind(key)
+        .bind(workshop_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| SparksError::NotFound(format!("engraving {key}")))
 }
 
-pub async fn delete(
-    pool: &SqlitePool,
-    key: &str,
-    workshop_id: &str,
-) -> Result<(), SparksError> {
+pub async fn delete(pool: &SqlitePool, key: &str, workshop_id: &str) -> Result<(), SparksError> {
     let result = sqlx::query("DELETE FROM engravings WHERE key = ? AND workshop_id = ?")
         .bind(key)
         .bind(workshop_id)

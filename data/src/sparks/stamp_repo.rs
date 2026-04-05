@@ -43,10 +43,7 @@ pub async fn set(pool: &SqlitePool, spark_id: &str, names: &[&str]) -> Result<()
     Ok(())
 }
 
-pub async fn list_for_spark(
-    pool: &SqlitePool,
-    spark_id: &str,
-) -> Result<Vec<Stamp>, SparksError> {
+pub async fn list_for_spark(pool: &SqlitePool, spark_id: &str) -> Result<Vec<Stamp>, SparksError> {
     Ok(
         sqlx::query_as::<_, Stamp>("SELECT * FROM stamps WHERE spark_id = ?")
             .bind(spark_id)

@@ -1,5 +1,5 @@
-use data::sparks::types::*;
 use data::sparks::ember_repo;
+use data::sparks::types::*;
 
 #[sqlx::test]
 async fn test_create_ember(pool: sqlx::SqlitePool) {

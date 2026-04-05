@@ -56,11 +56,16 @@ impl ForgeDir {
         self.context_dir().join("AGENTS.md")
     }
 
+    pub fn backgrounds_dir(&self) -> PathBuf {
+        self.root.join("backgrounds")
+    }
+
     /// Create the `.forge/` directory structure if it doesn't exist.
     pub async fn ensure_exists(&self) -> Result<(), std::io::Error> {
         tokio::fs::create_dir_all(&self.root).await?;
         tokio::fs::create_dir_all(self.agents_dir()).await?;
         tokio::fs::create_dir_all(self.context_dir()).await?;
+        tokio::fs::create_dir_all(self.backgrounds_dir()).await?;
         Ok(())
     }
 }
@@ -89,6 +94,14 @@ pub struct WorkshopConfig {
     /// Default owner for new sparks.
     #[serde(default)]
     pub default_owner: Option<String>,
+
+    /// File explorer settings.
+    #[serde(default)]
+    pub explorer: ExplorerConfig,
+
+    /// Background image settings.
+    #[serde(default)]
+    pub background: BackgroundConfig,
 }
 
 impl Default for WorkshopConfig {
@@ -99,6 +112,8 @@ impl Default for WorkshopConfig {
             layout: LayoutConfig::default(),
             default_assignee: None,
             default_owner: None,
+            explorer: ExplorerConfig::default(),
+            background: BackgroundConfig::default(),
         }
     }
 }
@@ -141,6 +156,77 @@ impl Default for LayoutConfig {
             sidebar_split: default_sidebar_split(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplorerConfig {
+    /// File and directory names to hide in the file explorer.
+    #[serde(default = "default_ignore_patterns")]
+    pub ignore: Vec<String>,
+}
+
+impl Default for ExplorerConfig {
+    fn default() -> Self {
+        Self {
+            ignore: default_ignore_patterns(),
+        }
+    }
+}
+
+fn default_ignore_patterns() -> Vec<String> {
+    [
+        ".git",
+        "node_modules",
+        "target",
+        ".DS_Store",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundConfig {
+    /// Filename of the background image (stored in `.forge/backgrounds/`).
+    #[serde(default)]
+    pub image: Option<String>,
+
+    /// Dim opacity over the background so content stays readable (0.0–1.0).
+    #[serde(default = "default_dim_opacity")]
+    pub dim_opacity: f32,
+
+    /// Unsplash attribution: photographer name.
+    #[serde(default)]
+    pub unsplash_photographer: Option<String>,
+
+    /// Unsplash attribution: photographer profile URL.
+    #[serde(default)]
+    pub unsplash_photographer_url: Option<String>,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            image: None,
+            dim_opacity: default_dim_opacity(),
+            unsplash_photographer: None,
+            unsplash_photographer_url: None,
+        }
+    }
+}
+
+fn default_dim_opacity() -> f32 {
+    0.7
 }
 
 fn default_sidebar_width() -> f32 {

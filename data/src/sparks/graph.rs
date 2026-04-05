@@ -47,10 +47,7 @@ pub async fn would_create_cycle(
 /// 4. Not a child of a deferred parent
 ///
 /// Sorted by priority (P0 first), then created_at.
-pub async fn hot_sparks(
-    pool: &SqlitePool,
-    workshop_id: &str,
-) -> Result<Vec<Spark>, SparksError> {
+pub async fn hot_sparks(pool: &SqlitePool, workshop_id: &str) -> Result<Vec<Spark>, SparksError> {
     // Step 1: Find all spark IDs that are blocked by an open spark
     let blocked_ids: HashSet<String> = sqlx::query_as::<_, (String,)>(
         "SELECT DISTINCT b.to_id

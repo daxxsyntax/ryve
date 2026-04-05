@@ -1,5 +1,5 @@
 use data::sparks::types::*;
-use data::sparks::{bond_repo, spark_repo, graph};
+use data::sparks::{bond_repo, graph, spark_repo};
 
 async fn make_spark(pool: &sqlx::SqlitePool, id_suffix: &str) -> String {
     let spark = spark_repo::create(
@@ -29,8 +29,12 @@ async fn test_no_cycle_linear(pool: sqlx::SqlitePool) {
     let b = make_spark(&pool, "B").await;
     let c = make_spark(&pool, "C").await;
 
-    bond_repo::create(&pool, &a, &b, BondType::Blocks).await.unwrap();
-    bond_repo::create(&pool, &b, &c, BondType::Blocks).await.unwrap();
+    bond_repo::create(&pool, &a, &b, BondType::Blocks)
+        .await
+        .unwrap();
+    bond_repo::create(&pool, &b, &c, BondType::Blocks)
+        .await
+        .unwrap();
 
     // A→B→C is fine, no cycle
     let has_cycle = graph::would_create_cycle(&pool, &a, &c).await.unwrap();
@@ -43,8 +47,12 @@ async fn test_cycle_detected(pool: sqlx::SqlitePool) {
     let b = make_spark(&pool, "B").await;
     let c = make_spark(&pool, "C").await;
 
-    bond_repo::create(&pool, &a, &b, BondType::Blocks).await.unwrap();
-    bond_repo::create(&pool, &b, &c, BondType::Blocks).await.unwrap();
+    bond_repo::create(&pool, &a, &b, BondType::Blocks)
+        .await
+        .unwrap();
+    bond_repo::create(&pool, &b, &c, BondType::Blocks)
+        .await
+        .unwrap();
 
     // C→A would create A→B→C→A cycle
     let has_cycle = graph::would_create_cycle(&pool, &c, &a).await.unwrap();
@@ -57,8 +65,12 @@ async fn test_cycle_rejected_on_create(pool: sqlx::SqlitePool) {
     let b = make_spark(&pool, "B").await;
     let c = make_spark(&pool, "C").await;
 
-    bond_repo::create(&pool, &a, &b, BondType::Blocks).await.unwrap();
-    bond_repo::create(&pool, &b, &c, BondType::Blocks).await.unwrap();
+    bond_repo::create(&pool, &a, &b, BondType::Blocks)
+        .await
+        .unwrap();
+    bond_repo::create(&pool, &b, &c, BondType::Blocks)
+        .await
+        .unwrap();
 
     // Creating C→A blocking bond should fail
     let result = bond_repo::create(&pool, &c, &a, BondType::Blocks).await;
@@ -78,7 +90,9 @@ async fn test_non_blocking_bond_allows_cycle(pool: sqlx::SqlitePool) {
     let a = make_spark(&pool, "A").await;
     let b = make_spark(&pool, "B").await;
 
-    bond_repo::create(&pool, &a, &b, BondType::Blocks).await.unwrap();
+    bond_repo::create(&pool, &a, &b, BondType::Blocks)
+        .await
+        .unwrap();
 
     // Related bonds don't check for cycles
     let result = bond_repo::create(&pool, &b, &a, BondType::Related).await;

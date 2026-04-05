@@ -70,3 +70,6 @@ lto = true
 clone_on_ref_ptr = "deny"
 dbg_macro = "deny"
 todo = "deny"
+
+[patch.crates-io]
+iced_term = { path = "vendor/iced_term" }

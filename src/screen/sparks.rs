@@ -4,7 +4,7 @@
 //! Sparks panel — displays the issue tracker for the active workshop.
 
 use data::sparks::types::Spark;
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length};
 
 #[derive(Debug, Clone)]
@@ -48,11 +48,11 @@ pub fn view<'a>(sparks: &'a [Spark]) -> Element<'a, Message> {
 
 fn view_spark_row(spark: &Spark) -> Element<'_, Message> {
     let status_indicator: &str = match spark.status.as_str() {
-        "open" => "\u{25CB}",           // ○
-        "in_progress" => "\u{25D4}",    // ◔
-        "blocked" => "\u{25A0}",        // ■
-        "deferred" => "\u{25CC}",       // ◌
-        "closed" => "\u{25CF}",         // ●
+        "open" => "\u{25CB}",        // ○
+        "in_progress" => "\u{25D4}", // ◔
+        "blocked" => "\u{25A0}",     // ■
+        "deferred" => "\u{25CC}",    // ◌
+        "closed" => "\u{25CF}",      // ●
         _ => "\u{25CB}",
     };
 

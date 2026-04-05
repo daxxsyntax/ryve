@@ -3,13 +3,13 @@
 
 //! Bidirectional sync between Sparks and GitHub Issues.
 
-use octocrab::models::issues::Issue;
 use octocrab::Octocrab;
+use octocrab::models::issues::Issue;
 use sqlx::SqlitePool;
 
 use crate::sparks::error::SparksError;
 use crate::sparks::types::*;
-use crate::sparks::{spark_repo, stamp_repo, comment_repo};
+use crate::sparks::{comment_repo, spark_repo, stamp_repo};
 
 pub struct GitHubSync {
     client: Octocrab,
@@ -39,11 +39,7 @@ impl GitHubSync {
 
     /// Push a spark to GitHub. Creates a new issue or updates an existing one.
     /// Returns the GitHub issue number.
-    pub async fn push_spark(
-        &self,
-        pool: &SqlitePool,
-        spark: &Spark,
-    ) -> Result<u64, SparksError> {
+    pub async fn push_spark(&self, pool: &SqlitePool, spark: &Spark) -> Result<u64, SparksError> {
         let stamps = stamp_repo::list_for_spark(pool, &spark.id).await?;
         let mut labels: Vec<String> = stamps.iter().map(|s| s.name.clone()).collect();
 
@@ -95,14 +91,12 @@ impl GitHubSync {
             let issue_number = issue.number as i32;
 
             // Store the issue number back on the spark
-            sqlx::query(
-                "UPDATE sparks SET github_issue_number = ?, github_repo = ? WHERE id = ?",
-            )
-            .bind(issue_number)
-            .bind(format!("{}/{}", self.owner, self.repo))
-            .bind(&spark.id)
-            .execute(pool)
-            .await?;
+            sqlx::query("UPDATE sparks SET github_issue_number = ?, github_repo = ? WHERE id = ?")
+                .bind(issue_number)
+                .bind(format!("{}/{}", self.owner, self.repo))
+                .bind(&spark.id)
+                .execute(pool)
+                .await?;
 
             Ok(issue.number)
         }
@@ -172,21 +166,15 @@ impl GitHubSync {
             let spark = spark_repo::create(pool, new).await?;
 
             // Link to GitHub issue
-            sqlx::query(
-                "UPDATE sparks SET github_issue_number = ?, github_repo = ? WHERE id = ?",
-            )
-            .bind(issue_number as i32)
-            .bind(&github_repo)
-            .bind(&spark.id)
-            .execute(pool)
-            .await?;
+            sqlx::query("UPDATE sparks SET github_issue_number = ?, github_repo = ? WHERE id = ?")
+                .bind(issue_number as i32)
+                .bind(&github_repo)
+                .bind(&spark.id)
+                .execute(pool)
+                .await?;
 
             // Sync labels as stamps
-            let labels: Vec<&str> = issue
-                .labels
-                .iter()
-                .map(|l| l.name.as_str())
-                .collect();
+            let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
             stamp_repo::set(pool, &spark.id, &labels).await?;
 
             spark_repo::get(pool, &spark.id).await
@@ -194,11 +182,7 @@ impl GitHubSync {
     }
 
     /// Close a GitHub issue when a spark is closed.
-    pub async fn close_issue(
-        &self,
-        issue_number: u64,
-        reason: &str,
-    ) -> Result<(), SparksError> {
+    pub async fn close_issue(&self, issue_number: u64, reason: &str) -> Result<(), SparksError> {
         let issues = self.client.issues(&self.owner, &self.repo);
 
         // Add closing comment
@@ -286,11 +270,7 @@ impl GitHubSync {
     }
 
     /// Sync comments between a spark and its GitHub issue.
-    pub async fn sync_comments(
-        &self,
-        pool: &SqlitePool,
-        spark: &Spark,
-    ) -> Result<(), SparksError> {
+    pub async fn sync_comments(&self, pool: &SqlitePool, spark: &Spark) -> Result<(), SparksError> {
         let Some(issue_num) = spark.github_issue_number else {
             return Ok(());
         };

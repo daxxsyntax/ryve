@@ -3,7 +3,7 @@
 
 //! Bench panel — tabbed workspace for terminal sessions and coding agents.
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Element, Length};
 
 use crate::coding_agents::CodingAgent;
@@ -63,10 +63,7 @@ impl BenchState {
     }
 
     /// Render the tab bar (tabs + "+" dropdown).
-    pub fn view_tab_bar<'a>(
-        &'a self,
-        available_agents: &'a [CodingAgent],
-    ) -> Element<'a, Message> {
+    pub fn view_tab_bar<'a>(&'a self, available_agents: &'a [CodingAgent]) -> Element<'a, Message> {
         let mut tab_row = row![].spacing(2);
 
         for tab in &self.tabs {
@@ -95,9 +92,7 @@ impl BenchState {
             .padding([4, 10])
             .on_press(Message::ToggleDropdown);
 
-        tab_row = tab_row
-            .push(Space::new().width(Length::Fill))
-            .push(new_btn);
+        tab_row = tab_row.push(Space::new().width(Length::Fill)).push(new_btn);
 
         let mut bar = column![tab_row].spacing(0);
 
@@ -121,14 +116,9 @@ impl BenchState {
                 );
             }
 
-            let dropdown = container(menu)
-                .style(container::bordered_box)
-                .width(200);
+            let dropdown = container(menu).style(container::bordered_box).width(200);
 
-            bar = bar.push(
-                row![Space::new().width(Length::Fill), dropdown]
-                    .width(Length::Fill),
-            );
+            bar = bar.push(row![Space::new().width(Length::Fill), dropdown].width(Length::Fill));
         }
 
         bar.into()
