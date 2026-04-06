@@ -73,6 +73,10 @@ Ryve combines a file explorer, a tabbed terminal bench, and an embedded workgrap
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+<p align="center">
+  <img src="./assets/example.png" alt="Ryve desktop screenshot" width="800" />
+</p>
+
 | Area | Purpose |
 |------|---------|
 | File Explorer | Project tree with git-aware status display |
