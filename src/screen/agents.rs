@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright 2026 Loomantix
 
-//! Agents panel — lists active and past coding agent sessions.
+//! Hands panel — lists active and past Hand sessions.
 
 use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
 use uuid::Uuid;
 
 use crate::coding_agents::{CodingAgent, ResumeStrategy};
-use crate::style::Palette;
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Switch to an active agent's tab.
+    /// Switch to an active Hand's tab.
     SelectAgent(Uuid),
-    /// Resume a past (ended) agent session.
+    /// Resume a past (ended) Hand session.
     ResumeAgent(String),
     /// Delete a past session from history.
     DeleteSession(String),
 }
 
-/// An agent session shown in the agents panel.
+/// A Hand session shown in the Hands panel.
 /// This is the in-memory representation — may or may not have a live terminal.
 #[derive(Debug, Clone)]
 pub struct AgentSession {
@@ -47,9 +47,9 @@ impl AgentSession {
     }
 }
 
-/// Render the agents panel.
+/// Render the Hands panel.
 pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Element<'a, Message> {
-    let header = text("Agents").size(14).color(pal.text_primary);
+    let header = text("Hands").size(FONT_HEADER).color(pal.text_primary);
 
     let mut content = column![header].spacing(6).padding(10);
 
@@ -57,19 +57,27 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
     let past: Vec<_> = sessions.iter().filter(|s| !s.active).collect();
 
     if active.is_empty() && past.is_empty() {
-        content = content.push(text("No agent sessions").size(12).color(pal.text_tertiary));
+        content = content.push(
+            text("No active hands")
+                .size(FONT_BODY)
+                .color(pal.text_tertiary),
+        );
     }
 
     // Active sessions
     if !active.is_empty() {
-        content = content.push(text("Active").size(10).color(pal.text_secondary));
+        content = content.push(
+            text("Active")
+                .size(FONT_LABEL)
+                .color(pal.text_secondary),
+        );
         for session in &active {
             let id = Uuid::parse_str(&session.id).unwrap_or_else(|_| Uuid::nil());
             let indicator = text("\u{25CF} ") // ● dot
-                .size(10)
+                .size(FONT_ICON_SM)
                 .color(pal.accent);
 
-            let label = text(&session.name).size(12).color(pal.text_primary);
+            let label = text(&session.name).size(FONT_BODY).color(pal.text_primary);
 
             let btn = button(
                 row![indicator, label]
@@ -78,7 +86,7 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
             )
             .style(button::text)
             .width(Length::Fill)
-            .padding([3, 6])
+            .padding([4, 8])
             .on_press(Message::SelectAgent(id));
 
             let active_item = container(btn)
@@ -99,18 +107,22 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
     // Past sessions
     if !past.is_empty() {
         content = content.push(Space::new().height(4));
-        content = content.push(text("History").size(10).color(pal.text_secondary));
+        content = content.push(
+            text("History")
+                .size(FONT_LABEL)
+                .color(pal.text_secondary),
+        );
 
         for session in &past {
             let can_resume = session.can_resume();
 
             let indicator = text("\u{25CB} ") // ○ hollow dot
-                .size(10)
+                .size(FONT_ICON_SM)
                 .color(pal.text_tertiary);
 
-            let label = text(&session.name).size(12).color(pal.text_secondary);
+            let label = text(&session.name).size(FONT_BODY).color(pal.text_secondary);
             let time_label = text(format_relative_time(&session.started_at))
-                .size(9)
+                .size(FONT_SMALL)
                 .color(pal.text_tertiary);
 
             let mut session_row = row![
@@ -125,7 +137,7 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
             if can_resume {
                 let resume_btn = button(
                     text("\u{25B6}") // ▶
-                        .size(10)
+                        .size(FONT_ICON_SM)
                         .color(pal.accent),
                 )
                 .style(button::text)
@@ -137,7 +149,7 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
 
             let delete_btn = button(
                 text("\u{00D7}") // ×
-                    .size(12)
+                    .size(FONT_ICON)
                     .color(pal.danger),
             )
             .style(button::text)
@@ -148,8 +160,8 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
 
             let item = container(session_row)
                 .width(Length::Fill)
-                .padding([3, 6])
-                .style(move |_theme: &Theme| crate::style::hovered_item(&pal));
+                .padding([4, 8])
+                .style(move |_theme: &Theme| style::hovered_item(&pal));
 
             content = content.push(item);
         }

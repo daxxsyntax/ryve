@@ -183,25 +183,7 @@ impl Default for ExplorerConfig {
 }
 
 fn default_ignore_patterns() -> Vec<String> {
-    [
-        ".git",
-        "node_modules",
-        "target",
-        ".DS_Store",
-        "__pycache__",
-        ".venv",
-        "venv",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "dist",
-        "build",
-        ".next",
-        ".turbo",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+    Vec::new()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

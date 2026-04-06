@@ -12,7 +12,7 @@ use iced::widget::{
 };
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL};
 
 // ── Messages ──────────────────────────────────────────
 
@@ -37,6 +37,12 @@ pub enum Message {
 
     /// Remove the current background.
     RemoveBackground,
+
+    // ── Agent settings ───────────────────────────────────
+    /// Set the default agent command (or None to clear).
+    SetDefaultAgent(Option<String>),
+    /// Toggle full-auto mode for a specific agent command.
+    ToggleFullAuto(String),
 }
 
 // ── State ───────────────────────────────────���─────────
@@ -68,15 +74,24 @@ impl PickerState {
 
 // ── View ──────────────────────────────────────────────
 
+/// Info about an available agent, passed in for rendering.
+pub struct AgentInfo {
+    pub command: String,
+    pub display_name: String,
+    pub full_auto: bool,
+    pub is_default: bool,
+}
+
 pub fn view<'a>(
     state: &'a PickerState,
     pal: &Palette,
     has_background: bool,
+    agents: Vec<AgentInfo>,
 ) -> Element<'a, Message> {
     let pal = *pal;
 
-    let title = text("Workshop Settings").size(18).color(pal.text_primary);
-    let close_btn = button(text("\u{00D7}").size(18).color(pal.text_secondary))
+    let title = text("Workshop Settings").size(FONT_HEADER).color(pal.text_primary);
+    let close_btn = button(text("\u{00D7}").size(FONT_HEADER).color(pal.text_secondary))
         .style(button::text)
         .on_press(Message::Close);
 
@@ -85,9 +100,82 @@ pub fn view<'a>(
 
     let mut content = column![header, rule::horizontal(1)].spacing(12);
 
+    // ── Agent Settings Section ───────────────────────────
+    content = content.push(
+        text("Coding Agents")
+            .size(14)
+            .color(pal.text_primary),
+    );
+
+    // Default agent selector
+    {
+        content = content.push(
+            text("Default agent (⌘H)")
+                .size(12)
+                .color(pal.text_secondary),
+        );
+
+        let mut agent_row = row![].spacing(6);
+
+        // "None" button
+        let none_active = agents.iter().all(|a| !a.is_default);
+        agent_row = agent_row.push(
+            button(text("None").size(12))
+                .style(if none_active { button::primary } else { button::secondary })
+                .padding([4, 10])
+                .on_press(Message::SetDefaultAgent(None)),
+        );
+
+        for agent in &agents {
+            let is_selected = agent.is_default;
+            agent_row = agent_row.push(
+                button(text(agent.display_name.clone()).size(12))
+                    .style(if is_selected { button::primary } else { button::secondary })
+                    .padding([4, 10])
+                    .on_press(Message::SetDefaultAgent(Some(agent.command.clone()))),
+            );
+        }
+
+        content = content.push(agent_row);
+    }
+
+    // Per-agent full-auto toggles
+    if !agents.is_empty() {
+        content = content.push(
+            text("Full-auto mode")
+                .size(12)
+                .color(pal.text_secondary),
+        );
+
+        let mut auto_row = row![].spacing(6);
+        for agent in &agents {
+            let label = if agent.full_auto {
+                format!("✓ {}", agent.display_name)
+            } else {
+                agent.display_name.clone()
+            };
+            auto_row = auto_row.push(
+                button(text(label).size(12))
+                    .style(if agent.full_auto { button::success } else { button::secondary })
+                    .padding([4, 10])
+                    .on_press(Message::ToggleFullAuto(agent.command.clone())),
+            );
+        }
+        content = content.push(auto_row);
+    }
+
+    content = content.push(rule::horizontal(1));
+
+    // ── Background Section ───────────────────────────────
+    content = content.push(
+        text("Background")
+            .size(14)
+            .color(pal.text_primary),
+    );
+
     // Upload section
     content = content.push(
-        button(text("Upload from file...").size(13))
+        button(text("Upload from file...").size(FONT_BODY))
             .style(button::secondary)
             .padding([8, 16])
             .on_press(Message::PickLocalFile),
@@ -96,7 +184,7 @@ pub fn view<'a>(
     // Remove button (if a background is set)
     if has_background {
         content = content.push(
-            button(text("Remove background").size(13))
+            button(text("Remove background").size(FONT_BODY))
                 .style(button::danger)
                 .padding([8, 16])
                 .on_press(Message::RemoveBackground),
@@ -110,10 +198,10 @@ pub fn view<'a>(
         let search_input = text_input("Search Unsplash...", &state.query)
             .on_input(Message::QueryChanged)
             .on_submit(Message::Search)
-            .size(13)
+            .size(FONT_BODY)
             .padding(8);
 
-        let search_btn = button(text("Search").size(13))
+        let search_btn = button(text("Search").size(FONT_BODY))
             .style(button::primary)
             .padding([8, 16])
             .on_press(Message::Search);
@@ -125,9 +213,9 @@ pub fn view<'a>(
         content = content.push(search_row);
 
         if state.loading {
-            content = content.push(text("Searching...").size(12).color(pal.text_secondary));
+            content = content.push(text("Searching...").size(FONT_LABEL).color(pal.text_secondary));
         } else if state.results.is_empty() && !state.query.is_empty() {
-            content = content.push(text("No results").size(12).color(pal.text_secondary));
+            content = content.push(text("No results").size(FONT_LABEL).color(pal.text_secondary));
         }
 
         // Thumbnail grid (3 columns)
@@ -149,14 +237,14 @@ pub fn view<'a>(
 
             content = content.push(
                 text("Photos provided by Unsplash")
-                    .size(10)
+                    .size(FONT_SMALL)
                     .color(pal.text_tertiary),
             );
         }
     } else {
         content = content.push(
             text("Set UNSPLASH_ACCESS_KEY to search Unsplash")
-                .size(12)
+                .size(FONT_LABEL)
                 .color(pal.text_tertiary),
         );
     }
@@ -186,12 +274,14 @@ fn view_thumbnail<'a>(
                 .width(Length::Fill)
                 .height(100)
                 .content_fit(iced::ContentFit::Cover),
-            text(&photo.photographer).size(9).color(pal.text_tertiary),
+            text(&photo.photographer)
+                .size(FONT_SMALL)
+                .color(pal.text_tertiary),
         ]
         .spacing(2)
         .into()
     } else {
-        container(text("...").size(11).color(pal.text_tertiary))
+        container(text("...").size(FONT_SMALL).color(pal.text_tertiary))
             .width(Length::Fill)
             .height(100)
             .center(Length::Fill)

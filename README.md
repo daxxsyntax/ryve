@@ -71,90 +71,94 @@ Ryve combines a file explorer, a tabbed terminal bench, and an embedded workgrap
 │ Claude Code       │                             │                 │
 │ Aider             │                             │                 │
 └──────────────────────────────────────────────────────────────────┘
+```
 
-Panels
+| Area | Purpose |
+|------|---------|
+| File Explorer | Project tree with git-aware status display |
+| Bench | Tabbed terminal and tool sessions |
+| Active Hands | Running worker sessions inside the workshop |
+| Workgraph | Sparks, Bonds, and coordination state |
 
-Area	Purpose
-File Explorer	Project tree with git-aware status display
-Bench	Tabbed terminal and tool sessions
-Active Hands	Running worker sessions inside the workshop
-Workgraph	Sparks, Bonds, and coordination state
+---
 
+## Features
 
-⸻
+### Native desktop UI
 
-Features
+Ryve is built with Iced for a fast, cross-platform Rust desktop experience. Supports both dark and light mode based on system appearance.
 
-Native desktop UI
-
-Ryve is built with Iced for a fast, cross-platform Rust desktop experience.
-
-Embedded terminals
+### Embedded terminals
 
 Each workshop can run multiple terminal-backed sessions using alacritty-terminal through a patched iced_term integration.
 
-Multi-tool workflow
+### Multi-tool workflow
 
 Ryve detects supported coding tools on your PATH and can launch them directly into Bench tabs.
 
 Supported tools (must support system prompt injection):
-	•	Claude Code (`--system-prompt`)
-	•	Codex (`--instructions`)
-	•	Aider (`--read`)
-	•	OpenCode (`--prompt`)
+
+- **Claude Code** (`--system-prompt`)
+- **Codex** (`--instructions`)
+- **Aider** (`--read`)
+- **OpenCode** (`--prompt`)
 
 Only agents that accept system prompt injection are supported. Ryve requires control over each Hand's instructions to enforce workgraph coordination rules.
 
-Worktree isolation
+### Worktree isolation
 
 Every Hand spawns in its own git worktree (`.ryve/worktrees/<session>/`), preventing merge conflicts between concurrent agents working on the same project.
 
-Workgraph-driven coordination
+### Workgraph-driven coordination
 
 The workgraph is the nervous system of Ryve. Every Hand reads `.ryve/WORKSHOP.md` (injected via system prompt) which contains active sparks, architectural constraints, failing contracts, and coordination rules. The workgraph database is the source of truth; WORKSHOP.md is a generated projection.
 
 The workgraph includes:
-	•	Sparks — work items with structured intent (problem, invariants, risk, scope)
-	•	Bonds — dependency graph with cycle detection
-	•	Contracts — machine-checkable verification criteria (required/advisory)
-	•	Embers — ephemeral inter-Hand signals with TTL
-	•	Engravings — persistent knowledge and architectural constraints
-	•	Alloys — coordination patterns (scatter/watch/chain)
-	•	Hand Assignments — liveness-aware claims with heartbeat and handoff
-	•	Commit Links — git commits linked to sparks via `[sp-xxxx]` references
 
-Real-time synchronisation
+- **Sparks** — work items with structured intent (problem, invariants, risk, scope)
+- **Bonds** — dependency graph with cycle detection
+- **Contracts** — machine-checkable verification criteria (required/advisory)
+- **Embers** — ephemeral inter-Hand signals with TTL
+- **Engravings** — persistent knowledge and architectural constraints
+- **Alloys** — coordination patterns (scatter/watch/chain)
+- **Hand Assignments** — liveness-aware claims with heartbeat and handoff
+- **Commit Links** — git commits linked to sparks via `[sp-xxxx]` references
+
+### Real-time synchronisation
 
 The sparks panel auto-refreshes every 3 seconds, detecting changes made by agents directly in the database. WORKSHOP.md is regenerated on every spark mutation so all Hands see current state.
 
-Workshop-local state
+### Workshop-local state
 
 Each workshop gets its own `.ryve/` directory for config, data, worktrees, and context.
 
-⸻
+---
 
-Architecture
+## Architecture
 
 Ryve is a Rust workspace made up of focused crates:
 
-Crate	Purpose
-src/	Main desktop application
-data/	SQLite persistence, config, git, workgraph, integrations
-llm/	Multi-provider LLM integration
-ipc/	Single-instance and local coordination support
-vendor/iced_term/	Vendored terminal widget integration
+| Crate | Purpose |
+|-------|---------|
+| `src/` | Main desktop application |
+| `data/` | SQLite persistence, config, git, workgraph, integrations |
+| `llm/` | Multi-provider LLM integration |
+| `ipc/` | Single-instance and local coordination support |
+| `vendor/iced_term/` | Vendored terminal widget integration |
 
-Built with
-	•	Iced￼ — native Rust GUI
-	•	alacritty-terminal￼ — terminal backend
-	•	sqlx￼ — SQLite access and migrations
-	•	genai￼ — multi-provider LLM support
-	•	tokio￼ — async runtime
+Built with:
 
-⸻
+- [Iced](https://iced.rs) — native Rust GUI
+- [alacritty-terminal](https://github.com/alacritty/alacritty) — terminal backend
+- [sqlx](https://github.com/launchbadge/sqlx) — SQLite access and migrations
+- [genai](https://github.com/nickel-org/genai) — multi-provider LLM support
+- [tokio](https://tokio.rs) — async runtime
 
-Project layout
+---
 
+## Project layout
+
+```
 ryve/
 ├── Cargo.toml
 ├── src/                  # desktop app
@@ -166,82 +170,91 @@ ryve/
 ├── assets/
 │   └── logo.svg
 └── docs/
+```
 
+---
 
-⸻
+## Requirements
 
-Requirements
-	•	Rust stable
-	•	A desktop OS supported by Iced
-	•	Optional: one or more coding tools installed on your PATH
+- Rust stable
+- A desktop OS supported by Iced
+- Git installed and available in shell
 
 Recommended:
-	•	latest stable Rust toolchain
-	•	Git installed and available in shell
-	•	one or more supported coding CLIs for Hand sessions
 
-⸻
+- Latest stable Rust toolchain
+- One or more supported coding CLIs for Hand sessions
 
-Getting started
+---
 
+## Getting started
+
+```sh
 git clone https://github.com/loomantix/ryve.git
 cd ryve
 cargo run
+```
 
-Build
+### Build
 
+```sh
 cargo build
+```
 
-Run checks
+### Run checks
 
+```sh
 cargo check
 cargo test
 cargo clippy --all-targets --all-features
+```
 
+---
 
-⸻
-
-Status
+## Status
 
 Ryve is in active development.
 
 The project is currently focused on:
-	•	core desktop UX and light/dark mode support
-	•	terminal and tool session management with worktree isolation
-	•	workshop structure and background customisation
-	•	workgraph: intent tracking, verification contracts, provenance, constraints
-	•	multi-Hand coordination: assignments, heartbeat, handoff, auto-refresh
-	•	agent context injection via system prompt flags and boot file pointers
+
+- Core desktop UX and light/dark mode support
+- Terminal and tool session management with worktree isolation
+- Workshop structure and background customisation
+- Workgraph: intent tracking, verification contracts, provenance, constraints
+- Multi-Hand coordination: assignments, heartbeat, handoff, auto-refresh
+- Agent context injection via system prompt flags and boot file pointers
 
 Expect rapid iteration.
 
-⸻
+---
 
-Design goals
+## Design goals
 
 Ryve is being built around a few simple principles:
-	•	native first — not a web app wrapped in a shell
-	•	terminal centered — terminals are first-class, not bolted on
-	•	structured coordination — work should be visible and traceable
-	•	tool agnostic — Hands can be powered by different engines
-	•	local ownership — workshop state lives with the project
 
-⸻
+- **Native first** — not a web app wrapped in a shell
+- **Terminal centered** — terminals are first-class, not bolted on
+- **Structured coordination** — work should be visible and traceable
+- **Tool agnostic** — Hands can be powered by different engines
+- **Local ownership** — workshop state lives with the project
 
-Contributing
+---
+
+## Contributing
 
 Ryve is open source and still early. The best way to contribute right now is to:
-	•	open issues
-	•	suggest UX improvements
-	•	test workflows on real projects
-	•	contribute focused PRs once the architecture stabilizes
+
+- Open issues
+- Suggest UX improvements
+- Test workflows on real projects
+- Contribute focused PRs once the architecture stabilizes
 
 A fuller contributor guide can be added as the project matures.
 
-⸻
+---
 
-License
+## License
 
-Licensed under AGPL-3.0-or-later. See LICENSE￼.
+Licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
-Copyright © 2026 Xerxes Noble
+Copyright 2026 Xerxes Noble

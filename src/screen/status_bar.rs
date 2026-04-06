@@ -6,7 +6,7 @@
 use iced::widget::{Space, button, container, row, text};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_ICON, FONT_LABEL};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -72,8 +72,8 @@ pub fn view<'a>(
     if let Some(branch) = branch {
         let branch_btn = button(
             row![
-                text("\u{E0A0}").size(14).color(pal.accent),
-                text(branch).size(13).color(pal.text_primary),
+                text("\u{E0A0}").size(FONT_LABEL).color(pal.accent),
+                text(branch).size(FONT_LABEL).color(pal.text_primary),
             ]
             .spacing(5)
             .align_y(iced::Alignment::Center),
@@ -130,7 +130,7 @@ pub fn view<'a>(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workshop");
-    left = left.push(text(dir_name).size(13).color(pal.text_secondary));
+    left = left.push(text(dir_name).size(FONT_LABEL).color(pal.text_secondary));
 
     // ── Center section: spark breakdown ──────────────────
     let mut center = row![].spacing(12).align_y(iced::Alignment::Center);
@@ -140,7 +140,7 @@ pub fn view<'a>(
         // Spark icon
         center = center.push(
             text("\u{2726}") // ✦
-                .size(12)
+                .size(FONT_LABEL)
                 .color(pal.text_tertiary),
         );
 
@@ -161,7 +161,7 @@ pub fn view<'a>(
         // Total active count
         center = center.push(
             text(format!("{} active", total_active))
-                .size(12)
+                .size(FONT_LABEL)
                 .color(pal.text_tertiary),
         );
     }
@@ -193,8 +193,8 @@ pub fn view<'a>(
 
         right = right.push(
             row![
-                text("●").size(10).color(agent_color),
-                text(agent_label).size(13).color(pal.text_secondary),
+                text("●").size(FONT_LABEL).color(agent_color),
+                text(agent_label).size(FONT_LABEL).color(pal.text_secondary),
             ]
             .spacing(5)
             .align_y(iced::Alignment::Center),
@@ -205,7 +205,7 @@ pub fn view<'a>(
 
     // Settings gear button
     right = right.push(
-        button(text("\u{2699}").size(16).color(pal.text_secondary))
+        button(text("\u{2699}").size(FONT_ICON).color(pal.text_secondary))
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::OpenSettings),
@@ -231,8 +231,8 @@ pub fn view<'a>(
 /// A compact spark status pill: icon + count.
 fn spark_pill<'a>(icon: &'a str, count: usize, color: iced::Color) -> Element<'a, Message> {
     row![
-        text(icon).size(12).color(color),
-        text(count.to_string()).size(12).color(color),
+        text(icon).size(FONT_LABEL).color(color),
+        text(count.to_string()).size(FONT_LABEL).color(color),
     ]
     .spacing(3)
     .align_y(iced::Alignment::Center)
@@ -240,5 +240,8 @@ fn spark_pill<'a>(icon: &'a str, count: usize, color: iced::Color) -> Element<'a
 }
 
 fn separator<'a>(pal: &Palette) -> Element<'a, Message> {
-    text("\u{2502}").size(14).color(pal.separator).into()
+    text("\u{2502}")
+        .size(FONT_LABEL)
+        .color(pal.separator)
+        .into()
 }

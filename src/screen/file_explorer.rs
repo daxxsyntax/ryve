@@ -10,7 +10,7 @@ use data::git::{DiffStat, FileStatus};
 use iced::widget::{Space, button, column, container, row, scrollable, svg, text};
 use iced::{Color, Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
 
 use crate::icons;
 
@@ -200,10 +200,12 @@ pub fn view<'a>(
 
     let header = row![
         root_icon,
-        text("Files").size(14).color(pal.text_primary),
+        text("Files").size(FONT_HEADER).color(pal.text_primary),
         Space::new().width(Length::Fill),
-        text(branch_label).size(10).color(pal.text_secondary),
-        button(text("\u{21BB}").size(13))
+        text(branch_label)
+            .size(FONT_LABEL)
+            .color(pal.text_secondary),
+        button(text("\u{21BB}").size(FONT_ICON))
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::Refresh),
@@ -216,7 +218,7 @@ pub fn view<'a>(
 
     if state.tree.is_empty() {
         items.push(
-            container(text("Scanning...").size(11))
+            container(text("Scanning...").size(FONT_BODY))
                 .padding([8, 10])
                 .into(),
         );
@@ -270,7 +272,7 @@ fn collect_nodes<'a>(
     let mut label = row![
         Space::new().width(indent),
         icon_widget,
-        text(&node.name).size(12).color(git_color),
+        text(&node.name).size(FONT_BODY).color(git_color),
         Space::new().width(Length::Fill),
     ]
     .spacing(4)
@@ -280,21 +282,21 @@ fn collect_nodes<'a>(
     if diff.additions > 0 {
         label = label.push(
             text(format!("+{}", diff.additions))
-                .size(10)
+                .size(FONT_LABEL)
                 .color(Color::from_rgb(0.40, 0.85, 0.45)),
         );
     }
     if diff.deletions > 0 {
         label = label.push(
             text(format!("-{}", diff.deletions))
-                .size(10)
+                .size(FONT_LABEL)
                 .color(Color::from_rgb(0.90, 0.35, 0.35)),
         );
     }
 
     // Spark link button
     label = label.push(
-        button(text("\u{26A1}").size(9))
+        button(text("\u{26A1}").size(FONT_ICON_SM))
             .style(button::text)
             .padding([1, 3])
             .on_press(Message::LinkSpark(node.path.clone())),

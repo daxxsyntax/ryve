@@ -5,10 +5,10 @@
 
 use uuid::Uuid;
 
-/// Generate a spark ID like `sp-a1b2`.
-pub fn generate_spark_id() -> String {
+/// Generate a spark ID using the workshop name as prefix, e.g. `ryve-a1b2c3d4`.
+pub fn generate_spark_id(workshop_id: &str) -> String {
     let hex = Uuid::new_v4().simple().to_string();
-    format!("sp-{}", &hex[..4])
+    format!("{}-{}", workshop_id, &hex[..8])
 }
 
 /// Generate a generic short ID for comments, embers, alloys, etc.

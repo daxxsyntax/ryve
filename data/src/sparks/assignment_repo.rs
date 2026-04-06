@@ -10,13 +10,23 @@ use super::error::SparksError;
 use super::types::*;
 
 /// Assign a Hand to a Spark. Fails if an active owner already exists.
+/// The check and INSERT are wrapped in a transaction to prevent TOCTOU races.
 pub async fn assign(
     pool: &SqlitePool,
     new: NewHandAssignment,
 ) -> Result<HandAssignment, SparksError> {
+    let mut tx = pool.begin().await?;
+
     // Check for existing active owner (only enforced for owner role)
     if new.role == AssignmentRole::Owner {
-        if let Some(existing) = active_for_spark(pool, &new.spark_id).await? {
+        let existing = sqlx::query_as::<_, HandAssignment>(
+            "SELECT * FROM hand_assignments WHERE spark_id = ? AND status = 'active' AND role = 'owner' LIMIT 1",
+        )
+        .bind(&new.spark_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(existing) = existing {
             return Err(SparksError::AlreadyClaimed {
                 spark_id: new.spark_id,
                 session_id: existing.session_id,
@@ -36,15 +46,17 @@ pub async fn assign(
     .bind(new.role.as_str())
     .bind(&now)
     .bind(&now)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
 
-    Ok(
-        sqlx::query_as::<_, HandAssignment>("SELECT * FROM hand_assignments WHERE id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?,
-    )
+    let assignment = sqlx::query_as::<_, HandAssignment>("SELECT * FROM hand_assignments WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(assignment)
 }
 
 /// Mark a Hand's assignment as completed.
@@ -170,6 +182,15 @@ pub async fn expire_stale_claims(
     }
 
     Ok(stale)
+}
+
+/// List all active hand assignments across all sparks.
+pub async fn list_active(pool: &SqlitePool) -> Result<Vec<HandAssignment>, SparksError> {
+    Ok(sqlx::query_as::<_, HandAssignment>(
+        "SELECT * FROM hand_assignments WHERE status = 'active'",
+    )
+    .fetch_all(pool)
+    .await?)
 }
 
 /// Get the active owner assignment for a Spark, if any.

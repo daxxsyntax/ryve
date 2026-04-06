@@ -11,12 +11,12 @@ use super::id::generate_spark_id;
 use super::types::*;
 
 pub async fn create(pool: &SqlitePool, new: NewSpark) -> Result<Spark, SparksError> {
-    let id = generate_spark_id();
+    let id = generate_spark_id(&new.workshop_id);
     let now = Utc::now().to_rfc3339();
     let spark_type = new.spark_type.as_str();
     let metadata = new.metadata.unwrap_or_else(|| "{}".to_string());
 
-    let risk_level = new.risk_level.map(|r| r.as_str().to_string());
+    let risk_level = new.risk_level.map(|r| r.as_str().to_string()).unwrap_or_else(|| "normal".to_string());
 
     sqlx::query(
         "INSERT INTO sparks (id, title, description, status, priority, spark_type, assignee, owner, parent_id, workshop_id, estimated_minutes, metadata, created_at, updated_at, due_at, risk_level, scope_boundary)
@@ -153,6 +153,7 @@ pub async fn close(
     reason: &str,
     actor: &str,
 ) -> Result<Spark, SparksError> {
+    let existing = get(pool, id).await?;
     let now = Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -171,7 +172,7 @@ pub async fn close(
             spark_id: id.to_string(),
             actor: actor.to_string(),
             field_name: "status".to_string(),
-            old_value: None,
+            old_value: Some(existing.status),
             new_value: Some("closed".to_string()),
             reason: Some(reason.to_string()),
             actor_type: None,
@@ -235,6 +236,10 @@ pub async fn list(pool: &SqlitePool, filter: SparkFilter) -> Result<Vec<Spark>, 
     if let Some(ref r) = filter.risk_level {
         sql.push_str(" AND risk_level = ?");
         args.push(r.as_str().to_string());
+    }
+    if let Some(ref s) = filter.stamp {
+        sql.push_str(" AND id IN (SELECT spark_id FROM stamps WHERE name = ?)");
+        args.push(s.clone());
     }
 
     sql.push_str(" ORDER BY priority ASC, created_at ASC");

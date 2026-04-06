@@ -10,12 +10,15 @@ use super::graph;
 use super::types::*;
 
 /// Create a bond. For blocking bond types, checks for cycles first.
+/// The cycle check and INSERT are wrapped in a transaction to prevent TOCTOU races.
 pub async fn create(
     pool: &SqlitePool,
     from_id: &str,
     to_id: &str,
     bond_type: BondType,
 ) -> Result<Bond, SparksError> {
+    let mut tx = pool.begin().await?;
+
     if bond_type.is_blocking() {
         if graph::would_create_cycle(pool, from_id, to_id).await? {
             return Err(SparksError::CycleDetected {
@@ -29,7 +32,7 @@ pub async fn create(
         .bind(from_id)
         .bind(to_id)
         .bind(bond_type.as_str())
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
     // Fetch the created bond
@@ -39,8 +42,10 @@ pub async fn create(
     .bind(from_id)
     .bind(to_id)
     .bind(bond_type.as_str())
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(bond)
 }

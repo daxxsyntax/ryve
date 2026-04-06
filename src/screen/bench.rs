@@ -9,7 +9,7 @@ use iced::{Element, Length, Theme};
 use std::path::PathBuf;
 
 use crate::coding_agents::CodingAgent;
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
 use data::ryve_dir::AgentDef;
 
 /// A tab in the bench — either a plain terminal, coding agent, or file viewer.
@@ -88,12 +88,12 @@ impl BenchState {
             };
 
             let tab_content = row![
-                text(kind_icon).size(10).color(text_color),
-                button(text(&tab.title).size(12).color(text_color))
+                text(kind_icon).size(FONT_ICON_SM).color(text_color),
+                button(text(&tab.title).size(FONT_BODY).color(text_color))
                     .style(button::text)
                     .padding(0)
                     .on_press(Message::SelectTab(tab.id)),
-                button(text("\u{00D7}").size(13).color(pal.text_tertiary))
+                button(text("\u{00D7}").size(FONT_ICON).color(pal.text_tertiary))
                     .style(button::text)
                     .padding(0)
                     .on_press(Message::CloseTab(tab.id)),
@@ -106,13 +106,13 @@ impl BenchState {
                 .style(move |_theme: &Theme| style::tab_pill(&pal, is_active));
 
             tab_row = tab_row.push(
-                tooltip(pill, text(tip_text).size(11), tooltip::Position::Bottom)
+                tooltip(pill, text(tip_text).size(FONT_SMALL), tooltip::Position::Bottom)
                     .gap(4)
                     .style(move |_theme: &Theme| style::dropdown(&pal)),
             );
         }
 
-        let new_btn = button(text("+  \u{25BE}").size(13).color(pal.text_secondary))
+        let new_btn = button(text("+  \u{25BE}").size(FONT_ICON).color(pal.text_secondary))
             .style(button::text)
             .padding([4, 10])
             .on_press(Message::ToggleDropdown);
@@ -137,7 +137,7 @@ impl BenchState {
         let mut menu = column![].spacing(2).padding(6);
 
         menu = menu.push(
-            button(text("New Terminal...").size(13).color(pal.text_primary))
+            button(text("New Terminal...").size(FONT_BODY).color(pal.text_primary))
                 .style(button::text)
                 .width(Length::Fill)
                 .on_press(Message::NewTerminal),
@@ -146,7 +146,7 @@ impl BenchState {
         for agent in available_agents {
             let label = format!("New {}...", agent.display_name);
             menu = menu.push(
-                button(text(label).size(13).color(pal.text_primary))
+                button(text(label).size(FONT_BODY).color(pal.text_primary))
                     .style(button::text)
                     .width(Length::Fill)
                     .on_press(Message::NewCodingAgent(agent.clone())),
@@ -154,11 +154,13 @@ impl BenchState {
         }
 
         if !custom_agents.is_empty() {
-            menu = menu.push(text("Custom").size(10).color(pal.text_tertiary));
+            menu = menu.push(
+                text("Custom").size(FONT_LABEL).color(pal.text_tertiary),
+            );
             for (i, def) in custom_agents.iter().enumerate() {
                 let label = format!("New {}...", def.name);
                 menu = menu.push(
-                    button(text(label).size(13).color(pal.text_primary))
+                    button(text(label).size(FONT_BODY).color(pal.text_primary))
                         .style(button::text)
                         .width(Length::Fill)
                         .on_press(Message::NewCustomAgent(i)),

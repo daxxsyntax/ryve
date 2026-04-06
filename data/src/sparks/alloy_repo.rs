@@ -17,6 +17,7 @@ pub struct AlloyMemberInput {
 }
 
 /// Create an alloy with its member sparks.
+/// The header INSERT and member INSERTs are wrapped in a transaction for atomicity.
 pub async fn create(
     pool: &SqlitePool,
     new: NewAlloy,
@@ -24,6 +25,8 @@ pub async fn create(
 ) -> Result<Alloy, SparksError> {
     let id = generate_id("al");
     let now = Utc::now().to_rfc3339();
+
+    let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO alloys (id, name, alloy_type, parent_spark_id, workshop_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -34,7 +37,7 @@ pub async fn create(
     .bind(&new.parent_spark_id)
     .bind(&new.workshop_id)
     .bind(&now)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     for member in members {
@@ -45,9 +48,11 @@ pub async fn create(
         .bind(&member.spark_id)
         .bind(member.bond_type.as_str())
         .bind(member.position)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+
+    tx.commit().await?;
 
     get(pool, &id).await
 }

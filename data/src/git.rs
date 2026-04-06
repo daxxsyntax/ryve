@@ -394,16 +394,18 @@ pub enum GitError {
 
 // ── Spark-commit linkage helpers ─────────────────────
 
-/// Parse spark IDs from a commit message. Matches `[sp-xxxx]` patterns.
+/// Parse spark IDs from a commit message. Matches `[sp-XXXXXXXX]` patterns.
 pub fn parse_spark_refs(message: &str) -> Vec<String> {
     let mut refs = Vec::new();
     let mut start = 0;
     while let Some(idx) = message[start..].find("[sp-") {
         let abs = start + idx;
-        // Expect "[sp-XXXX]" — 4 hex chars after "sp-"
-        if abs + 9 <= message.len() && message.as_bytes()[abs + 8] == b']' {
-            let candidate = &message[abs + 1..abs + 8]; // "sp-XXXX"
-            if candidate.len() == 7 && candidate[3..].chars().all(|c| c.is_ascii_hexdigit()) {
+        // Expect "[sp-XXXXXXXX]" — 8 hex chars after "sp-"
+        if abs + 13 <= message.len() && message.as_bytes()[abs + 12] == b']' {
+            let candidate = &message[abs + 1..abs + 12]; // "sp-XXXXXXXX"
+            if candidate.len() == 11
+                && candidate[3..].chars().all(|c| c.is_ascii_hexdigit())
+            {
                 refs.push(candidate.to_string());
             }
         }
@@ -429,7 +431,7 @@ pub async fn scan_commits_for_sparks(
     since: Option<&str>,
 ) -> Result<Vec<CommitSparkRef>, GitError> {
     let mut cmd = Command::new("git");
-    cmd.args(["log", "--format=%H%n%s%n%an%n%aI%n---"])
+    cmd.args(["log", "--format=%H%x00%s%x00%an%x00%aI%x00"])
         .current_dir(repo_path);
 
     if let Some(date) = since {
@@ -448,23 +450,23 @@ pub async fn scan_commits_for_sparks(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut results = Vec::new();
 
-    for block in stdout.split("---\n") {
-        let block = block.trim();
-        if block.is_empty() {
+    for record in stdout.split('\0') {
+        let record = record.trim();
+        if record.is_empty() {
             continue;
         }
-        let lines: Vec<&str> = block.lines().collect();
-        if lines.len() < 4 {
+        let fields: Vec<&str> = record.splitn(4, '\0').collect();
+        if fields.len() < 4 {
             continue;
         }
 
-        let spark_ids = parse_spark_refs(lines[1]);
+        let spark_ids = parse_spark_refs(fields[1]);
         if !spark_ids.is_empty() {
             results.push(CommitSparkRef {
-                hash: lines[0].to_string(),
-                message: lines[1].to_string(),
-                author: lines[2].to_string(),
-                timestamp: lines[3].to_string(),
+                hash: fields[0].to_string(),
+                message: fields[1].to_string(),
+                author: fields[2].to_string(),
+                timestamp: fields[3].to_string(),
                 spark_ids,
             });
         }

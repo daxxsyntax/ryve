@@ -137,6 +137,8 @@ pub struct Backend {
     notifier: Notifier,
     last_content: RenderableContent,
     pub(crate) url_regex: RegexSearch,
+    /// PID of the shell process spawned inside this terminal's PTY.
+    child_pid: u32,
 }
 
 impl Backend {
@@ -173,6 +175,8 @@ impl Backend {
 
         let term = Arc::new(FairMutex::new(term));
 
+        let child_pid = pty.child().id();
+
         let pty_event_loop =
             EventLoop::new(term.clone(), event_proxy, pty, false, false)?;
 
@@ -186,7 +190,13 @@ impl Backend {
             notifier,
             last_content: initial_content,
             url_regex: RegexSearch::new(URL_REGEX).expect("invalid url regexp"),
+            child_pid,
         })
+    }
+
+    /// PID of the shell process spawned inside this terminal's PTY.
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid
     }
 
     pub fn handle(&mut self, cmd: Command) -> Action {
