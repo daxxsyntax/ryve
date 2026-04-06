@@ -7,7 +7,7 @@ use data::sparks::types::Spark;
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
 
 // ── State ────────────────────────────────────────────
 
@@ -24,13 +24,9 @@ pub struct CreateForm {
 pub enum Message {
     SelectSpark(String),
     Refresh,
-    /// Toggle the inline create form
     ShowCreateForm,
-    /// Title field changed in the create form
     CreateFormTitleChanged(String),
-    /// Submit the new spark
     SubmitNewSpark,
-    /// Cancel / hide the create form
     CancelCreate,
     /// Quick status cycle: open → in_progress → closed
     CycleStatus(String, String),
@@ -47,13 +43,13 @@ pub fn view<'a>(
     let pal = *pal;
 
     let header = row![
-        text("Workgraph").size(14).color(pal.text_primary),
+        text("Workgraph").size(FONT_HEADER).color(pal.text_primary),
         Space::new().width(Length::Fill),
-        button(text("+").size(14).color(pal.accent))
+        button(text("+").size(FONT_ICON).color(pal.accent))
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::ShowCreateForm),
-        button(text("\u{21BB}").size(13).color(pal.text_secondary))
+        button(text("\u{21BB}").size(FONT_ICON).color(pal.text_secondary))
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::Refresh),
@@ -67,18 +63,18 @@ pub fn view<'a>(
     if create_form.visible {
         let form = column![
             text_input("Spark title...", &create_form.title)
-                .size(12)
-                .padding([4, 6])
+                .size(FONT_BODY)
+                .padding([6, 8])
                 .on_input(Message::CreateFormTitleChanged)
                 .on_submit(Message::SubmitNewSpark),
             row![
-                button(text("Create").size(11).color(pal.accent))
+                button(text("Create").size(FONT_LABEL).color(pal.accent))
                     .style(button::text)
-                    .padding([2, 6])
+                    .padding([3, 8])
                     .on_press(Message::SubmitNewSpark),
-                button(text("Cancel").size(11).color(pal.text_tertiary))
+                button(text("Cancel").size(FONT_LABEL).color(pal.text_tertiary))
                     .style(button::text)
-                    .padding([2, 6])
+                    .padding([3, 8])
                     .on_press(Message::CancelCreate),
             ]
             .spacing(8),
@@ -89,7 +85,7 @@ pub fn view<'a>(
     }
 
     if sparks.is_empty() && !create_form.visible {
-        list = list.push(text("No sparks yet").size(12).color(pal.text_tertiary));
+        list = list.push(text("No sparks yet").size(FONT_BODY).color(pal.text_tertiary));
     } else {
         for spark in sparks {
             list = list.push(view_spark_row(spark, &pal));
@@ -122,24 +118,26 @@ fn view_spark_row<'a>(spark: &'a Spark, pal: &Palette) -> Element<'a, Message> {
     let priority_label = format!("P{}", spark.priority);
     let id = spark.id.clone();
 
-    let status_btn = button(text(status_indicator).size(12).color(pal.text_secondary))
+    let status_btn = button(text(status_indicator).size(FONT_ICON_SM).color(pal.text_secondary))
         .style(button::text)
         .padding([2, 4])
         .on_press(Message::CycleStatus(id.clone(), next_status.to_string()));
 
-    button(
-        row![
-            status_btn,
-            text(priority_label).size(10).color(pal.text_tertiary),
-            text(&spark.title).size(12).color(pal.text_primary),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center),
-    )
-    .style(button::text)
-    .width(Length::Fill)
-    .padding([4, 6])
-    .on_press(Message::SelectSpark(id))
+    row![
+        status_btn,
+        button(
+            row![
+                text(priority_label).size(FONT_LABEL).color(pal.text_tertiary),
+                text(&spark.title).size(FONT_BODY).color(pal.text_primary),
+            ].spacing(6).align_y(iced::Alignment::Center),
+        )
+        .style(button::text)
+        .width(Length::Fill)
+        .padding([5, 6])
+        .on_press(Message::SelectSpark(id))
+    ]
+    .spacing(2)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 

@@ -185,8 +185,8 @@ fn syntect_to_iced_color(c: highlighting::Color) -> Color {
 // ── View (viewport-culled) ───────────────────────────
 
 const MONO_FONT: Font = Font::MONOSPACE;
-const FONT_SIZE: f32 = 13.0;
-const LINE_HEIGHT: f32 = 20.0;
+const FONT_SIZE: f32 = 14.0;
+const LINE_HEIGHT: f32 = 22.0;
 const GUTTER_WIDTH: f32 = 16.0;
 /// Extra lines rendered above/below the visible window to reduce flicker.
 const OVERSCAN: usize = 20;
@@ -243,7 +243,7 @@ pub fn view<'a>(state: &'a FileViewerState, pal: &Palette, has_bg: bool) -> Elem
             let spark_id = spark_links[0].spark_id.clone();
             iced::widget::button(
                 text("\u{26A1}")
-                    .size(10.0)
+                    .size(12.0)
                     .color(Color::from_rgb(1.0, 0.75, 0.2)),
             )
             .style(iced::widget::button::text)
@@ -348,11 +348,14 @@ fn render_highlighted_line<'a>(line: &'a HighlightedLine) -> Element<'a, Message
             .size(FONT_SIZE)
             .color(span.color);
 
-        if span.bold || span.italic {
-            t = t.font(MONO_FONT);
+        let font = if span.bold {
+            Font { weight: iced::font::Weight::Bold, ..MONO_FONT }
+        } else if span.italic {
+            Font { style: iced::font::Style::Italic, ..MONO_FONT }
         } else {
-            t = t.font(MONO_FONT);
-        }
+            MONO_FONT
+        };
+        t = t.font(font);
 
         parts.push(t.into());
     }

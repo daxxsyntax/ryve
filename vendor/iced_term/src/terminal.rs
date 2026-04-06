@@ -65,6 +65,11 @@ impl Terminal {
         &self.widget_id
     }
 
+    /// PID of the shell process spawned inside this terminal's PTY.
+    pub fn child_pid(&self) -> u32 {
+        self.backend.child_pid()
+    }
+
     pub fn subscription(&self) -> Subscription<Event> {
         let data = TerminalSubscriptionData {
             id: self.id,

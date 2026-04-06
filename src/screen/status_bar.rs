@@ -6,7 +6,7 @@
 use iced::widget::{button, container, row, text, Space};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_ICON, FONT_LABEL};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -28,8 +28,8 @@ pub fn view<'a>(
     if let Some(branch) = branch {
         items = items.push(
             row![
-                text("\u{E0A0}").size(11).color(pal.text_secondary),
-                text(branch).size(11).color(pal.text_primary),
+                text("\u{E0A0}").size(FONT_LABEL).color(pal.text_secondary),
+                text(branch).size(FONT_LABEL).color(pal.text_primary),
             ]
             .spacing(4)
             .align_y(iced::Alignment::Center),
@@ -43,7 +43,7 @@ pub fn view<'a>(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workshop");
-    items = items.push(text(dir_name).size(11).color(pal.text_secondary));
+    items = items.push(text(dir_name).size(FONT_LABEL).color(pal.text_secondary));
 
     // Workgraph spark count
     if sparks_count > 0 {
@@ -54,7 +54,7 @@ pub fn view<'a>(
                 sparks_count,
                 if sparks_count == 1 { "" } else { "s" }
             ))
-            .size(11)
+            .size(FONT_LABEL)
             .color(pal.text_secondary),
         );
     }
@@ -64,7 +64,7 @@ pub fn view<'a>(
 
     // Settings gear button (right-aligned)
     items = items.push(
-        button(text("\u{2699}").size(13).color(pal.text_secondary))
+        button(text("\u{2699}").size(FONT_ICON).color(pal.text_secondary))
             .style(button::text)
             .padding([0, 6])
             .on_press(Message::OpenSettings),
@@ -78,7 +78,7 @@ pub fn view<'a>(
 
 fn separator<'a>(pal: &Palette) -> Element<'a, Message> {
     text("\u{2502}")
-        .size(11)
+        .size(FONT_LABEL)
         .color(pal.separator)
         .into()
 }

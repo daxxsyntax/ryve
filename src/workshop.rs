@@ -5,7 +5,7 @@
 //! Each workshop has its own `.ryve/` directory containing config,
 //! sparks database, agent definitions, and context files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use data::ryve_dir::{AgentDef, RyveDir, WorkshopConfig};
@@ -49,6 +49,9 @@ pub struct Workshop {
     pub background_picker: PickerState,
     /// Inline spark create form state.
     pub spark_create_form: crate::screen::sparks::CreateForm,
+    /// Whether the background image is dark (for adaptive font color).
+    /// `None` means no background or not yet computed.
+    pub bg_is_dark: Option<bool>,
 }
 
 impl Workshop {
@@ -71,7 +74,21 @@ impl Workshop {
             background_handle: None,
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
+            bg_is_dark: None,
         }
+    }
+
+    /// Stable workshop identifier for database queries.
+    ///
+    /// Derived from the directory name so it matches the CLI (`ryve-cli`)
+    /// and persists across app restarts. The `id` field (UUID) is only
+    /// used for internal UI message routing.
+    pub fn workshop_id(&self) -> String {
+        self.directory
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
     }
 
     /// Display name — from config, or last path component.
@@ -268,6 +285,74 @@ impl Workshop {
             iced_term::actions::Action::Ignore => {}
         }
     }
+
+    /// Scan terminals for agent processes that aren't yet tracked as sessions.
+    /// Returns `(tab_id, agent)` pairs for newly detected agents.
+    pub fn detect_untracked_agents(&self) -> Vec<(u64, CodingAgent)> {
+        // Collect tab IDs that already have an agent session
+        let tracked_tabs: HashSet<u64> = self
+            .agent_sessions
+            .iter()
+            .filter_map(|s| s.tab_id)
+            .collect();
+
+        let mut found = Vec::new();
+
+        for (&tab_id, term) in &self.terminals {
+            if tracked_tabs.contains(&tab_id) {
+                continue;
+            }
+
+            let shell_pid = term.child_pid();
+            if let Some(agent) = detect_agent_in_process_tree(shell_pid) {
+                found.push((tab_id, agent));
+            }
+        }
+
+        found
+    }
+}
+
+/// Walk the process tree rooted at `shell_pid` looking for a known coding agent.
+fn detect_agent_in_process_tree(shell_pid: u32) -> Option<CodingAgent> {
+    use crate::coding_agents::ResumeStrategy;
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    // Known agent binary names → CodingAgent constructors
+    let known: &[(&str, &str, ResumeStrategy)] = &[
+        ("claude", "Claude Code", ResumeStrategy::ResumeFlag),
+        ("codex", "Codex", ResumeStrategy::ResumeFlag),
+        ("aider", "Aider", ResumeStrategy::None),
+        ("opencode", "OpenCode", ResumeStrategy::None),
+    ];
+
+    let root = Pid::from_u32(shell_pid);
+
+    // BFS through children of the shell process
+    let mut queue = vec![root];
+    while let Some(pid) = queue.pop() {
+        for (child_pid, proc_info) in sys.processes() {
+            if proc_info.parent() == Some(pid) {
+                let name = proc_info.name().to_string_lossy();
+                for &(cmd, display, ref resume) in known {
+                    if name == cmd {
+                        return Some(CodingAgent {
+                            display_name: display.to_string(),
+                            command: cmd.to_string(),
+                            args: Vec::new(),
+                            resume: resume.clone(),
+                        });
+                    }
+                }
+                queue.push(*child_pid);
+            }
+        }
+    }
+
+    None
 }
 
 fn wrap_command_with_bottom_pin(program: &str, args: &[String]) -> (String, Vec<String>) {
@@ -286,6 +371,41 @@ fn wrap_command_with_bottom_pin(program: &str, args: &[String]) -> (String, Vec<
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Compute average luminance from image bytes (0.0 = black, 1.0 = white).
+/// Samples a grid of pixels for speed rather than scanning every pixel.
+pub fn compute_image_luminance(bytes: &[u8]) -> Option<f32> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    // Sample ~100 pixels in a grid
+    let step_x = (w / 10).max(1);
+    let step_y = (h / 10).max(1);
+    let mut total = 0.0_f64;
+    let mut count = 0u32;
+
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            let p = rgb.get_pixel(x, y);
+            // Relative luminance (ITU-R BT.709)
+            let lum = 0.2126 * (p[0] as f64 / 255.0)
+                + 0.7152 * (p[1] as f64 / 255.0)
+                + 0.0722 * (p[2] as f64 / 255.0);
+            total += lum;
+            count += 1;
+            x += step_x;
+        }
+        y += step_y;
+    }
+
+    Some((total / count as f64) as f32)
 }
 
 /// Create a git worktree for a Hand session (blocking).
@@ -370,16 +490,10 @@ pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::spa
     let custom_agents = data::ryve_dir::load_agent_defs(&ryve_dir).await;
     let agent_context = data::ryve_dir::load_agents_context(&ryve_dir).await;
 
-    // Inject pointers into agent boot files (WORKSHOP.md will be written
-    // once sparks are loaded — see SparksLoaded handler in main).
+    // Generate WORKSHOP.md and inject pointers into agent boot files
+    // (also propagates into any existing worktrees).
     if !config.agents.disable_sync {
-        let ctx = data::agent_context::WorkshopContext {
-            sparks: Vec::new(),
-            constraints: Vec::new(),
-            failing_contracts: Vec::new(),
-            active_assignments: Vec::new(),
-        };
-        let _ = data::agent_context::sync(&directory, &ryve_dir, &config, &ctx).await;
+        let _ = data::agent_context::sync(&directory, &ryve_dir, &config).await;
     }
 
     Ok(WorkshopInit {
@@ -388,4 +502,39 @@ pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::spa
         custom_agents,
         agent_context,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workshop_id_derives_from_directory_name() {
+        let ws = Workshop::new(PathBuf::from("/home/user/projects/my-project"));
+        assert_eq!(ws.workshop_id(), "my-project");
+    }
+
+    #[test]
+    fn workshop_id_matches_cli_derivation() {
+        // The CLI derives workshop_id via: cwd.file_name().to_string_lossy()
+        // This test ensures the UI method produces the same result.
+        let dir = PathBuf::from("/tmp/ryve");
+        let cli_id = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let ws = Workshop::new(dir);
+        assert_eq!(ws.workshop_id(), cli_id);
+    }
+
+    #[test]
+    fn workshop_id_is_stable_across_instances() {
+        let dir = PathBuf::from("/home/user/dev/ryve");
+        let ws1 = Workshop::new(dir.clone());
+        let ws2 = Workshop::new(dir);
+        // UUIDs differ, but workshop_id is the same
+        assert_ne!(ws1.id, ws2.id);
+        assert_eq!(ws1.workshop_id(), ws2.workshop_id());
+    }
 }

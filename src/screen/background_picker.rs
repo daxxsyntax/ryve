@@ -12,7 +12,7 @@ use iced::widget::{
 };
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette};
+use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL};
 
 // ── Messages ──────────────────────────────────────────
 
@@ -71,8 +71,8 @@ impl PickerState {
 pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> Element<'a, Message> {
     let pal = *pal;
 
-    let title = text("Workshop Settings").size(18).color(pal.text_primary);
-    let close_btn = button(text("\u{00D7}").size(18).color(pal.text_secondary))
+    let title = text("Workshop Settings").size(FONT_HEADER).color(pal.text_primary);
+    let close_btn = button(text("\u{00D7}").size(FONT_HEADER).color(pal.text_secondary))
         .style(button::text)
         .on_press(Message::Close);
 
@@ -83,7 +83,7 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
 
     // Upload section
     content = content.push(
-        button(text("Upload from file...").size(13))
+        button(text("Upload from file...").size(FONT_BODY))
             .style(button::secondary)
             .padding([8, 16])
             .on_press(Message::PickLocalFile),
@@ -92,7 +92,7 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
     // Remove button (if a background is set)
     if has_background {
         content = content.push(
-            button(text("Remove background").size(13))
+            button(text("Remove background").size(FONT_BODY))
                 .style(button::danger)
                 .padding([8, 16])
                 .on_press(Message::RemoveBackground),
@@ -106,10 +106,10 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
         let search_input = text_input("Search Unsplash...", &state.query)
             .on_input(Message::QueryChanged)
             .on_submit(Message::Search)
-            .size(13)
+            .size(FONT_BODY)
             .padding(8);
 
-        let search_btn = button(text("Search").size(13))
+        let search_btn = button(text("Search").size(FONT_BODY))
             .style(button::primary)
             .padding([8, 16])
             .on_press(Message::Search);
@@ -121,9 +121,9 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
         content = content.push(search_row);
 
         if state.loading {
-            content = content.push(text("Searching...").size(12).color(pal.text_secondary));
+            content = content.push(text("Searching...").size(FONT_LABEL).color(pal.text_secondary));
         } else if state.results.is_empty() && !state.query.is_empty() {
-            content = content.push(text("No results").size(12).color(pal.text_secondary));
+            content = content.push(text("No results").size(FONT_LABEL).color(pal.text_secondary));
         }
 
         // Thumbnail grid (3 columns)
@@ -145,14 +145,14 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
 
             content = content.push(
                 text("Photos provided by Unsplash")
-                    .size(10)
+                    .size(FONT_SMALL)
                     .color(pal.text_tertiary),
             );
         }
     } else {
         content = content.push(
             text("Set UNSPLASH_ACCESS_KEY to search Unsplash")
-                .size(12)
+                .size(FONT_LABEL)
                 .color(pal.text_tertiary),
         );
     }
@@ -179,13 +179,13 @@ fn view_thumbnail<'a>(state: &'a PickerState, photo: &'a Photo, pal: &Palette) -
                 .height(100)
                 .content_fit(iced::ContentFit::Cover),
             text(&photo.photographer)
-                .size(9)
+                .size(FONT_SMALL)
                 .color(pal.text_tertiary),
         ]
         .spacing(2)
         .into()
     } else {
-        container(text("...").size(11).color(pal.text_tertiary))
+        container(text("...").size(FONT_SMALL).color(pal.text_tertiary))
             .width(Length::Fill)
             .height(100)
             .center(Length::Fill)

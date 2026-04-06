@@ -7,11 +7,9 @@
 //! and injects a one-line pointer into each agent's boot file so they discover
 //! and read it automatically.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::ryve_dir::{RyveDir, WorkshopConfig};
-use crate::sparks::types::{ArchConstraint, Contract, HandAssignment, Spark};
 
 // ── Marker ────────────────────────────────────────────
 
@@ -31,24 +29,20 @@ const DEFAULT_TARGETS: &[&str] = &[
 
 // ── Public API ────────────────────────────────────────
 
-/// Aggregated context for WORKSHOP.md generation.
-pub struct WorkshopContext {
-    pub sparks: Vec<Spark>,
-    pub constraints: Vec<(String, ArchConstraint)>,
-    pub failing_contracts: Vec<Contract>,
-    pub active_assignments: Vec<HandAssignment>,
-}
-
 /// Generate `.ryve/WORKSHOP.md` and inject pointers into agent boot files.
 ///
-/// Call this after workshop initialisation and after every spark mutation.
+/// WORKSHOP.md is a static operations guide — it tells Hands how to use the
+/// CLI to query the workgraph, not what the current state is (that lives in
+/// the database, the single source of truth).
+///
+/// Also propagates WORKSHOP.md and pointers into every active worktree so
+/// Hand agents always have the guide without reading files outside their tree.
 pub async fn sync(
     workshop_dir: &Path,
     ryve_dir: &RyveDir,
     config: &WorkshopConfig,
-    ctx: &WorkshopContext,
 ) -> Result<(), std::io::Error> {
-    let workshop_md = generate_workshop_md(ctx);
+    let workshop_md = generate_workshop_md();
     tokio::fs::write(ryve_dir.workshop_md_path(), &workshop_md).await?;
 
     let targets = resolve_targets(config);
@@ -56,118 +50,80 @@ pub async fn sync(
         inject_pointer(workshop_dir, rel).await?;
     }
 
+    // Propagate WORKSHOP.md + pointers into every active worktree
+    let worktrees_dir = ryve_dir.root().join("worktrees");
+    if let Ok(mut entries) = tokio::fs::read_dir(&worktrees_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let wt_path = entry.path();
+            if !wt_path.is_dir() {
+                continue;
+            }
+            // Write WORKSHOP.md into the worktree's .ryve/
+            let wt_ryve = wt_path.join(".ryve");
+            if wt_ryve.is_dir() {
+                let wt_workshop_md = wt_ryve.join("WORKSHOP.md");
+                let _ = tokio::fs::write(&wt_workshop_md, &workshop_md).await;
+            }
+            // Re-inject pointers into the worktree's agent boot files
+            for rel in &targets {
+                let _ = inject_pointer(&wt_path, rel).await;
+            }
+        }
+    }
+
     Ok(())
 }
 
 // ── WORKSHOP.md generation ────────────────────────────
 
-fn generate_workshop_md(ctx: &WorkshopContext) -> String {
+fn generate_workshop_md() -> String {
     let mut md = String::with_capacity(4096);
 
     md.push_str("# Ryve Workshop\n\n");
     md.push_str(
-        "You are working inside a **Ryve Workshop**. Ryve manages tasks (called *sparks*) \
-         in an embedded workgraph stored at `.ryve/sparks.db`.\n\n",
+        "You are a **Hand** working inside a **Ryve Workshop**. Ryve manages tasks \
+         (called *sparks*) in an embedded workgraph stored in `.ryve/sparks.db`.\n\n",
     );
 
-    // ── Active sparks ─────────────────────────────────────────────
-    let hot: Vec<&Spark> = ctx
-        .sparks
-        .iter()
-        .filter(|s| matches!(s.status.as_str(), "open" | "in_progress"))
-        .collect();
+    md.push_str(
+        "**IMPORTANT: Work in your current directory.** Do not navigate to parent \
+         directories or other worktrees. All code changes, commits, and CLI commands \
+         must be run from within this working tree.\n\n",
+    );
 
-    if hot.is_empty() {
-        md.push_str("There are no active sparks right now.\n\n");
-    } else {
-        md.push_str("## Active Sparks\n\n");
-        md.push_str("| ID | P | Risk | Type | Status | Scope | Title |\n");
-        md.push_str("|----|---|------|------|--------|-------|-------|\n");
-        for s in &hot {
-            let risk = s.risk_level.as_deref().unwrap_or("normal");
-            let scope = s.scope_boundary.as_deref().unwrap_or("");
-            let _ = writeln!(
-                md,
-                "| `{}` | P{} | {} | {} | {} | {} | {} |",
-                s.id, s.priority, risk, s.spark_type, s.status, scope, s.title,
-            );
-        }
-        md.push('\n');
-    }
+    // ── Getting started ──────────────────────────────────────────
+    md.push_str("## Getting Started\n\n");
+    md.push_str(
+        "Before doing any work, check the current workgraph state with `ryve-cli spark list` \
+         to see active sparks, their priorities, and which are already claimed.\n\n",
+    );
 
-    // ── Architectural constraints ─────────────────────────────────
-    if !ctx.constraints.is_empty() {
-        md.push_str("## Architectural Constraints\n\n");
-        for (name, c) in &ctx.constraints {
-            let severity = match c.severity {
-                crate::sparks::types::ConstraintSeverity::Error => "ERROR",
-                crate::sparks::types::ConstraintSeverity::Warning => "WARN",
-                crate::sparks::types::ConstraintSeverity::Info => "INFO",
-            };
-            let _ = writeln!(md, "- **{}** [{}]: {}", name, severity, c.rule);
-        }
-        md.push('\n');
-    }
+    // ── Rules ─────────────────────────────────────────────────────
+    md.push_str("## Rules\n\n");
+    md.push_str("1. **Always reference spark IDs** in commit messages: `fix(auth): validate token expiry [sp-a1b2]`\n");
+    md.push_str("2. **Work in priority order** — P0 is critical, P4 is negligible.\n");
+    md.push_str("3. **Respect architectural constraints** — run `ryve-cli constraint list` to check. Violations are blocking.\n");
+    md.push_str("4. **Check required contracts** before considering a spark done: `ryve-cli contract list <spark-id>`.\n");
+    md.push_str("5. **Do not work on a spark that is already claimed** by another Hand.\n");
+    md.push_str("6. If you discover a new bug or task, create a spark for it (see commands below).\n\n");
 
-    // ── Failing contracts ─────────────────────────────────────────
-    if !ctx.failing_contracts.is_empty() {
-        md.push_str("## Failing Contracts\n\n");
-        for c in &ctx.failing_contracts {
-            let _ = writeln!(
-                md,
-                "- `{}`: \"{}\" — {} ({})",
-                c.spark_id,
-                c.description,
-                c.status.to_uppercase(),
-                c.kind,
-            );
-        }
-        md.push('\n');
-    }
+    // ── Workgraph commands ───────────────────────────────────────
+    md.push_str("## Workgraph Commands\n\n");
+    md.push_str("Use `ryve-cli` to query and update the workgraph. **Always run from the workshop root.**\n\n");
 
-    // ── Hand assignments ──────────────────────────────────────────
-    let active_assigns: Vec<&HandAssignment> = ctx
-        .active_assignments
-        .iter()
-        .filter(|a| a.status == "active")
-        .collect();
-    if !active_assigns.is_empty() {
-        md.push_str("## Active Hands\n\n");
-        for a in &active_assigns {
-            let _ = writeln!(
-                md,
-                "- `{}` claimed by session `{}` ({})",
-                a.spark_id, a.session_id, a.role,
-            );
-        }
-        md.push('\n');
-    }
+    md.push_str("### Query state\n\n");
+    md.push_str("```sh\nryve-cli spark list              # active sparks\n");
+    md.push_str("ryve-cli spark list --all         # include closed\n");
+    md.push_str("ryve-cli spark show <spark-id>    # spark details\n");
+    md.push_str("ryve-cli constraint list           # architectural constraints\n");
+    md.push_str("ryve-cli contract list <spark-id>  # verification contracts\n```\n\n");
 
-    // ── Workflow rules ────────────────────────────────────────────
-    md.push_str("## Workflow\n\n");
-    md.push_str(
-        "- **Claim a spark** before starting work to prevent duplicate effort.\n",
-    );
-    md.push_str(
-        "- **Reference spark IDs** in commit messages \
-         (e.g. `fix(auth): validate token expiry [sp-a1b2]`).\n",
-    );
-    md.push_str(
-        "- **Focus on priority order** — P0 sparks are critical, P4 are negligible.\n",
-    );
-    md.push_str(
-        "- **Respect architectural constraints** — violations are blocking.\n",
-    );
-    md.push_str(
-        "- **Check required contracts** before marking a spark as done.\n",
-    );
-    md.push_str(
-        "- If you discover a new bug or task while working, mention it so it can be \
-         tracked as a new spark.\n",
-    );
-    md.push_str(
-        "- Do not close or modify sparks directly — Ryve manages spark lifecycle.\n",
-    );
+    md.push_str("### Mutate state\n\n");
+    md.push_str("```sh\nryve-cli spark create <title>                    # create a new spark\n");
+    md.push_str("ryve-cli spark status <spark-id> in_progress      # claim / update status\n");
+    md.push_str("ryve-cli spark close <spark-id> <reason>           # close a spark\n```\n\n");
+
+    md.push_str("Ryve auto-refreshes every 3 seconds. Changes are picked up by the UI and other Hands automatically.\n");
 
     md
 }
@@ -180,11 +136,11 @@ fn pointer_line() -> String {
         "{}\n\
          ## Ryve Workshop — MANDATORY\n\
          \n\
-         IMPORTANT: This project is managed by Ryve. You MUST read the file `.ryve/WORKSHOP.md` \
-         before doing ANY work. It contains active tasks, architectural constraints, verification \
-         contracts, and coordination rules that govern how you operate in this codebase. \
-         Failure to follow the instructions in that file will result in wasted work, conflicts \
-         with other agents, and constraint violations. Read it now.\n\
+         This project is managed by **Ryve**. You MUST read `.ryve/WORKSHOP.md` before doing \
+         ANY work — it contains the rules, CLI commands, and coordination protocol you must follow.\n\
+         \n\
+         **Work in your current directory.** Do not navigate to parent directories or other \
+         worktrees. Run `ryve-cli spark list` to see active tasks and find work to claim.\n\
          {}",
         MARKER_START, MARKER_END,
     )
@@ -257,15 +213,11 @@ pub fn target_paths(workshop_dir: &Path, config: &WorkshopConfig) -> Vec<PathBuf
 
 /// Generate the initial prompt text to inject into a Hand's terminal via PTY.
 /// This is the fallback for agents that don't support `--system-prompt` flags.
-pub fn generate_hand_prompt(workshop_dir: &Path) -> String {
-    let ws_md = workshop_dir.join(".ryve/WORKSHOP.md");
-    let ws_md_rel = ".ryve/WORKSHOP.md";
-
-    format!(
-        "You are a Hand in a Ryve Workshop. Before doing ANY work, you MUST read \
-         and follow the rules in `{ws_md_rel}`. It contains active tasks (sparks), \
-         architectural constraints, verification contracts, and coordination rules. \
-         Reference spark IDs in all commits (e.g. `[sp-xxxx]`). \
-         Read {ws_md_rel} now.\n"
-    )
+pub fn generate_hand_prompt(_workshop_dir: &Path) -> String {
+    "You are a Hand in a Ryve Workshop. Before doing ANY work, read `.ryve/WORKSHOP.md` — \
+     it explains how to use `ryve-cli` to query the workgraph for active tasks, constraints, \
+     and contracts. Work ONLY in your current directory (do not navigate to parent directories \
+     or other worktrees). Run `ryve-cli spark list` to see what needs doing. \
+     Reference spark IDs in all commits (e.g. `[sp-xxxx]`).\n"
+        .to_string()
 }

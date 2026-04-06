@@ -81,7 +81,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    fn dark() -> Self {
+    pub fn dark() -> Self {
         Self {
             window_bg: Color { r: 0.110, g: 0.110, b: 0.118, a: 1.0 },
             surface: Color { r: 1.0, g: 1.0, b: 1.0, a: 0.05 },
@@ -102,7 +102,7 @@ impl Palette {
         }
     }
 
-    fn light() -> Self {
+    pub fn light() -> Self {
         Self {
             window_bg: Color { r: 0.949, g: 0.949, b: 0.969, a: 1.0 },
             surface: Color { r: 1.0, g: 1.0, b: 1.0, a: 0.70 },
@@ -290,6 +290,23 @@ pub fn danger_surface(pal: &Palette) -> container::Style {
         ..Default::default()
     }
 }
+
+// ── Layout Constants ─────────────────────────────────
+
+// ── Font Size Scale ──────────────────────────────────
+
+/// Panel/section headers (e.g. "Workgraph", "Files", "Hands")
+pub const FONT_HEADER: f32 = 16.0;
+/// Primary body text (file names, spark titles, session names)
+pub const FONT_BODY: f32 = 14.0;
+/// Secondary labels (priority badges, branch names, timestamps)
+pub const FONT_LABEL: f32 = 12.0;
+/// Small supplementary text (section dividers, hints)
+pub const FONT_SMALL: f32 = 11.0;
+/// Icon size in panels (status indicators, action buttons)
+pub const FONT_ICON: f32 = 14.0;
+/// Small icon size (inline indicators, badges)
+pub const FONT_ICON_SM: f32 = 12.0;
 
 // ── Layout Constants ─────────────────────────────────
 
