@@ -1289,12 +1289,30 @@ impl App {
 
                 layers.push(main_content);
 
-                // Background picker modal overlay
+                // Settings modal overlay
                 if ws.background_picker.open {
                     let has_bg = ws.config.background.image.is_some();
                     let pal = self.appearance.palette();
+                    let agents: Vec<screen::background_picker::AgentInfo> = self
+                        .available_agents
+                        .iter()
+                        .map(|a| screen::background_picker::AgentInfo {
+                            command: a.command.clone(),
+                            display_name: a.display_name.clone(),
+                            full_auto: self
+                                .global_config
+                                .agent_settings
+                                .get(&a.command)
+                                .map_or(false, |s| s.full_auto),
+                            is_default: self
+                                .global_config
+                                .default_agent
+                                .as_ref()
+                                .map_or(false, |d| d == &a.command),
+                        })
+                        .collect();
                     layers.push(
-                        screen::background_picker::view(&ws.background_picker, &pal, has_bg)
+                        screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
                             .map(Message::Background),
                     );
                 }
@@ -1443,72 +1461,7 @@ impl App {
             status_bar,
         ]
         .height(Length::Fill)
-        .into();
-
-        // Layer background image behind content
-        let mut layers: Vec<Element<'a, Message>> = Vec::new();
-
-        if let Some(ref handle) = ws.background_handle {
-            layers.push(
-                iced::widget::image(handle.clone())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .content_fit(iced::ContentFit::Cover)
-                    .into(),
-            );
-
-            // Dim overlay so UI stays readable
-            let opacity = ws.config.background.dim_opacity;
-            layers.push(
-                container(Space::new())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(move |_theme: &Theme| container::Style {
-                        background: Some(iced::Background::Color(Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: opacity,
-                        })),
-                        ..Default::default()
-                    })
-                    .into(),
-            );
-        }
-
-        layers.push(workshop_content);
-
-        // Settings modal overlay
-        if ws.background_picker.open {
-            let has_bg = ws.config.background.image.is_some();
-            let agents: Vec<screen::background_picker::AgentInfo> = self
-                .available_agents
-                .iter()
-                .map(|a| screen::background_picker::AgentInfo {
-                    command: a.command.clone(),
-                    display_name: a.display_name.clone(),
-                    full_auto: self
-                        .global_config
-                        .agent_settings
-                        .get(&a.command)
-                        .map_or(false, |s| s.full_auto),
-                    is_default: self
-                        .global_config
-                        .default_agent
-                        .as_ref()
-                        .map_or(false, |d| d == &a.command),
-                })
-                .collect();
-            layers.push(
-                screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                    .map(Message::Background),
-            );
-        }
-
-        stack(layers)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        .into()
     }
 
     fn view_agents<'a>(&'a self, ws: &'a Workshop, has_bg: bool, pal: &style::Palette) -> Element<'a, Message> {
