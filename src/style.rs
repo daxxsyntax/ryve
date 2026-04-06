@@ -127,19 +127,42 @@ impl Palette {
 // ── Style Builders ───────────────────────────────────
 
 /// Standard glass panel (sidebar, bench, sparks).
+///
+/// When a background image is present, the panel gets a translucent
+/// "liquid glass" fill so the image bleeds through — like looking
+/// through frosted glass.  Without a background the panel is a
+/// simple subtle surface.
 pub fn glass_panel(pal: &Palette, has_bg: bool) -> container::Style {
-    container::Style {
-        background: if has_bg {
-            None
-        } else {
-            Some(Background::Color(pal.surface))
-        },
-        border: Border {
-            color: pal.border,
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..Default::default()
+    if has_bg {
+        container::Style {
+            background: Some(Background::Color(Color {
+                r: pal.window_bg.r,
+                g: pal.window_bg.g,
+                b: pal.window_bg.b,
+                a: 0.55,
+            })),
+            border: Border {
+                color: Color { r: 1.0, g: 1.0, b: 1.0, a: 0.10 },
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            shadow: Shadow {
+                color: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.18 },
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 12.0,
+            },
+            ..Default::default()
+        }
+    } else {
+        container::Style {
+            background: Some(Background::Color(pal.surface)),
+            border: Border {
+                color: pal.border,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            ..Default::default()
+        }
     }
 }
 
@@ -189,13 +212,14 @@ pub fn tab_pill(pal: &Palette, active: bool) -> container::Style {
 pub fn status_bar_style(pal: &Palette, has_bg: bool) -> container::Style {
     container::Style {
         background: if has_bg {
-            None
+            // Slightly more opaque for readability over background images
+            Some(Background::Color(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.45 }))
         } else {
             Some(Background::Color(pal.surface))
         },
         border: Border {
             color: pal.separator,
-            width: 0.0,
+            width: 1.0,
             radius: 0.0.into(),
         },
         ..Default::default()
@@ -292,6 +316,9 @@ pub fn danger_surface(pal: &Palette) -> container::Style {
 }
 
 // ── Layout Constants ─────────────────────────────────
+
+/// Gap between major panels (sidebar ↔ bench ↔ sparks).
+pub const PANEL_GAP: f32 = 6.0;
 
 /// Height reserved for macOS title bar (traffic lights).
 #[cfg(target_os = "macos")]

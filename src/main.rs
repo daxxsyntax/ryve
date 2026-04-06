@@ -677,6 +677,10 @@ impl App {
                 }
                 Task::none()
             }
+            Message::StatusBar(screen::status_bar::Message::RequestBranchSwitch) => {
+                // TODO: open branch picker modal
+                Task::none()
+            }
             Message::Background(msg) => self.handle_background_message(msg),
             Message::BackgroundLoaded(idx, Some(bytes)) => {
                 if let Some(ws) = self.workshops.get_mut(idx) {
@@ -1221,6 +1225,7 @@ impl App {
             .style(move |_theme: &Theme| style::glass_panel(&pal, has_bg));
 
         let sidebar = column![files_panel, agents_panel]
+            .spacing(style::PANEL_GAP)
             .width(ws.sidebar_width())
             .height(Length::Fill);
 
@@ -1235,17 +1240,54 @@ impl App {
             .height(Length::Fill);
 
         // -- Bottom: status bar --
+        let spark_summary = {
+            let mut s = screen::status_bar::SparkSummary::default();
+            for spark in &ws.sparks {
+                match spark.status.as_str() {
+                    "open" => s.open += 1,
+                    "in_progress" => s.in_progress += 1,
+                    "blocked" => s.blocked += 1,
+                    "deferred" => s.deferred += 1,
+                    "closed" => s.closed += 1,
+                    _ => {}
+                }
+            }
+            s
+        };
+        let git_stats = {
+            let mut gs = screen::status_bar::GitStats::default();
+            for stat in ws.file_explorer.diff_stats.values() {
+                gs.additions += stat.additions;
+                gs.deletions += stat.deletions;
+            }
+            gs.changed_files = ws.file_explorer.git_statuses.len();
+            gs
+        };
+        let active_agents = ws.agent_sessions.iter().filter(|a| a.active).count();
+        let total_agents = ws.agent_sessions.len();
         let status_bar = screen::status_bar::view(
             ws.file_explorer.branch.as_deref(),
             &ws.directory,
-            ws.sparks.len(),
+            &spark_summary,
+            &git_stats,
+            active_agents,
+            total_agents,
             &pal,
             has_bg,
         )
         .map(Message::StatusBar);
 
+        let main_row = container(
+            row![sidebar, bench, sparks_col]
+                .spacing(style::PANEL_GAP)
+                .height(Length::Fill),
+        )
+        .padding(style::PANEL_GAP)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
         let workshop_content: Element<'a, Message> = column![
-            row![sidebar, bench, sparks_col].height(Length::Fill),
+            main_row,
             status_bar,
         ]
         .height(Length::Fill)
