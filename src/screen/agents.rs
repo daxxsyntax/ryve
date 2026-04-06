@@ -3,7 +3,7 @@
 
 //! Agents panel — lists active and past coding agent sessions.
 
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
 use uuid::Uuid;
 
@@ -57,20 +57,12 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
     let past: Vec<_> = sessions.iter().filter(|s| !s.active).collect();
 
     if active.is_empty() && past.is_empty() {
-        content = content.push(
-            text("No agent sessions")
-                .size(12)
-                .color(pal.text_tertiary),
-        );
+        content = content.push(text("No agent sessions").size(12).color(pal.text_tertiary));
     }
 
     // Active sessions
     if !active.is_empty() {
-        content = content.push(
-            text("Active")
-                .size(10)
-                .color(pal.text_secondary),
-        );
+        content = content.push(text("Active").size(10).color(pal.text_secondary));
         for session in &active {
             let id = Uuid::parse_str(&session.id).unwrap_or_else(|_| Uuid::nil());
             let indicator = text("\u{25CF} ") // ● dot
@@ -79,11 +71,15 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
 
             let label = text(&session.name).size(12).color(pal.text_primary);
 
-            let btn = button(row![indicator, label].spacing(4).align_y(iced::Alignment::Center))
-                .style(button::text)
-                .width(Length::Fill)
-                .padding([3, 6])
-                .on_press(Message::SelectAgent(id));
+            let btn = button(
+                row![indicator, label]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center),
+            )
+            .style(button::text)
+            .width(Length::Fill)
+            .padding([3, 6])
+            .on_press(Message::SelectAgent(id));
 
             let active_item = container(btn)
                 .width(Length::Fill)
@@ -103,11 +99,7 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
     // Past sessions
     if !past.is_empty() {
         content = content.push(Space::new().height(4));
-        content = content.push(
-            text("History")
-                .size(10)
-                .color(pal.text_secondary),
-        );
+        content = content.push(text("History").size(10).color(pal.text_secondary));
 
         for session in &past {
             let can_resume = session.can_resume();
@@ -121,9 +113,14 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
                 .size(9)
                 .color(pal.text_tertiary);
 
-            let mut session_row = row![indicator, label, time_label, Space::new().width(Length::Fill)]
-                .spacing(4)
-                .align_y(iced::Alignment::Center);
+            let mut session_row = row![
+                indicator,
+                label,
+                time_label,
+                Space::new().width(Length::Fill)
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center);
 
             if can_resume {
                 let resume_btn = button(

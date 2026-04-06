@@ -133,7 +133,9 @@ impl std::fmt::Debug for Message {
             Self::WorkshopDirPicked(p) => write!(f, "WorkshopDirPicked({p:?})"),
             Self::WorkshopReady { idx, .. } => write!(f, "WorkshopReady({idx})"),
             Self::SparksLoaded(i, s) => write!(f, "SparksLoaded({i}, {} sparks)", s.len()),
-            Self::AgentSessionsLoaded(i, s) => write!(f, "AgentSessionsLoaded({i}, {} sessions)", s.len()),
+            Self::AgentSessionsLoaded(i, s) => {
+                write!(f, "AgentSessionsLoaded({i}, {} sessions)", s.len())
+            }
             Self::AgentSessionSaved => write!(f, "AgentSessionSaved"),
             Self::FilesScanned(i, _) => write!(f, "FilesScanned({i})"),
             Self::FileExplorer(m) => write!(f, "FileExplorer({m:?})"),
@@ -248,17 +250,19 @@ impl App {
                     let sparks_task = Task::perform(load_sparks(pool, ws_id), move |sparks| {
                         Message::SparksLoaded(idx, sparks)
                     });
-                    let sessions_task = Task::perform(
-                        load_agent_sessions(pool2, ws_id2),
-                        move |sessions| Message::AgentSessionsLoaded(idx, sessions),
-                    );
+                    let sessions_task =
+                        Task::perform(load_agent_sessions(pool2, ws_id2), move |sessions| {
+                            Message::AgentSessionsLoaded(idx, sessions)
+                        });
                     let ignore = ws.config.explorer.ignore.clone();
                     let scan_task = Task::perform(
                         file_explorer::scan_directory(dir, ignore),
                         move |(tree, statuses, diff_stats, branch)| {
                             Message::FilesScanned(
                                 idx,
-                                file_explorer::Message::TreeLoaded(tree, statuses, diff_stats, branch),
+                                file_explorer::Message::TreeLoaded(
+                                    tree, statuses, diff_stats, branch,
+                                ),
                             )
                         },
                     );
@@ -294,16 +298,23 @@ impl App {
                                 // Load supplemental context from DB
                                 let (constraints, failing_contracts, active_assignments) =
                                     if let Some(ref pool) = pool {
-                                        let c = data::sparks::constraint_helpers::list(pool, &ws_id)
-                                            .await
-                                            .unwrap_or_default();
-                                        let fc = data::sparks::contract_repo::list_failing(pool, &ws_id)
-                                            .await
-                                            .unwrap_or_default();
+                                        let c =
+                                            data::sparks::constraint_helpers::list(pool, &ws_id)
+                                                .await
+                                                .unwrap_or_default();
+                                        let fc =
+                                            data::sparks::contract_repo::list_failing(pool, &ws_id)
+                                                .await
+                                                .unwrap_or_default();
                                         // Collect active assignments across all sparks
                                         let mut assigns = Vec::new();
                                         for spark in &snap {
-                                            if let Ok(Some(a)) = data::sparks::assignment_repo::active_for_spark(pool, &spark.id).await {
+                                            if let Ok(Some(a)) =
+                                                data::sparks::assignment_repo::active_for_spark(
+                                                    pool, &spark.id,
+                                                )
+                                                .await
+                                            {
                                                 assigns.push(a);
                                             }
                                         }
@@ -318,10 +329,8 @@ impl App {
                                     failing_contracts,
                                     active_assignments,
                                 };
-                                let _ = data::agent_context::sync(
-                                    &dir, &ryve_dir, &config, &ctx,
-                                )
-                                .await;
+                                let _ =
+                                    data::agent_context::sync(&dir, &ryve_dir, &config, &ctx).await;
                             },
                             |_| Message::AgentContextSynced,
                         );
@@ -343,8 +352,7 @@ impl App {
                                 .unwrap_or_else(|| CodingAgent {
                                     display_name: p.agent_name.clone(),
                                     command: p.agent_command.clone(),
-                                    args: serde_json::from_str(&p.agent_args)
-                                        .unwrap_or_default(),
+                                    args: serde_json::from_str(&p.agent_args).unwrap_or_default(),
                                     resume: coding_agents::ResumeStrategy::None,
                                 });
                             AgentSession {
@@ -366,7 +374,9 @@ impl App {
 
             Message::FilesScanned(idx, msg) => {
                 if let Some(ws) = self.workshops.get_mut(idx) {
-                    if let file_explorer::Message::TreeLoaded(tree, statuses, diff_stats, branch) = msg {
+                    if let file_explorer::Message::TreeLoaded(tree, statuses, diff_stats, branch) =
+                        msg
+                    {
                         ws.file_explorer.tree = tree;
                         ws.file_explorer.git_statuses = statuses;
                         ws.file_explorer.diff_stats = diff_stats;
@@ -397,7 +407,14 @@ impl App {
                             let pool = ws.sparks_db.clone();
                             let ws_id = ws.id.to_string();
                             return Task::perform(
-                                file_viewer::load_file(tab_id, file_path, repo_root, pool, ws_id, self.appearance == style::Appearance::Light),
+                                file_viewer::load_file(
+                                    tab_id,
+                                    file_path,
+                                    repo_root,
+                                    pool,
+                                    ws_id,
+                                    self.appearance == style::Appearance::Light,
+                                ),
                                 Message::FileViewer,
                             );
                         }
@@ -417,7 +434,9 @@ impl App {
                             move |(tree, statuses, diff_stats, branch)| {
                                 Message::FilesScanned(
                                     idx,
-                                    file_explorer::Message::TreeLoaded(tree, statuses, diff_stats, branch),
+                                    file_explorer::Message::TreeLoaded(
+                                        tree, statuses, diff_stats, branch,
+                                    ),
                                 )
                             },
                         );
@@ -447,7 +466,8 @@ impl App {
                                             line_end: None,
                                             workshop_id: ws_id.clone(),
                                         };
-                                        let _ = data::sparks::file_link_repo::create(&pool, &link).await;
+                                        let _ = data::sparks::file_link_repo::create(&pool, &link)
+                                            .await;
                                     },
                                     |_| Message::Sparks(screen::sparks::Message::Refresh),
                                 );
@@ -477,7 +497,10 @@ impl App {
                     file_viewer::Message::GoToSpark(_spark_id) => {
                         // TODO: navigate to spark detail / select spark in panel
                     }
-                    file_viewer::Message::Scrolled { offset_y, viewport_height } => {
+                    file_viewer::Message::Scrolled {
+                        offset_y,
+                        viewport_height,
+                    } => {
                         if let Some(idx) = self.active_workshop {
                             let ws = &mut self.workshops[idx];
                             if let Some(active_id) = ws.bench.active_tab {
@@ -507,9 +530,15 @@ impl App {
                     }
                     screen::agents::Message::ResumeAgent(session_id) => {
                         // Find the session and resume it
-                        let session = ws.agent_sessions.iter().find(|s| s.id == session_id).cloned();
+                        let session = ws
+                            .agent_sessions
+                            .iter()
+                            .find(|s| s.id == session_id)
+                            .cloned();
                         if let Some(session) = session {
-                            if let Some((cmd, args)) = session.agent.resume_args(session.resume_id.as_deref()) {
+                            if let Some((cmd, args)) =
+                                session.agent.resume_args(session.resume_id.as_deref())
+                            {
                                 let resume_agent = CodingAgent {
                                     display_name: session.agent.display_name.clone(),
                                     command: cmd.clone(),
@@ -525,7 +554,9 @@ impl App {
                                 );
 
                                 // Update the existing session to active
-                                if let Some(s) = ws.agent_sessions.iter_mut().find(|s| s.id == session_id) {
+                                if let Some(s) =
+                                    ws.agent_sessions.iter_mut().find(|s| s.id == session_id)
+                                {
                                     s.tab_id = Some(tab_id);
                                     s.active = true;
                                 }
@@ -536,7 +567,10 @@ impl App {
                                     let sid = session_id.clone();
                                     return Task::perform(
                                         async move {
-                                            let _ = data::sparks::agent_session_repo::reactivate(&pool, &sid).await;
+                                            let _ = data::sparks::agent_session_repo::reactivate(
+                                                &pool, &sid,
+                                            )
+                                            .await;
                                         },
                                         |_| Message::AgentSessionSaved,
                                     );
@@ -551,7 +585,8 @@ impl App {
                             let sid = session_id.clone();
                             return Task::perform(
                                 async move {
-                                    let _ = data::sparks::agent_session_repo::delete(&pool, &sid).await;
+                                    let _ =
+                                        data::sparks::agent_session_repo::delete(&pool, &sid).await;
                                 },
                                 |_| Message::AgentSessionSaved,
                             );
@@ -571,10 +606,9 @@ impl App {
                             if let Some(ref pool) = ws.sparks_db {
                                 let pool = pool.clone();
                                 let ws_id = ws.id.to_string();
-                                return Task::perform(
-                                    load_sparks(pool, ws_id),
-                                    move |sparks| Message::SparksLoaded(idx, sparks),
-                                );
+                                return Task::perform(load_sparks(pool, ws_id), move |sparks| {
+                                    Message::SparksLoaded(idx, sparks)
+                                });
                             }
                         }
                     }
@@ -643,11 +677,16 @@ impl App {
                                     async move {
                                         if new_status == "closed" {
                                             let _ = data::sparks::spark_repo::close(
-                                                &pool, &id, "completed", "user",
+                                                &pool,
+                                                &id,
+                                                "completed",
+                                                "user",
                                             )
                                             .await;
                                         } else {
-                                            let status = data::sparks::types::SparkStatus::from_str(&new_status);
+                                            let status = data::sparks::types::SparkStatus::from_str(
+                                                &new_status,
+                                            );
                                             if let Some(s) = status {
                                                 let upd = data::sparks::types::UpdateSpark {
                                                     status: Some(s),
@@ -684,8 +723,7 @@ impl App {
             Message::Background(msg) => self.handle_background_message(msg),
             Message::BackgroundLoaded(idx, Some(bytes)) => {
                 if let Some(ws) = self.workshops.get_mut(idx) {
-                    ws.background_handle =
-                        Some(iced::widget::image::Handle::from_bytes(bytes));
+                    ws.background_handle = Some(iced::widget::image::Handle::from_bytes(bytes));
                 }
                 Task::none()
             }
@@ -716,7 +754,9 @@ impl App {
                         move |bytes| Message::BackgroundLoaded(idx, bytes),
                     ),
                     Task::perform(
-                        async move { data::ryve_dir::save_config(&ryve_dir, &config).await.ok(); },
+                        async move {
+                            data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
+                        },
                         |_| Message::BackgroundConfigSaved,
                     ),
                 ])
@@ -741,7 +781,9 @@ impl App {
                         move |bytes| Message::BackgroundLoaded(idx, bytes),
                     ),
                     Task::perform(
-                        async move { data::ryve_dir::save_config(&ryve_dir, &config).await.ok(); },
+                        async move {
+                            data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
+                        },
                         |_| Message::BackgroundConfigSaved,
                     ),
                 ])
@@ -755,10 +797,9 @@ impl App {
                         if let Some(ref pool) = ws.sparks_db {
                             let pool = pool.clone();
                             let ws_id = ws.id.to_string();
-                            return Task::perform(
-                                load_sparks(pool, ws_id),
-                                move |sparks| Message::SparksLoaded(idx, sparks),
-                            );
+                            return Task::perform(load_sparks(pool, ws_id), move |sparks| {
+                                Message::SparksLoaded(idx, sparks)
+                            });
                         }
                     }
                 }
@@ -822,7 +863,14 @@ impl App {
                         let pool = ws.sparks_db.clone();
                         let ws_id = ws.id.to_string();
                         return Task::perform(
-                            file_viewer::load_file(id, path, repo_root, pool, ws_id, self.appearance == style::Appearance::Light),
+                            file_viewer::load_file(
+                                id,
+                                path,
+                                repo_root,
+                                pool,
+                                ws_id,
+                                self.appearance == style::Appearance::Light,
+                            ),
                             Message::FileViewer,
                         );
                     }
@@ -844,7 +892,9 @@ impl App {
                             let sid = session.id.clone();
                             end_tasks.push(Task::perform(
                                 async move {
-                                    let _ = data::sparks::agent_session_repo::end_session(&pool, &sid).await;
+                                    let _ =
+                                        data::sparks::agent_session_repo::end_session(&pool, &sid)
+                                            .await;
                                 },
                                 |_| Message::AgentSessionSaved,
                             ));
@@ -872,8 +922,12 @@ impl App {
                 let title = agent.display_name.clone();
                 let session_id = Uuid::new_v4().to_string();
                 let next_id = &mut self.next_terminal_id;
-                let tab_id =
-                    self.workshops[idx].spawn_terminal(title.clone(), Some(&agent), next_id, Some(&session_id));
+                let tab_id = self.workshops[idx].spawn_terminal(
+                    title.clone(),
+                    Some(&agent),
+                    next_id,
+                    Some(&session_id),
+                );
                 self.workshops[idx].agent_sessions.push(AgentSession {
                     id: session_id.clone(),
                     name: title.clone(),
@@ -900,7 +954,8 @@ impl App {
                     };
                     tasks.push(Task::perform(
                         async move {
-                            let _ = data::sparks::agent_session_repo::create(&pool, &new_session).await;
+                            let _ =
+                                data::sparks::agent_session_repo::create(&pool, &new_session).await;
                         },
                         |_| Message::AgentSessionSaved,
                     ));
@@ -949,7 +1004,8 @@ impl App {
                     };
                     tasks.push(Task::perform(
                         async move {
-                            let _ = data::sparks::agent_session_repo::create(&pool, &new_session).await;
+                            let _ =
+                                data::sparks::agent_session_repo::create(&pool, &new_session).await;
                         },
                         |_| Message::AgentSessionSaved,
                     ));
@@ -1016,10 +1072,14 @@ impl App {
                 Task::perform(
                     async move { data::unsplash::search(&api_key, &query, 1).await },
                     |result| match result {
-                        Ok(sr) => Message::Background(screen::background_picker::Message::SearchResults(sr.photos)),
+                        Ok(sr) => Message::Background(
+                            screen::background_picker::Message::SearchResults(sr.photos),
+                        ),
                         Err(e) => {
                             log::error!("Unsplash search failed: {e}");
-                            Message::Background(screen::background_picker::Message::SearchResults(Vec::new()))
+                            Message::Background(screen::background_picker::Message::SearchResults(
+                                Vec::new(),
+                            ))
                         }
                     },
                 )
@@ -1038,7 +1098,10 @@ impl App {
                             async move { data::unsplash::fetch_thumbnail_bytes(&url).await },
                             move |result| match result {
                                 Ok(bytes) => Message::Background(
-                                    screen::background_picker::Message::ThumbnailLoaded(id.clone(), bytes),
+                                    screen::background_picker::Message::ThumbnailLoaded(
+                                        id.clone(),
+                                        bytes,
+                                    ),
                                 ),
                                 Err(_) => Message::BackgroundConfigSaved, // no-op
                             },
@@ -1086,7 +1149,9 @@ impl App {
                 let ryve_dir = ws.ryve_dir.clone();
                 let config = ws.config.clone();
                 Task::perform(
-                    async move { data::ryve_dir::save_config(&ryve_dir, &config).await.ok(); },
+                    async move {
+                        data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
+                    },
                     |_| Message::BackgroundConfigSaved,
                 )
             }
@@ -1104,8 +1169,8 @@ impl App {
             })
             .collect();
 
-        let poll = iced::time::every(std::time::Duration::from_secs(3))
-            .map(|_| Message::SparksPoll);
+        let poll =
+            iced::time::every(std::time::Duration::from_secs(3)).map(|_| Message::SparksPoll);
 
         Subscription::batch(term_subs.into_iter().chain(std::iter::once(poll)))
     }
@@ -1233,7 +1298,8 @@ impl App {
         let bench = self.view_bench(ws, has_bg, &pal);
 
         // -- Right: sparks panel --
-        let sparks_panel = screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form).map(Message::Sparks);
+        let sparks_panel = screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
+            .map(Message::Sparks);
 
         let sparks_col = container(sparks_panel)
             .width(ws.sparks_width())
@@ -1286,12 +1352,8 @@ impl App {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        let workshop_content: Element<'a, Message> = column![
-            main_row,
-            status_bar,
-        ]
-        .height(Length::Fill)
-        .into();
+        let workshop_content: Element<'a, Message> =
+            column![main_row, status_bar,].height(Length::Fill).into();
 
         // Layer background image behind content
         let mut layers: Vec<Element<'a, Message>> = Vec::new();
@@ -1346,7 +1408,12 @@ impl App {
         screen::agents::view(&ws.agent_sessions, pal, has_bg).map(Message::Agents)
     }
 
-    fn view_bench<'a>(&'a self, ws: &'a Workshop, has_bg: bool, pal: &style::Palette) -> Element<'a, Message> {
+    fn view_bench<'a>(
+        &'a self,
+        ws: &'a Workshop,
+        has_bg: bool,
+        pal: &style::Palette,
+    ) -> Element<'a, Message> {
         let tab_bar = ws.bench.view_tab_bar(pal).map(Message::Bench);
 
         let content: Element<'a, Message> = if let Some(active_id) = ws.bench.active_tab {
@@ -1355,7 +1422,8 @@ impl App {
                     .map(|e| Message::Bench(screen::bench::Message::TerminalEvent(e)))
                     .into()
             } else if let Some(viewer) = ws.file_viewers.get(&active_id) {
-                file_viewer::view(viewer, &self.appearance.palette(), has_bg).map(Message::FileViewer)
+                file_viewer::view(viewer, &self.appearance.palette(), has_bg)
+                    .map(Message::FileViewer)
             } else {
                 container(text("Loading...").size(14))
                     .center(Length::Fill)
@@ -1365,7 +1433,9 @@ impl App {
             container(
                 column![
                     text("Ryve").size(32).color(pal.text_primary),
-                    text("Press + to open a terminal or coding agent").size(14).color(pal.text_secondary),
+                    text("Press + to open a terminal or coding agent")
+                        .size(14)
+                        .color(pal.text_secondary),
                 ]
                 .spacing(8)
                 .align_x(iced::Alignment::Center),
@@ -1379,7 +1449,10 @@ impl App {
             .height(Length::Fill);
 
         // Overlay the dropdown menu on top of the content area
-        if let Some(dropdown) = ws.bench.view_dropdown(&self.available_agents, &ws.custom_agents, pal) {
+        if let Some(dropdown) =
+            ws.bench
+                .view_dropdown(&self.available_agents, &ws.custom_agents, pal)
+        {
             stack![
                 body,
                 // Position the dropdown just below the tab bar

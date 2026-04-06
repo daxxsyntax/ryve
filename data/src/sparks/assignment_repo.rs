@@ -10,7 +10,10 @@ use super::error::SparksError;
 use super::types::*;
 
 /// Assign a Hand to a Spark. Fails if an active owner already exists.
-pub async fn assign(pool: &SqlitePool, new: NewHandAssignment) -> Result<HandAssignment, SparksError> {
+pub async fn assign(
+    pool: &SqlitePool,
+    new: NewHandAssignment,
+) -> Result<HandAssignment, SparksError> {
     // Check for existing active owner (only enforced for owner role)
     if new.role == AssignmentRole::Owner {
         if let Some(existing) = active_for_spark(pool, &new.spark_id).await? {

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use data::unsplash::Photo;
 use iced::widget::{
-    button, column, container, image, row, rule, scrollable, text, text_input, Space,
+    Space, button, column, container, image, row, rule, scrollable, text, text_input,
 };
 use iced::{Element, Length, Theme};
 
@@ -68,7 +68,11 @@ impl PickerState {
 
 // ── View ──────────────────────────────────────────────
 
-pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> Element<'a, Message> {
+pub fn view<'a>(
+    state: &'a PickerState,
+    pal: &Palette,
+    has_background: bool,
+) -> Element<'a, Message> {
     let pal = *pal;
 
     let title = text("Workshop Settings").size(18).color(pal.text_primary);
@@ -76,8 +80,8 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
         .style(button::text)
         .on_press(Message::Close);
 
-    let header = row![title, Space::new().width(Length::Fill), close_btn]
-        .align_y(iced::Alignment::Center);
+    let header =
+        row![title, Space::new().width(Length::Fill), close_btn].align_y(iced::Alignment::Center);
 
     let mut content = column![header, rule::horizontal(1)].spacing(12);
 
@@ -170,7 +174,11 @@ pub fn view<'a>(state: &'a PickerState, pal: &Palette, has_background: bool) -> 
         .into()
 }
 
-fn view_thumbnail<'a>(state: &'a PickerState, photo: &'a Photo, pal: &Palette) -> Element<'a, Message> {
+fn view_thumbnail<'a>(
+    state: &'a PickerState,
+    photo: &'a Photo,
+    pal: &Palette,
+) -> Element<'a, Message> {
     let pal = *pal;
     let content: Element<'a, Message> = if let Some(handle) = state.thumbnails.get(&photo.id) {
         column![
@@ -178,9 +186,7 @@ fn view_thumbnail<'a>(state: &'a PickerState, photo: &'a Photo, pal: &Palette) -
                 .width(Length::Fill)
                 .height(100)
                 .content_fit(iced::ContentFit::Cover),
-            text(&photo.photographer)
-                .size(9)
-                .color(pal.text_tertiary),
+            text(&photo.photographer).size(9).color(pal.text_tertiary),
         ]
         .spacing(2)
         .into()

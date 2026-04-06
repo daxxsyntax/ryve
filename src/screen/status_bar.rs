@@ -3,7 +3,7 @@
 
 //! Status bar — rich bottom bar showing git branch, diff stats, spark breakdown, agents, and settings.
 
-use iced::widget::{button, container, row, text, Space};
+use iced::widget::{Space, button, container, row, text};
 use iced::{Element, Length, Theme};
 
 use crate::style::{self, Palette};
@@ -52,8 +52,18 @@ pub fn view<'a>(
     let pal = *pal;
 
     // Colors for diff display
-    let green = iced::Color { r: 0.298, g: 0.851, b: 0.392, a: 1.0 };
-    let red = iced::Color { r: 1.0, g: 0.388, b: 0.353, a: 1.0 };
+    let green = iced::Color {
+        r: 0.298,
+        g: 0.851,
+        b: 0.392,
+        a: 1.0,
+    };
+    let red = iced::Color {
+        r: 1.0,
+        g: 0.388,
+        b: 0.353,
+        a: 1.0,
+    };
 
     // ── Left section: git branch + directory + diffs ─────
     let mut left = row![].spacing(14).align_y(iced::Alignment::Center);
@@ -84,7 +94,11 @@ pub fn view<'a>(
             text(format!(
                 "{} file{}",
                 git_stats.changed_files,
-                if git_stats.changed_files == 1 { "" } else { "s" },
+                if git_stats.changed_files == 1 {
+                    ""
+                } else {
+                    "s"
+                },
             ))
             .size(12)
             .color(pal.text_secondary),
@@ -116,11 +130,7 @@ pub fn view<'a>(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workshop");
-    left = left.push(
-        text(dir_name)
-            .size(13)
-            .color(pal.text_secondary),
-    );
+    left = left.push(text(dir_name).size(13).color(pal.text_secondary));
 
     // ── Center section: spark breakdown ──────────────────
     let mut center = row![].spacing(12).align_y(iced::Alignment::Center);
@@ -129,7 +139,7 @@ pub fn view<'a>(
     if total_active > 0 || spark_summary.closed > 0 {
         // Spark icon
         center = center.push(
-            text("\u{2726}")  // ✦
+            text("\u{2726}") // ✦
                 .size(12)
                 .color(pal.text_tertiary),
         );
@@ -168,9 +178,17 @@ pub fn view<'a>(
         };
 
         let agent_label = if active_agents > 0 {
-            format!("{} agent{} running", active_agents, if active_agents == 1 { "" } else { "s" })
+            format!(
+                "{} agent{} running",
+                active_agents,
+                if active_agents == 1 { "" } else { "s" }
+            )
         } else {
-            format!("{} agent{}", total_agents, if total_agents == 1 { "" } else { "s" })
+            format!(
+                "{} agent{}",
+                total_agents,
+                if total_agents == 1 { "" } else { "s" }
+            )
         };
 
         right = right.push(
@@ -187,12 +205,10 @@ pub fn view<'a>(
 
     // Settings gear button
     right = right.push(
-        button(
-            text("\u{2699}").size(16).color(pal.text_secondary),
-        )
-        .style(button::text)
-        .padding([2, 6])
-        .on_press(Message::OpenSettings),
+        button(text("\u{2699}").size(16).color(pal.text_secondary))
+            .style(button::text)
+            .padding([2, 6])
+            .on_press(Message::OpenSettings),
     );
 
     // ── Assemble the bar ─────────────────────────────────
@@ -213,11 +229,7 @@ pub fn view<'a>(
 }
 
 /// A compact spark status pill: icon + count.
-fn spark_pill<'a>(
-    icon: &'a str,
-    count: usize,
-    color: iced::Color,
-) -> Element<'a, Message> {
+fn spark_pill<'a>(icon: &'a str, count: usize, color: iced::Color) -> Element<'a, Message> {
     row![
         text(icon).size(12).color(color),
         text(count.to_string()).size(12).color(color),
@@ -228,8 +240,5 @@ fn spark_pill<'a>(
 }
 
 fn separator<'a>(pal: &Palette) -> Element<'a, Message> {
-    text("\u{2502}")
-        .size(14)
-        .color(pal.separator)
-        .into()
+    text("\u{2502}").size(14).color(pal.separator).into()
 }
