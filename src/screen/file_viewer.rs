@@ -16,12 +16,11 @@ use std::sync::LazyLock;
 
 use data::git::LineChange;
 use data::sparks::types::SparkFileLink;
-use iced::mouse;
 use iced::widget::canvas::{self, Cache as CanvasCache, Frame, Geometry, Path as CanvasPath};
 use iced::widget::{
     Canvas, Column, Space, button, column, container, mouse_area, row, scrollable, text, text_input,
 };
-use iced::{Color, Element, Font, Length, Point, Rectangle, Size, Theme};
+use iced::{Color, Element, Font, Length, Point, Rectangle, Size, Theme, mouse};
 use syntect::highlighting::{self, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
