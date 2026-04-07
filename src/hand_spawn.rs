@@ -27,9 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use data::ryve_dir::RyveDir;
-use data::sparks::types::{
-    AssignmentRole, NewAgentSession, NewHandAssignment, Spark, SparkFilter,
-};
+use data::sparks::types::{AssignmentRole, NewAgentSession, NewHandAssignment, Spark, SparkFilter};
 use data::sparks::{agent_session_repo, assignment_repo, crew_repo, spark_repo};
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -120,6 +118,7 @@ pub async fn spawn_hand(
             HandKind::Owner => "hand".to_string(),
             HandKind::Merger => "merger".to_string(),
         }),
+        child_pid: None,
         resume_id: None,
     };
     agent_session_repo::create(pool, &new_session).await?;
@@ -184,7 +183,24 @@ pub async fn spawn_hand(
     let env_vars = workshop::hand_env_vars(workshop_dir);
 
     // 8. Spawn detached.
-    let child_pid = launch_detached(&agent.command, &cmd_args, &worktree_path, &env_vars, &log_path)?;
+    let child_pid = match launch_detached(
+        &agent.command,
+        &cmd_args,
+        &worktree_path,
+        &env_vars,
+        &log_path,
+    ) {
+        Ok(pid) => pid,
+        Err(err) => {
+            let _ = assignment_repo::abandon(pool, &session_id, spark_id).await;
+            let _ = agent_session_repo::end_session(pool, &session_id).await;
+            return Err(err);
+        }
+    };
+
+    if let Some(pid) = child_pid {
+        let _ = agent_session_repo::set_child_pid(pool, &session_id, pid).await;
+    }
 
     Ok(SpawnedHand {
         session_id,
@@ -371,9 +387,16 @@ mod tests {
             resume: ResumeStrategy::None,
         };
 
-        let spawned = spawn_hand(&workshop_dir, &pool, &agent, &spark.id, HandKind::Owner, None)
-            .await
-            .expect("spawn_hand should succeed against the stub agent");
+        let spawned = spawn_hand(
+            &workshop_dir,
+            &pool,
+            &agent,
+            &spark.id,
+            HandKind::Owner,
+            None,
+        )
+        .await
+        .expect("spawn_hand should succeed against the stub agent");
 
         assert!(spawned.child_pid.is_some(), "child pid should be reported");
 

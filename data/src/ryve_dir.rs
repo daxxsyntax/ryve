@@ -347,7 +347,9 @@ pub async fn load_agents_context(ryve_dir: &RyveDir) -> Option<String> {
 /// Backwards-compatible wrapper around [`crate::migrations::migrate_workshop`].
 /// New code should call `migrate_workshop` directly to receive the migration log.
 pub async fn init_ryve_dir(ryve_dir: &RyveDir) -> Result<(), std::io::Error> {
-    crate::migrations::migrate_workshop(ryve_dir).await.map(|_| ())
+    crate::migrations::migrate_workshop(ryve_dir)
+        .await
+        .map(|_| ())
 }
 
 pub(crate) const DEFAULT_AGENTS_MD: &str =

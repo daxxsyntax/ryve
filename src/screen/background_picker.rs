@@ -12,7 +12,7 @@ use iced::widget::{
 };
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL};
+use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL, Palette};
 
 // ── Messages ──────────────────────────────────────────
 
@@ -90,7 +90,9 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let pal = *pal;
 
-    let title = text("Workshop Settings").size(FONT_HEADER).color(pal.text_primary);
+    let title = text("Workshop Settings")
+        .size(FONT_HEADER)
+        .color(pal.text_primary);
     let close_btn = button(text("\u{00D7}").size(FONT_HEADER).color(pal.text_secondary))
         .style(button::text)
         .on_press(Message::Close);
@@ -101,11 +103,7 @@ pub fn view<'a>(
     let mut content = column![header, rule::horizontal(1)].spacing(12);
 
     // ── Agent Settings Section ───────────────────────────
-    content = content.push(
-        text("Coding Agents")
-            .size(14)
-            .color(pal.text_primary),
-    );
+    content = content.push(text("Coding Agents").size(14).color(pal.text_primary));
 
     // Default agent selector
     {
@@ -121,7 +119,11 @@ pub fn view<'a>(
         let none_active = agents.iter().all(|a| !a.is_default);
         agent_row = agent_row.push(
             button(text("None").size(12))
-                .style(if none_active { button::primary } else { button::secondary })
+                .style(if none_active {
+                    button::primary
+                } else {
+                    button::secondary
+                })
                 .padding([4, 10])
                 .on_press(Message::SetDefaultAgent(None)),
         );
@@ -130,7 +132,11 @@ pub fn view<'a>(
             let is_selected = agent.is_default;
             agent_row = agent_row.push(
                 button(text(agent.display_name.clone()).size(12))
-                    .style(if is_selected { button::primary } else { button::secondary })
+                    .style(if is_selected {
+                        button::primary
+                    } else {
+                        button::secondary
+                    })
                     .padding([4, 10])
                     .on_press(Message::SetDefaultAgent(Some(agent.command.clone()))),
             );
@@ -141,11 +147,7 @@ pub fn view<'a>(
 
     // Per-agent full-auto toggles
     if !agents.is_empty() {
-        content = content.push(
-            text("Full-auto mode")
-                .size(12)
-                .color(pal.text_secondary),
-        );
+        content = content.push(text("Full-auto mode").size(12).color(pal.text_secondary));
 
         let mut auto_row = row![].spacing(6);
         for agent in &agents {
@@ -156,7 +158,11 @@ pub fn view<'a>(
             };
             auto_row = auto_row.push(
                 button(text(label).size(12))
-                    .style(if agent.full_auto { button::success } else { button::secondary })
+                    .style(if agent.full_auto {
+                        button::success
+                    } else {
+                        button::secondary
+                    })
                     .padding([4, 10])
                     .on_press(Message::ToggleFullAuto(agent.command.clone())),
             );
@@ -167,11 +173,7 @@ pub fn view<'a>(
     content = content.push(rule::horizontal(1));
 
     // ── Background Section ───────────────────────────────
-    content = content.push(
-        text("Background")
-            .size(14)
-            .color(pal.text_primary),
-    );
+    content = content.push(text("Background").size(14).color(pal.text_primary));
 
     // Upload section
     content = content.push(
@@ -213,9 +215,17 @@ pub fn view<'a>(
         content = content.push(search_row);
 
         if state.loading {
-            content = content.push(text("Searching...").size(FONT_LABEL).color(pal.text_secondary));
+            content = content.push(
+                text("Searching...")
+                    .size(FONT_LABEL)
+                    .color(pal.text_secondary),
+            );
         } else if state.results.is_empty() && !state.query.is_empty() {
-            content = content.push(text("No results").size(FONT_LABEL).color(pal.text_secondary));
+            content = content.push(
+                text("No results")
+                    .size(FONT_LABEL)
+                    .color(pal.text_secondary),
+            );
         }
 
         // Thumbnail grid (3 columns)

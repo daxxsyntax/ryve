@@ -7,7 +7,7 @@ use data::sparks::types::{Contract, ContractEnforcement, ContractKind, Spark};
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_LABEL, FONT_SMALL};
+use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_LABEL, FONT_SMALL, Palette};
 
 // ── Form state ───────────────────────────────────────
 
@@ -101,9 +101,15 @@ pub enum Message {
     /// Submit the create form for the given spark id.
     SubmitContract(String),
     /// Run the check command for a contract id (and spark id, for refresh).
-    RunContract { spark_id: String, contract_id: i64 },
+    RunContract {
+        spark_id: String,
+        contract_id: i64,
+    },
     /// Delete a contract by id (and spark id, for refresh).
-    DeleteContract { spark_id: String, contract_id: i64 },
+    DeleteContract {
+        spark_id: String,
+        contract_id: i64,
+    },
 }
 
 // ── View ─────────────────────────────────────────────
@@ -158,10 +164,7 @@ pub fn view<'a>(
     )
     .style(button::text)
     .padding([3, 8])
-    .on_press(Message::CycleStatus(
-        spark.id.clone(),
-        next.to_string(),
-    ));
+    .on_press(Message::CycleStatus(spark.id.clone(), next.to_string()));
 
     let priority_color = priority_color(spark.priority, &pal);
     let priority_pill = container(
@@ -228,12 +231,8 @@ pub fn view<'a>(
     }
 
     if !intent.invariants.is_empty() {
-        let mut items = column![
-            text("Invariants")
-                .size(FONT_LABEL)
-                .color(pal.text_tertiary),
-        ]
-        .spacing(2);
+        let mut items =
+            column![text("Invariants").size(FONT_LABEL).color(pal.text_tertiary),].spacing(2);
         for inv in intent.invariants {
             items = items.push(
                 text(format!("\u{2022} {inv}"))
@@ -245,12 +244,8 @@ pub fn view<'a>(
     }
 
     if !intent.non_goals.is_empty() {
-        let mut items = column![
-            text("Non-Goals")
-                .size(FONT_LABEL)
-                .color(pal.text_tertiary),
-        ]
-        .spacing(2);
+        let mut items =
+            column![text("Non-Goals").size(FONT_LABEL).color(pal.text_tertiary),].spacing(2);
         for ng in intent.non_goals {
             items = items.push(
                 text(format!("\u{2022} {ng}"))
@@ -413,7 +408,9 @@ fn view_create_form<'a>(
 
     let enforcement_btn = button(
         row![
-            text("enforcement:").size(FONT_SMALL).color(pal.text_tertiary),
+            text("enforcement:")
+                .size(FONT_SMALL)
+                .color(pal.text_tertiary),
             text(enforcement_label(form.enforcement))
                 .size(FONT_LABEL)
                 .color(match form.enforcement {
@@ -444,14 +441,10 @@ fn view_create_form<'a>(
         .padding([3, 8])
         .on_press(Message::SubmitContract(spark_id.to_string()));
 
-    let cancel_btn = button(
-        text("Cancel")
-            .size(FONT_LABEL)
-            .color(pal.text_tertiary),
-    )
-    .style(button::text)
-    .padding([3, 8])
-    .on_press(Message::CancelCreateContract);
+    let cancel_btn = button(text("Cancel").size(FONT_LABEL).color(pal.text_tertiary))
+        .style(button::text)
+        .padding([3, 8])
+        .on_press(Message::CancelCreateContract);
 
     let actions = row![submit_btn, cancel_btn].spacing(8);
 
@@ -498,11 +491,7 @@ fn view_contract_row<'a>(
 
     if c.check_command.as_deref().unwrap_or("").trim().is_empty() {
         // No command: show a disabled "Run" placeholder for clarity.
-        actions = actions.push(
-            text("\u{25B6}")
-                .size(FONT_ICON)
-                .color(pal.text_tertiary),
-        );
+        actions = actions.push(text("\u{25B6}").size(FONT_ICON).color(pal.text_tertiary));
     } else {
         actions = actions.push(
             button(text("\u{25B6} Run").size(FONT_LABEL).color(pal.accent))
@@ -624,14 +613,15 @@ fn format_status(status: &str) -> &'static str {
 
 fn priority_color(priority: i32, pal: &Palette) -> iced::Color {
     match priority {
-        0 => pal.danger,        // P0 — critical
-        1 => iced::Color {      // P1 — orange-ish
+        0 => pal.danger, // P0 — critical
+        1 => iced::Color {
+            // P1 — orange-ish
             r: 1.0,
             g: 0.6,
             b: 0.0,
             a: 1.0,
         },
-        2 => pal.accent,       // P2 — normal
+        2 => pal.accent,         // P2 — normal
         3 => pal.text_secondary, // P3 — low
         _ => pal.text_tertiary,  // P4+ — minimal
     }

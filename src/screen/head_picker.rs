@@ -9,11 +9,11 @@
 //! No spark assignment is involved — the Head's job is to *create* sparks,
 //! not to claim an existing one.
 
-use iced::widget::{button, column, container, row, text, text_input, Space};
+use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Element, Length, Theme};
 
 use crate::coding_agents::CodingAgent;
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL};
+use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL, Palette};
 
 #[derive(Debug, Clone)]
 pub enum Message {

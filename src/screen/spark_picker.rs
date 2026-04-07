@@ -4,9 +4,17 @@
 //! Spark picker modal — shown when spawning a Hand so the user can assign
 //! the agent to a specific spark before the terminal launches.
 //!
+//! Sparks are rendered hierarchically: epics act as section headers and
+//! their child sparks (task/bug/feature/chore/spike/milestone) are nested
+//! beneath them. Sparks with no epic parent are grouped under "(no epic)".
+//! Each row carries a type badge so the user can tell at a glance whether
+//! they're claiming a bug, a feature, a spike, etc.
+//!
 //! Includes a coding-agent chip row above the spark list so the user picks
 //! the agent and the spark in a single step. Spawning is gated on both
 //! being selected.
+
+use std::collections::{HashMap, HashSet};
 
 use data::sparks::types::Spark;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
@@ -97,15 +105,15 @@ pub fn view<'a>(
         }
     }
 
-    // Filter to actionable sparks (open, in_progress, blocked)
+    // Filter to actionable sparks (open, in_progress, blocked).
     let actionable: Vec<&Spark> = sparks
         .iter()
         .filter(|s| matches!(s.status.as_str(), "open" | "in_progress" | "blocked"))
         .collect();
 
     let mut list = column![].spacing(2);
-
     let agent_chosen = selected_agent.is_some();
+
     if actionable.is_empty() {
         list = list.push(
             text("No open sparks")
@@ -113,8 +121,59 @@ pub fn view<'a>(
                 .color(pal.text_tertiary),
         );
     } else {
-        for spark in actionable {
-            list = list.push(view_spark_row(spark, agent_chosen, &pal));
+        // Group children by parent_id for fast lookup.
+        let mut children_by_parent: HashMap<&str, Vec<&Spark>> = HashMap::new();
+        for s in &actionable {
+            if let Some(pid) = s.parent_id.as_deref() {
+                children_by_parent.entry(pid).or_default().push(*s);
+            }
+        }
+
+        // Collect epics (in actionable list) for the hierarchy headers.
+        let epics: Vec<&Spark> = actionable
+            .iter()
+            .copied()
+            .filter(|s| s.spark_type == "epic")
+            .collect();
+
+        // Sparks that should appear in the orphan group: non-epics whose
+        // parent is either missing or not an actionable epic.
+        let actionable_epic_ids: HashSet<&str> = epics.iter().map(|s| s.id.as_str()).collect();
+        let orphans: Vec<&Spark> = actionable
+            .iter()
+            .copied()
+            .filter(|s| s.spark_type != "epic")
+            .filter(|s| match s.parent_id.as_deref() {
+                None => true,
+                Some(pid) => !actionable_epic_ids.contains(pid),
+            })
+            .collect();
+
+        // Render each epic group.
+        for epic in &epics {
+            list = list.push(view_epic_header(epic, agent_chosen, &pal));
+            if let Some(children) = children_by_parent.get(epic.id.as_str()) {
+                for child in children {
+                    list = list.push(view_spark_row(child, agent_chosen, &pal, true));
+                }
+            } else {
+                list = list.push(
+                    container(
+                        text("(no child sparks)")
+                            .size(FONT_SMALL)
+                            .color(pal.text_tertiary),
+                    )
+                    .padding([2, 24]),
+                );
+            }
+        }
+
+        // Render orphans (non-epic sparks without an actionable epic parent).
+        if !orphans.is_empty() {
+            list = list.push(view_group_header("(no epic)", &pal));
+            for s in orphans {
+                list = list.push(view_spark_row(s, agent_chosen, &pal, true));
+            }
         }
     }
 
@@ -140,8 +199,8 @@ pub fn view<'a>(
     ]
     .spacing(10)
     .padding(20)
-    .width(440)
-    .height(460);
+    .width(480)
+    .height(520);
 
     let inner = container(content).style(move |_theme: &Theme| style::modal(&pal));
 
@@ -155,10 +214,58 @@ pub fn view<'a>(
         .into()
 }
 
+/// Section header for an epic. Clickable when an agent is selected so the
+/// user can assign the Hand to the epic itself.
+fn view_epic_header<'a>(
+    epic: &'a Spark,
+    agent_chosen: bool,
+    pal: &Palette,
+) -> Element<'a, Message> {
+    let pal = *pal;
+    let id = epic.id.clone();
+
+    let title_color = if agent_chosen {
+        pal.text_primary
+    } else {
+        pal.text_tertiary
+    };
+
+    let row_content = row![
+        text("\u{25BE}") // ▾
+            .size(FONT_ICON_SM)
+            .color(pal.text_secondary),
+        type_badge("epic", &pal),
+        text(format!("P{}", epic.priority))
+            .size(FONT_LABEL)
+            .color(pal.text_tertiary),
+        text(&epic.title).size(FONT_BODY).color(title_color),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+
+    let btn = button(row_content)
+        .style(button::text)
+        .width(Length::Fill)
+        .padding([6, 4]);
+    if agent_chosen {
+        btn.on_press(Message::SelectSpark(id)).into()
+    } else {
+        btn.into()
+    }
+}
+
+/// Non-clickable group header (used for "(no epic)" and similar).
+fn view_group_header<'a>(label: &'a str, pal: &Palette) -> Element<'a, Message> {
+    container(text(label).size(FONT_LABEL).color(pal.text_tertiary))
+        .padding([6, 4])
+        .into()
+}
+
 fn view_spark_row<'a>(
     spark: &'a Spark,
     agent_chosen: bool,
     pal: &Palette,
+    indented: bool,
 ) -> Element<'a, Message> {
     let pal = *pal;
     let status_indicator: &str = match spark.status.as_str() {
@@ -181,6 +288,7 @@ fn view_spark_row<'a>(
         text(status_indicator)
             .size(FONT_ICON_SM)
             .color(pal.text_secondary),
+        type_badge(&spark.spark_type, &pal),
         text(priority_label)
             .size(FONT_LABEL)
             .color(pal.text_tertiary),
@@ -189,13 +297,43 @@ fn view_spark_row<'a>(
     .spacing(8)
     .align_y(iced::Alignment::Center);
 
+    let left_pad = if indented { 24 } else { 8 };
     let btn = button(row_content)
         .style(button::text)
         .width(Length::Fill)
-        .padding([6, 8]);
+        .padding([4, left_pad]);
     if agent_chosen {
         btn.on_press(Message::SelectSpark(id)).into()
     } else {
         btn.into()
     }
+}
+
+/// Tiny badge labelling the spark type (`task`, `bug`, etc.). Rendered as a
+/// boxed uppercase abbreviation so each row in the picker shows what kind
+/// of work is being claimed.
+fn type_badge<'a>(spark_type: &str, pal: &Palette) -> Element<'a, Message> {
+    let pal = *pal;
+    let label: String = match spark_type {
+        "epic" => "EPIC".to_string(),
+        "task" => "TASK".to_string(),
+        "bug" => "BUG".to_string(),
+        "feature" => "FEAT".to_string(),
+        "chore" => "CHORE".to_string(),
+        "spike" => "SPIKE".to_string(),
+        "milestone" => "MILE".to_string(),
+        other => other.to_uppercase().chars().take(4).collect(),
+    };
+    container(text(label).size(FONT_SMALL).color(pal.text_secondary))
+        .padding([1, 4])
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(pal.surface)),
+            border: iced::Border {
+                color: pal.border,
+                width: 1.0,
+                radius: iced::border::Radius::from(4.0),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }

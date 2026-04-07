@@ -193,8 +193,8 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let p = std::env::temp_dir()
-                .join(format!("ryve-migrations-test-{}", uuid::Uuid::new_v4()));
+            let p =
+                std::env::temp_dir().join(format!("ryve-migrations-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&p).expect("create temp dir");
             Self(p)
         }
@@ -259,13 +259,21 @@ mod tests {
 
         // Pretend the user already has custom AGENTS.md / DONE.md.
         ryve_dir.ensure_exists().await.unwrap();
-        tokio::fs::write(ryve_dir.agents_md_path(), "USER AGENTS").await.unwrap();
-        tokio::fs::write(ryve_dir.done_md_path(), "USER DONE").await.unwrap();
+        tokio::fs::write(ryve_dir.agents_md_path(), "USER AGENTS")
+            .await
+            .unwrap();
+        tokio::fs::write(ryve_dir.done_md_path(), "USER DONE")
+            .await
+            .unwrap();
 
         migrate_workshop(&ryve_dir).await.expect("migrate");
 
-        let agents = tokio::fs::read_to_string(ryve_dir.agents_md_path()).await.unwrap();
-        let done = tokio::fs::read_to_string(ryve_dir.done_md_path()).await.unwrap();
+        let agents = tokio::fs::read_to_string(ryve_dir.agents_md_path())
+            .await
+            .unwrap();
+        let done = tokio::fs::read_to_string(ryve_dir.done_md_path())
+            .await
+            .unwrap();
         assert_eq!(agents, "USER AGENTS", "must not overwrite user content");
         assert_eq!(done, "USER DONE", "must not overwrite user content");
     }
@@ -287,7 +295,10 @@ mod tests {
         assert_eq!(config.workshop_schema_version, CURRENT_SCHEMA_VERSION + 99);
         // Persisted version is unchanged.
         let reloaded = ryve_dir::load_config(&ryve_dir).await;
-        assert_eq!(reloaded.workshop_schema_version, CURRENT_SCHEMA_VERSION + 99);
+        assert_eq!(
+            reloaded.workshop_schema_version,
+            CURRENT_SCHEMA_VERSION + 99
+        );
     }
 
     #[tokio::test]
@@ -297,7 +308,9 @@ mod tests {
 
         migrate_workshop(&ryve_dir).await.expect("first");
 
-        let on_disk = tokio::fs::read_to_string(ryve_dir.config_path()).await.unwrap();
+        let on_disk = tokio::fs::read_to_string(ryve_dir.config_path())
+            .await
+            .unwrap();
         assert!(
             on_disk.contains("workshop_schema_version"),
             "config.toml should contain the version field, got:\n{on_disk}"

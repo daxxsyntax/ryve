@@ -26,11 +26,36 @@ use crate::hand_spawn::{self, HandKind};
 /// Known CLI subcommands. If the first non-flag argument matches one of
 /// these, `main.rs` dispatches to `cli::run` instead of launching the UI.
 pub const CLI_COMMANDS: &[&str] = &[
-    "spark", "sparks", "bond", "bonds", "comment", "comments", "stamp", "stamps",
-    "contract", "contracts", "constraint", "constraints", "ember", "embers",
-    "event", "events", "assign", "assignment", "commit", "commits",
-    "crew", "crews", "hand", "hands",
-    "hot", "status", "init", "help", "--help", "-h",
+    "spark",
+    "sparks",
+    "bond",
+    "bonds",
+    "comment",
+    "comments",
+    "stamp",
+    "stamps",
+    "contract",
+    "contracts",
+    "constraint",
+    "constraints",
+    "ember",
+    "embers",
+    "event",
+    "events",
+    "assign",
+    "assignment",
+    "commit",
+    "commits",
+    "crew",
+    "crews",
+    "hand",
+    "hands",
+    "hot",
+    "status",
+    "init",
+    "help",
+    "--help",
+    "-h",
 ];
 
 pub async fn run(args: Vec<String>) {
@@ -47,7 +72,10 @@ pub async fn run(args: Vec<String>) {
         .cloned()
         .collect();
 
-    if matches!(args_clean.get(1).map(|s| s.as_str()), Some("help" | "--help" | "-h")) {
+    if matches!(
+        args_clean.get(1).map(|s| s.as_str()),
+        Some("help" | "--help" | "-h")
+    ) {
         print_usage();
         return;
     }
@@ -95,16 +123,18 @@ pub async fn run(args: Vec<String>) {
         "bond" | "bonds" => handle_bond(&pool, &args_clean[2..], json_mode).await,
         "comment" | "comments" => handle_comment(&pool, &args_clean[2..], json_mode).await,
         "stamp" | "stamps" => handle_stamp(&pool, &args_clean[2..]).await,
-        "contract" | "contracts" => handle_contract(&pool, &args_clean[2..], &ws_id, json_mode).await,
-        "constraint" | "constraints" => handle_constraint(&pool, &args_clean[2..], &ws_id, json_mode).await,
+        "contract" | "contracts" => {
+            handle_contract(&pool, &args_clean[2..], &ws_id, json_mode).await
+        }
+        "constraint" | "constraints" => {
+            handle_constraint(&pool, &args_clean[2..], &ws_id, json_mode).await
+        }
         "ember" | "embers" => handle_ember(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "event" | "events" => handle_event(&pool, &args_clean[2..], json_mode).await,
         "assign" | "assignment" => handle_assignment(&pool, &args_clean[2..], json_mode).await,
         "commit" | "commits" => handle_commit(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "crew" | "crews" => handle_crew(&pool, &args_clean[2..], &ws_id, json_mode).await,
-        "hand" | "hands" => {
-            handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await
-        }
+        "hand" | "hands" => handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await,
         "hot" => handle_hot(&pool, &ws_id, json_mode).await,
         "status" => handle_status(&pool, &ws_id).await,
         other => {
@@ -222,18 +252,30 @@ async fn handle_init(ryve_dir: &RyveDir, cwd: &PathBuf) {
 // ── Status ───────────────────────────────────────────
 
 async fn handle_status(pool: &sqlx::SqlitePool, ws_id: &str) {
-    let all = spark_repo::list(pool, SparkFilter::default()).await.unwrap_or_default();
+    let all = spark_repo::list(pool, SparkFilter::default())
+        .await
+        .unwrap_or_default();
     let open = all.iter().filter(|s| s.status == "open").count();
     let in_progress = all.iter().filter(|s| s.status == "in_progress").count();
     let blocked = all.iter().filter(|s| s.status == "blocked").count();
     let closed = all.iter().filter(|s| s.status == "closed").count();
 
-    let failing = contract_repo::list_failing(pool, ws_id).await.unwrap_or_default();
-    let constraints = constraint_helpers::list(pool, ws_id).await.unwrap_or_default();
+    let failing = contract_repo::list_failing(pool, ws_id)
+        .await
+        .unwrap_or_default();
+    let constraints = constraint_helpers::list(pool, ws_id)
+        .await
+        .unwrap_or_default();
 
     println!("Workshop: {ws_id}");
-    println!("Sparks:   {} open, {} in progress, {} blocked, {} closed ({} total)",
-        open, in_progress, blocked, closed, all.len());
+    println!(
+        "Sparks:   {} open, {} in progress, {} blocked, {} closed ({} total)",
+        open,
+        in_progress,
+        blocked,
+        closed,
+        all.len()
+    );
     println!("Contracts: {} failing/pending", failing.len());
     println!("Constraints: {} defined", constraints.len());
 }
@@ -244,14 +286,20 @@ async fn handle_hot(pool: &sqlx::SqlitePool, ws_id: &str, json_mode: bool) {
     match data::sparks::graph::hot_sparks(pool, ws_id).await {
         Ok(sparks) => {
             if json_mode {
-                println!("{}", serde_json::to_string_pretty(&sparks).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&sparks).unwrap_or_default()
+                );
             } else if sparks.is_empty() {
                 println!("No hot sparks (all blocked, deferred, or closed).");
             } else {
                 println!("{:<8} {:<3} {:<12} {}", "ID", "P", "TYPE", "TITLE");
                 println!("{}", "-".repeat(60));
                 for s in &sparks {
-                    println!("{:<8} P{:<1} {:<12} {}", s.id, s.priority, s.spark_type, s.title);
+                    println!(
+                        "{:<8} P{:<1} {:<12} {}",
+                        s.id, s.priority, s.spark_type, s.title
+                    );
                 }
             }
         }
@@ -273,22 +321,35 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                 SparkFilter::default()
             } else {
                 SparkFilter {
-                    status: Some(vec![SparkStatus::Open, SparkStatus::InProgress, SparkStatus::Blocked]),
+                    status: Some(vec![
+                        SparkStatus::Open,
+                        SparkStatus::InProgress,
+                        SparkStatus::Blocked,
+                    ]),
                     ..Default::default()
                 }
             };
             match spark_repo::list(pool, filter).await {
                 Ok(sparks) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&sparks).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&sparks).unwrap_or_default()
+                        );
                     } else if sparks.is_empty() {
                         println!("No sparks found.");
                     } else {
-                        println!("{:<8} {:<3} {:<8} {:<12} {:<12} {}", "ID", "P", "RISK", "TYPE", "STATUS", "TITLE");
+                        println!(
+                            "{:<8} {:<3} {:<8} {:<12} {:<12} {}",
+                            "ID", "P", "RISK", "TYPE", "STATUS", "TITLE"
+                        );
                         println!("{}", "-".repeat(72));
                         for s in &sparks {
                             let risk = s.risk_level.as_deref().unwrap_or("normal");
-                            println!("{:<8} P{:<1} {:<8} {:<12} {:<12} {}", s.id, s.priority, risk, s.spark_type, s.status, s.title);
+                            println!(
+                                "{:<8} P{:<1} {:<8} {:<12} {:<12} {}",
+                                s.id, s.priority, risk, s.spark_type, s.status, s.title
+                            );
                         }
                     }
                 }
@@ -299,15 +360,21 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             if args.iter().any(|a| a == "--help" || a == "-h") {
                 eprintln!("spark create [flags] <title words...>\n");
                 eprintln!("FLAGS:");
-                eprintln!("  --type, -t <type>           bug|feature|task|epic|chore|spike|milestone (default: task)");
+                eprintln!(
+                    "  --type, -t <type>           bug|feature|task|epic|chore|spike|milestone (default: task)"
+                );
                 eprintln!("  --priority, -p <0-4>        P0=critical, P4=negligible (default: 2)");
                 eprintln!("  --risk, -r <level>          trivial|normal|elevated|critical");
                 eprintln!("  --scope, -s <boundary>      Scope boundary (e.g. 'src/auth/')");
                 eprintln!("  --description, -d <text>    Description");
                 eprintln!("  --problem <text>            Intent: problem being solved");
-                eprintln!("  --invariant <text>          Intent: invariant to preserve (repeatable)");
+                eprintln!(
+                    "  --invariant <text>          Intent: invariant to preserve (repeatable)"
+                );
                 eprintln!("  --non-goal <text>           Intent: non-goal (repeatable)");
-                eprintln!("  --acceptance <text>         Intent: acceptance criterion (repeatable)");
+                eprintln!(
+                    "  --acceptance <text>         Intent: acceptance criterion (repeatable)"
+                );
                 return;
             }
             let mut spark_type = SparkType::Task;
@@ -323,15 +390,60 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--type" | "-t" => { i += 1; if i < args.len() { spark_type = parse_spark_type(&args[i]); } }
-                    "--priority" | "-p" => { i += 1; if i < args.len() { priority = args[i].parse().unwrap_or(2); } }
-                    "--risk" | "-r" => { i += 1; if i < args.len() { risk = Some(parse_risk_level(&args[i])); } }
-                    "--scope" | "-s" => { i += 1; if i < args.len() { scope = Some(args[i].clone()); } }
-                    "--description" | "-d" => { i += 1; if i < args.len() { description = args[i].clone(); } }
-                    "--problem" => { i += 1; if i < args.len() { problem = Some(args[i].clone()); } }
-                    "--invariant" => { i += 1; if i < args.len() { invariants.push(args[i].clone()); } }
-                    "--non-goal" => { i += 1; if i < args.len() { non_goals.push(args[i].clone()); } }
-                    "--acceptance" => { i += 1; if i < args.len() { acceptance.push(args[i].clone()); } }
+                    "--type" | "-t" => {
+                        i += 1;
+                        if i < args.len() {
+                            spark_type = parse_spark_type(&args[i]);
+                        }
+                    }
+                    "--priority" | "-p" => {
+                        i += 1;
+                        if i < args.len() {
+                            priority = args[i].parse().unwrap_or(2);
+                        }
+                    }
+                    "--risk" | "-r" => {
+                        i += 1;
+                        if i < args.len() {
+                            risk = Some(parse_risk_level(&args[i]));
+                        }
+                    }
+                    "--scope" | "-s" => {
+                        i += 1;
+                        if i < args.len() {
+                            scope = Some(args[i].clone());
+                        }
+                    }
+                    "--description" | "-d" => {
+                        i += 1;
+                        if i < args.len() {
+                            description = args[i].clone();
+                        }
+                    }
+                    "--problem" => {
+                        i += 1;
+                        if i < args.len() {
+                            problem = Some(args[i].clone());
+                        }
+                    }
+                    "--invariant" => {
+                        i += 1;
+                        if i < args.len() {
+                            invariants.push(args[i].clone());
+                        }
+                    }
+                    "--non-goal" => {
+                        i += 1;
+                        if i < args.len() {
+                            non_goals.push(args[i].clone());
+                        }
+                    }
+                    "--acceptance" => {
+                        i += 1;
+                        if i < args.len() {
+                            acceptance.push(args[i].clone());
+                        }
+                    }
                     _ => title_parts.push(&args[i]),
                 }
                 i += 1;
@@ -342,7 +454,11 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             }
 
             // Build metadata JSON with intent if any intent fields provided
-            let metadata = if problem.is_some() || !invariants.is_empty() || !non_goals.is_empty() || !acceptance.is_empty() {
+            let metadata = if problem.is_some()
+                || !invariants.is_empty()
+                || !non_goals.is_empty()
+                || !acceptance.is_empty()
+            {
                 let intent = serde_json::json!({
                     "intent": {
                         "problem_statement": problem,
@@ -374,7 +490,10 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             match spark_repo::create(pool, new).await {
                 Ok(spark) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&spark).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&spark).unwrap_or_default()
+                        );
                     } else {
                         println!("created {} — {}", spark.id, title);
                     }
@@ -383,7 +502,9 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             }
         }
         "show" => {
-            if args.len() < 2 { die("spark show requires <id>"); }
+            if args.len() < 2 {
+                die("spark show requires <id>");
+            }
             match spark_repo::get(pool, &args[1]).await {
                 Ok(s) => {
                     if json_mode {
@@ -394,10 +515,19 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                         println!("Status:      {}", s.status);
                         println!("Priority:    P{}", s.priority);
                         println!("Type:        {}", s.spark_type);
-                        println!("Risk:        {}", s.risk_level.as_deref().unwrap_or("normal"));
-                        if let Some(ref v) = s.scope_boundary { println!("Scope:       {v}"); }
-                        if !s.description.is_empty() { println!("Description: {}", s.description); }
-                        if let Some(ref a) = s.assignee { println!("Assignee:    {a}"); }
+                        println!(
+                            "Risk:        {}",
+                            s.risk_level.as_deref().unwrap_or("normal")
+                        );
+                        if let Some(ref v) = s.scope_boundary {
+                            println!("Scope:       {v}");
+                        }
+                        if !s.description.is_empty() {
+                            println!("Description: {}", s.description);
+                        }
+                        if let Some(ref a) = s.assignee {
+                            println!("Assignee:    {a}");
+                        }
                         println!("Created:     {}", s.created_at);
                         println!("Updated:     {}", s.updated_at);
                         if let Some(ref c) = s.closed_at {
@@ -405,15 +535,26 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                             println!("Reason:      {}", s.closed_reason.as_deref().unwrap_or(""));
                         }
                         let intent = s.intent();
-                        if let Some(ref p) = intent.problem_statement { println!("\nProblem:     {p}"); }
+                        if let Some(ref p) = intent.problem_statement {
+                            println!("\nProblem:     {p}");
+                        }
                         if !intent.invariants.is_empty() {
-                            println!("Invariants:"); for inv in &intent.invariants { println!("  - {inv}"); }
+                            println!("Invariants:");
+                            for inv in &intent.invariants {
+                                println!("  - {inv}");
+                            }
                         }
                         if !intent.non_goals.is_empty() {
-                            println!("Non-goals:"); for ng in &intent.non_goals { println!("  - {ng}"); }
+                            println!("Non-goals:");
+                            for ng in &intent.non_goals {
+                                println!("  - {ng}");
+                            }
                         }
                         if !intent.acceptance_criteria.is_empty() {
-                            println!("Acceptance:"); for ac in &intent.acceptance_criteria { println!("  - {ac}"); }
+                            println!("Acceptance:");
+                            for ac in &intent.acceptance_criteria {
+                                println!("  - {ac}");
+                            }
                         }
                     }
                 }
@@ -421,36 +562,83 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             }
         }
         "status" => {
-            if args.len() < 3 { die("spark status requires <id> <new_status>"); }
-            let status = SparkStatus::from_str(&args[2])
-                .unwrap_or_else(|| die(&format!("invalid status '{}' (open, in_progress, blocked, deferred, closed)", args[2])));
-            let upd = UpdateSpark { status: Some(status), ..Default::default() };
+            if args.len() < 3 {
+                die("spark status requires <id> <new_status>");
+            }
+            let status = SparkStatus::from_str(&args[2]).unwrap_or_else(|| {
+                die(&format!(
+                    "invalid status '{}' (open, in_progress, blocked, deferred, closed)",
+                    args[2]
+                ))
+            });
+            let upd = UpdateSpark {
+                status: Some(status),
+                ..Default::default()
+            };
             match spark_repo::update(pool, &args[1], upd, "cli").await {
                 Ok(s) => println!("{} -> {}", s.id, s.status),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "close" => {
-            if args.len() < 2 { die("spark close requires <id>"); }
-            let reason = if args.len() > 2 { args[2..].join(" ") } else { "completed".to_string() };
+            if args.len() < 2 {
+                die("spark close requires <id>");
+            }
+            let reason = if args.len() > 2 {
+                args[2..].join(" ")
+            } else {
+                "completed".to_string()
+            };
             match spark_repo::close(pool, &args[1], &reason, "cli").await {
                 Ok(s) => println!("{} closed — {reason}", s.id),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "edit" => {
-            if args.len() < 2 { die("spark edit requires <id>"); }
+            if args.len() < 2 {
+                die("spark edit requires <id>");
+            }
             let id = &args[1];
             let mut upd = UpdateSpark::default();
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--title" => { i += 1; if i < args.len() { upd.title = Some(args[i].clone()); } }
-                    "--priority" => { i += 1; if i < args.len() { upd.priority = Some(args[i].parse().unwrap_or(2)); } }
-                    "--risk" => { i += 1; if i < args.len() { upd.risk_level = Some(parse_risk_level(&args[i])); } }
-                    "--scope" => { i += 1; if i < args.len() { upd.scope_boundary = Some(Some(args[i].clone())); } }
-                    "--type" => { i += 1; if i < args.len() { upd.spark_type = Some(parse_spark_type(&args[i])); } }
-                    "--description" => { i += 1; if i < args.len() { upd.description = Some(args[i].clone()); } }
+                    "--title" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.title = Some(args[i].clone());
+                        }
+                    }
+                    "--priority" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.priority = Some(args[i].parse().unwrap_or(2));
+                        }
+                    }
+                    "--risk" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.risk_level = Some(parse_risk_level(&args[i]));
+                        }
+                    }
+                    "--scope" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.scope_boundary = Some(Some(args[i].clone()));
+                        }
+                    }
+                    "--type" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.spark_type = Some(parse_spark_type(&args[i]));
+                        }
+                    }
+                    "--description" => {
+                        i += 1;
+                        if i < args.len() {
+                            upd.description = Some(args[i].clone());
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -467,22 +655,34 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
 // ── Bond ─────────────────────────────────────────────
 
 async fn handle_bond(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
-    if args.is_empty() { die("bond subcommand required (create, list, delete)"); }
+    if args.is_empty() {
+        die("bond subcommand required (create, list, delete)");
+    }
     match args[0].as_str() {
         "create" => {
-            if args.len() < 4 { die("bond create requires <from_id> <to_id> <type>"); }
+            if args.len() < 4 {
+                die("bond create requires <from_id> <to_id> <type>");
+            }
             let bond_type = parse_bond_type(&args[3]);
             match bond_repo::create(pool, &args[1], &args[2], bond_type).await {
-                Ok(b) => println!("bond {} created: {} --[{}]--> {}", b.id, b.from_id, b.bond_type, b.to_id),
+                Ok(b) => println!(
+                    "bond {} created: {} --[{}]--> {}",
+                    b.id, b.from_id, b.bond_type, b.to_id
+                ),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "list" | "ls" => {
-            if args.len() < 2 { die("bond list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("bond list requires <spark_id>");
+            }
             match bond_repo::list_for_spark(pool, &args[1]).await {
                 Ok(bonds) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&bonds).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&bonds).unwrap_or_default()
+                        );
                     } else if bonds.is_empty() {
                         println!("No bonds for {}.", args[1]);
                     } else {
@@ -495,8 +695,12 @@ async fn handle_bond(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) 
             }
         }
         "delete" => {
-            if args.len() < 2 { die("bond delete requires <id>"); }
-            let id: i64 = args[1].parse().unwrap_or_else(|_| die("bond id must be a number"));
+            if args.len() < 2 {
+                die("bond delete requires <id>");
+            }
+            let id: i64 = args[1]
+                .parse()
+                .unwrap_or_else(|_| die("bond id must be a number"));
             match bond_repo::delete(pool, id).await {
                 Ok(()) => println!("bond {id} deleted"),
                 Err(e) => die(&format!("{e}")),
@@ -509,23 +713,36 @@ async fn handle_bond(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) 
 // ── Comment ──────────────────────────────────────────
 
 async fn handle_comment(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
-    if args.is_empty() { die("comment subcommand required (add, list)"); }
+    if args.is_empty() {
+        die("comment subcommand required (add, list)");
+    }
     match args[0].as_str() {
         "add" => {
-            if args.len() < 3 { die("comment add requires <spark_id> <body>"); }
+            if args.len() < 3 {
+                die("comment add requires <spark_id> <body>");
+            }
             let body = args[2..].join(" ");
-            let new = NewComment { spark_id: args[1].clone(), author: "cli".to_string(), body: body.clone() };
+            let new = NewComment {
+                spark_id: args[1].clone(),
+                author: "cli".to_string(),
+                body: body.clone(),
+            };
             match comment_repo::create(pool, new).await {
                 Ok(c) => println!("{} added to {}", c.id, args[1]),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "list" | "ls" => {
-            if args.len() < 2 { die("comment list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("comment list requires <spark_id>");
+            }
             match comment_repo::list_for_spark(pool, &args[1]).await {
                 Ok(comments) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&comments).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&comments).unwrap_or_default()
+                        );
                     } else if comments.is_empty() {
                         println!("No comments on {}.", args[1]);
                     } else {
@@ -544,28 +761,46 @@ async fn handle_comment(pool: &sqlx::SqlitePool, args: &[String], json_mode: boo
 // ── Stamp ────────────────────────────────────────────
 
 async fn handle_stamp(pool: &sqlx::SqlitePool, args: &[String]) {
-    if args.is_empty() { die("stamp subcommand required (add, remove, list)"); }
+    if args.is_empty() {
+        die("stamp subcommand required (add, remove, list)");
+    }
     match args[0].as_str() {
         "add" => {
-            if args.len() < 3 { die("stamp add requires <spark_id> <label>"); }
+            if args.len() < 3 {
+                die("stamp add requires <spark_id> <label>");
+            }
             match stamp_repo::add(pool, &args[1], &args[2]).await {
                 Ok(()) => println!("stamp '{}' added to {}", args[2], args[1]),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "remove" => {
-            if args.len() < 3 { die("stamp remove requires <spark_id> <label>"); }
+            if args.len() < 3 {
+                die("stamp remove requires <spark_id> <label>");
+            }
             match stamp_repo::remove(pool, &args[1], &args[2]).await {
                 Ok(()) => println!("stamp '{}' removed from {}", args[2], args[1]),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "list" | "ls" => {
-            if args.len() < 2 { die("stamp list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("stamp list requires <spark_id>");
+            }
             match stamp_repo::list_for_spark(pool, &args[1]).await {
                 Ok(stamps) => {
-                    if stamps.is_empty() { println!("No stamps on {}.", args[1]); }
-                    else { println!("{}", stamps.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")); }
+                    if stamps.is_empty() {
+                        println!("No stamps on {}.", args[1]);
+                    } else {
+                        println!(
+                            "{}",
+                            stamps
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
                 }
                 Err(e) => die(&format!("{e}")),
             }
@@ -577,27 +812,44 @@ async fn handle_stamp(pool: &sqlx::SqlitePool, args: &[String]) {
 // ── Contract ─────────────────────────────────────────
 
 async fn handle_contract(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, json_mode: bool) {
-    if args.is_empty() { die("contract subcommand required (list, add, check, failing)"); }
+    if args.is_empty() {
+        die("contract subcommand required (list, add, check, failing)");
+    }
     match args[0].as_str() {
         "list" | "ls" => {
-            if args.len() < 2 { die("contract list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("contract list requires <spark_id>");
+            }
             match contract_repo::list_for_spark(pool, &args[1]).await {
                 Ok(contracts) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&contracts).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&contracts).unwrap_or_default()
+                        );
                     } else if contracts.is_empty() {
                         println!("No contracts for {}.", args[1]);
                     } else {
-                        println!("{:<4} {:<14} {:<10} {:<8} {}", "ID", "KIND", "ENFORCE", "STATUS", "DESCRIPTION");
+                        println!(
+                            "{:<4} {:<14} {:<10} {:<8} {}",
+                            "ID", "KIND", "ENFORCE", "STATUS", "DESCRIPTION"
+                        );
                         println!("{}", "-".repeat(65));
-                        for c in &contracts { println!("{:<4} {:<14} {:<10} {:<8} {}", c.id, c.kind, c.enforcement, c.status, c.description); }
+                        for c in &contracts {
+                            println!(
+                                "{:<4} {:<14} {:<10} {:<8} {}",
+                                c.id, c.kind, c.enforcement, c.status, c.description
+                            );
+                        }
                     }
                 }
                 Err(e) => die(&format!("{e}")),
             }
         }
         "add" => {
-            if args.len() < 4 { die("contract add requires <spark_id> <kind> <description>"); }
+            if args.len() < 4 {
+                die("contract add requires <spark_id> <kind> <description>");
+            }
             let kind = parse_contract_kind(&args[2]);
             let desc = args[3..].join(" ");
             let new = NewContract {
@@ -615,8 +867,12 @@ async fn handle_contract(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, 
             }
         }
         "check" => {
-            if args.len() < 3 { die("contract check requires <contract_id> <pass|fail|skip>"); }
-            let id: i64 = args[1].parse().unwrap_or_else(|_| die("contract id must be a number"));
+            if args.len() < 3 {
+                die("contract check requires <contract_id> <pass|fail|skip>");
+            }
+            let id: i64 = args[1]
+                .parse()
+                .unwrap_or_else(|_| die("contract id must be a number"));
             let status = match args[2].as_str() {
                 "pass" => ContractStatus::Pass,
                 "fail" => ContractStatus::Fail,
@@ -628,22 +884,29 @@ async fn handle_contract(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, 
                 Err(e) => die(&format!("{e}")),
             }
         }
-        "failing" => {
-            match contract_repo::list_failing(pool, ws_id).await {
-                Ok(contracts) => {
-                    if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&contracts).unwrap_or_default());
-                    } else if contracts.is_empty() {
-                        println!("No failing contracts.");
-                    } else {
-                        for c in &contracts {
-                            println!("[{}] {} on {} — {}", c.status.to_uppercase(), c.kind, c.spark_id, c.description);
-                        }
+        "failing" => match contract_repo::list_failing(pool, ws_id).await {
+            Ok(contracts) => {
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&contracts).unwrap_or_default()
+                    );
+                } else if contracts.is_empty() {
+                    println!("No failing contracts.");
+                } else {
+                    for c in &contracts {
+                        println!(
+                            "[{}] {} on {} — {}",
+                            c.status.to_uppercase(),
+                            c.kind,
+                            c.spark_id,
+                            c.description
+                        );
                     }
                 }
-                Err(e) => die(&format!("{e}")),
             }
-        }
+            Err(e) => die(&format!("{e}")),
+        },
         other => die(&format!("unknown contract subcommand '{other}'")),
     }
 }
@@ -655,15 +918,24 @@ async fn handle_constraint(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str
         match constraint_helpers::list(pool, ws_id).await {
             Ok(constraints) => {
                 if json_mode {
-                    let map: Vec<_> = constraints.iter().map(|(n, c)| serde_json::json!({"name": n, "constraint": c})).collect();
+                    let map: Vec<_> = constraints
+                        .iter()
+                        .map(|(n, c)| serde_json::json!({"name": n, "constraint": c}))
+                        .collect();
                     println!("{}", serde_json::to_string_pretty(&map).unwrap_or_default());
                 } else if constraints.is_empty() {
                     println!("No architectural constraints defined.");
                 } else {
                     for (name, c) in &constraints {
-                        let sev = match c.severity { ConstraintSeverity::Error => "ERROR", ConstraintSeverity::Warning => "WARN", ConstraintSeverity::Info => "INFO" };
+                        let sev = match c.severity {
+                            ConstraintSeverity::Error => "ERROR",
+                            ConstraintSeverity::Warning => "WARN",
+                            ConstraintSeverity::Info => "INFO",
+                        };
                         println!("[{sev}] {name} — {}", c.rule);
-                        if let Some(ref r) = c.rationale { println!("  rationale: {r}"); }
+                        if let Some(ref r) = c.rationale {
+                            println!("  rationale: {r}");
+                        }
                     }
                 }
             }
@@ -675,30 +947,47 @@ async fn handle_constraint(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str
 // ── Ember ────────────────────────────────────────────
 
 async fn handle_ember(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, json_mode: bool) {
-    if args.is_empty() { die("ember subcommand required (list, send, sweep)"); }
+    if args.is_empty() {
+        die("ember subcommand required (list, send, sweep)");
+    }
     match args[0].as_str() {
-        "list" | "ls" => {
-            match ember_repo::list_active(pool, ws_id).await {
-                Ok(embers) => {
-                    if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&embers).unwrap_or_default());
-                    } else if embers.is_empty() {
-                        println!("No active embers.");
-                    } else {
-                        for e in &embers {
-                            println!("[{}] {} (from: {}, ttl: {}s): {}", e.id, e.ember_type, e.source_agent.as_deref().unwrap_or("?"), e.ttl_seconds, e.content);
-                        }
+        "list" | "ls" => match ember_repo::list_active(pool, ws_id).await {
+            Ok(embers) => {
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&embers).unwrap_or_default()
+                    );
+                } else if embers.is_empty() {
+                    println!("No active embers.");
+                } else {
+                    for e in &embers {
+                        println!(
+                            "[{}] {} (from: {}, ttl: {}s): {}",
+                            e.id,
+                            e.ember_type,
+                            e.source_agent.as_deref().unwrap_or("?"),
+                            e.ttl_seconds,
+                            e.content
+                        );
                     }
                 }
-                Err(e) => die(&format!("{e}")),
             }
-        }
+            Err(e) => die(&format!("{e}")),
+        },
         "send" => {
-            if args.len() < 3 { die("ember send requires <type> <content>"); }
+            if args.len() < 3 {
+                die("ember send requires <type> <content>");
+            }
             let ember_type = match args[1].as_str() {
-                "glow" => EmberType::Glow, "flash" => EmberType::Flash, "flare" => EmberType::Flare,
-                "blaze" => EmberType::Blaze, "ash" => EmberType::Ash,
-                other => die(&format!("invalid ember type '{other}' (glow, flash, flare, blaze, ash)")),
+                "glow" => EmberType::Glow,
+                "flash" => EmberType::Flash,
+                "flare" => EmberType::Flare,
+                "blaze" => EmberType::Blaze,
+                "ash" => EmberType::Ash,
+                other => die(&format!(
+                    "invalid ember type '{other}' (glow, flash, flare, blaze, ash)"
+                )),
             };
             let content = args[2..].join(" ");
             let new = NewEmber {
@@ -713,12 +1002,10 @@ async fn handle_ember(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                 Err(e) => die(&format!("{e}")),
             }
         }
-        "sweep" => {
-            match ember_repo::sweep_expired(pool).await {
-                Ok(count) => println!("{count} expired embers cleaned up"),
-                Err(e) => die(&format!("{e}")),
-            }
-        }
+        "sweep" => match ember_repo::sweep_expired(pool).await {
+            Ok(count) => println!("{count} expired embers cleaned up"),
+            Err(e) => die(&format!("{e}")),
+        },
         other => die(&format!("unknown ember subcommand '{other}'")),
     }
 }
@@ -727,12 +1014,21 @@ async fn handle_ember(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
 
 async fn handle_event(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
     if args.is_empty() || args[0] == "list" || args[0] == "ls" {
-        if args.len() < 2 { die("event list requires <spark_id>"); }
-        let spark_id = if args[0] == "list" || args[0] == "ls" { &args[1] } else { &args[0] };
+        if args.len() < 2 {
+            die("event list requires <spark_id>");
+        }
+        let spark_id = if args[0] == "list" || args[0] == "ls" {
+            &args[1]
+        } else {
+            &args[0]
+        };
         match event_repo::list_for_spark(pool, spark_id).await {
             Ok(events) => {
                 if json_mode {
-                    println!("{}", serde_json::to_string_pretty(&events).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&events).unwrap_or_default()
+                    );
                 } else if events.is_empty() {
                     println!("No events for {spark_id}.");
                 } else {
@@ -740,7 +1036,10 @@ async fn handle_event(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool)
                         let old = e.old_value.as_deref().unwrap_or("null");
                         let new = e.new_value.as_deref().unwrap_or("null");
                         let actor_type = e.actor_type.as_deref().unwrap_or("");
-                        println!("[{}] {} ({}): {} {} -> {}", e.timestamp, e.actor, actor_type, e.field_name, old, new);
+                        println!(
+                            "[{}] {} ({}): {} {} -> {}",
+                            e.timestamp, e.actor, actor_type, e.field_name, old, new
+                        );
                     }
                 }
             }
@@ -752,10 +1051,14 @@ async fn handle_event(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool)
 // ── Assignment ───────────────────────────────────────
 
 async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
-    if args.is_empty() { die("assign subcommand required (claim, release, list)"); }
+    if args.is_empty() {
+        die("assign subcommand required (claim, release, list)");
+    }
     match args[0].as_str() {
         "claim" => {
-            if args.len() < 3 { die("assign claim requires <session_id> <spark_id>"); }
+            if args.len() < 3 {
+                die("assign claim requires <session_id> <spark_id>");
+            }
             let new = NewHandAssignment {
                 session_id: args[1].clone(),
                 spark_id: args[2].clone(),
@@ -767,20 +1070,27 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
             }
         }
         "release" => {
-            if args.len() < 3 { die("assign release requires <session_id> <spark_id>"); }
+            if args.len() < 3 {
+                die("assign release requires <session_id> <spark_id>");
+            }
             match assignment_repo::abandon(pool, &args[1], &args[2]).await {
                 Ok(()) => println!("{} released by {}", args[2], args[1]),
                 Err(e) => die(&format!("{e}")),
             }
         }
         "list" | "ls" => {
-            if args.len() < 2 { die("assign list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("assign list requires <spark_id>");
+            }
             match assignment_repo::active_for_spark(pool, &args[1]).await {
                 Ok(Some(a)) => {
                     if json_mode {
                         println!("{}", serde_json::to_string_pretty(&a).unwrap_or_default());
                     } else {
-                        println!("{} owned by {} (since {})", a.spark_id, a.session_id, a.assigned_at);
+                        println!(
+                            "{} owned by {} (since {})",
+                            a.spark_id, a.session_id, a.assigned_at
+                        );
                     }
                 }
                 Ok(None) => println!("{} is unclaimed.", args[1]),
@@ -794,10 +1104,14 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
 // ── Commit ───────────────────────────────────────────
 
 async fn handle_commit(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, json_mode: bool) {
-    if args.is_empty() { die("commit subcommand required (link, list, scan)"); }
+    if args.is_empty() {
+        die("commit subcommand required (link, list, scan)");
+    }
     match args[0].as_str() {
         "link" => {
-            if args.len() < 3 { die("commit link requires <spark_id> <hash>"); }
+            if args.len() < 3 {
+                die("commit link requires <spark_id> <hash>");
+            }
             let new = NewCommitLink {
                 spark_id: args[1].clone(),
                 commit_hash: args[2].clone(),
@@ -813,17 +1127,27 @@ async fn handle_commit(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, js
             }
         }
         "list" | "ls" => {
-            if args.len() < 2 { die("commit list requires <spark_id>"); }
+            if args.len() < 2 {
+                die("commit list requires <spark_id>");
+            }
             match commit_link_repo::list_for_spark(pool, &args[1]).await {
                 Ok(links) => {
                     if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&links).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&links).unwrap_or_default()
+                        );
                     } else if links.is_empty() {
                         println!("No commits linked to {}.", args[1]);
                     } else {
                         for l in &links {
                             let msg = l.commit_message.as_deref().unwrap_or("");
-                            println!("{} ({}) {}", &l.commit_hash[..8.min(l.commit_hash.len())], l.linked_by, msg);
+                            println!(
+                                "{} ({}) {}",
+                                &l.commit_hash[..8.min(l.commit_hash.len())],
+                                l.linked_by,
+                                msg
+                            );
                         }
                     }
                 }
@@ -838,7 +1162,13 @@ async fn handle_commit(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, js
                         println!("No commits referencing sparks found.");
                     } else {
                         for r in &refs {
-                            println!("{} [{}] {} — {}", &r.hash[..8], r.spark_ids.join(", "), r.author, r.message);
+                            println!(
+                                "{} [{}] {} — {}",
+                                &r.hash[..8],
+                                r.spark_ids.join(", "),
+                                r.author,
+                                r.message
+                            );
                         }
                         // Auto-link discovered references
                         let mut linked = 0;
@@ -874,48 +1204,64 @@ async fn handle_commit(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, js
 
 fn parse_spark_type(s: &str) -> SparkType {
     match s {
-        "bug" => SparkType::Bug, "feature" => SparkType::Feature, "task" => SparkType::Task,
-        "epic" => SparkType::Epic, "chore" => SparkType::Chore, "spike" => SparkType::Spike,
+        "bug" => SparkType::Bug,
+        "feature" => SparkType::Feature,
+        "task" => SparkType::Task,
+        "epic" => SparkType::Epic,
+        "chore" => SparkType::Chore,
+        "spike" => SparkType::Spike,
         "milestone" => SparkType::Milestone,
-        _ => { eprintln!("warning: unknown type '{s}', defaulting to task"); SparkType::Task }
+        _ => {
+            eprintln!("warning: unknown type '{s}', defaulting to task");
+            SparkType::Task
+        }
     }
 }
 
 fn parse_risk_level(s: &str) -> RiskLevel {
     match s {
-        "trivial" => RiskLevel::Trivial, "normal" => RiskLevel::Normal,
-        "elevated" => RiskLevel::Elevated, "critical" => RiskLevel::Critical,
-        _ => { eprintln!("warning: unknown risk '{s}', defaulting to normal"); RiskLevel::Normal }
+        "trivial" => RiskLevel::Trivial,
+        "normal" => RiskLevel::Normal,
+        "elevated" => RiskLevel::Elevated,
+        "critical" => RiskLevel::Critical,
+        _ => {
+            eprintln!("warning: unknown risk '{s}', defaulting to normal");
+            RiskLevel::Normal
+        }
     }
 }
 
 fn parse_bond_type(s: &str) -> BondType {
     match s {
-        "blocks" => BondType::Blocks, "parent_child" => BondType::ParentChild,
-        "related" => BondType::Related, "conditional_blocks" => BondType::ConditionalBlocks,
-        "waits_for" => BondType::WaitsFor, "duplicates" => BondType::Duplicates,
+        "blocks" => BondType::Blocks,
+        "parent_child" => BondType::ParentChild,
+        "related" => BondType::Related,
+        "conditional_blocks" => BondType::ConditionalBlocks,
+        "waits_for" => BondType::WaitsFor,
+        "duplicates" => BondType::Duplicates,
         "supersedes" => BondType::Supersedes,
-        _ => die(&format!("invalid bond type '{s}' (blocks, parent_child, related, conditional_blocks, waits_for, duplicates, supersedes)")),
+        _ => die(&format!(
+            "invalid bond type '{s}' (blocks, parent_child, related, conditional_blocks, waits_for, duplicates, supersedes)"
+        )),
     }
 }
 
 fn parse_contract_kind(s: &str) -> ContractKind {
     match s {
-        "test_pass" => ContractKind::TestPass, "no_api_break" => ContractKind::NoApiBreak,
-        "custom_command" => ContractKind::CustomCommand, "grep_absent" => ContractKind::GrepAbsent,
+        "test_pass" => ContractKind::TestPass,
+        "no_api_break" => ContractKind::NoApiBreak,
+        "custom_command" => ContractKind::CustomCommand,
+        "grep_absent" => ContractKind::GrepAbsent,
         "grep_present" => ContractKind::GrepPresent,
-        _ => die(&format!("invalid contract kind '{s}' (test_pass, no_api_break, custom_command, grep_absent, grep_present)")),
+        _ => die(&format!(
+            "invalid contract kind '{s}' (test_pass, no_api_break, custom_command, grep_absent, grep_present)"
+        )),
     }
 }
 
 // ── Crew ─────────────────────────────────────────────
 
-async fn handle_crew(
-    pool: &sqlx::SqlitePool,
-    args: &[String],
-    ws_id: &str,
-    json_mode: bool,
-) {
+async fn handle_crew(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, json_mode: bool) {
     if args.is_empty() {
         die("crew subcommand required (create, list, show, add-member, remove-member, status)");
     }
@@ -931,15 +1277,21 @@ async fn handle_crew(
                 match args[i].as_str() {
                     "--purpose" => {
                         i += 1;
-                        if i < args.len() { purpose = Some(args[i].clone()); }
+                        if i < args.len() {
+                            purpose = Some(args[i].clone());
+                        }
                     }
                     "--parent" => {
                         i += 1;
-                        if i < args.len() { parent = Some(args[i].clone()); }
+                        if i < args.len() {
+                            parent = Some(args[i].clone());
+                        }
                     }
                     "--head-session" => {
                         i += 1;
-                        if i < args.len() { head_session = Some(args[i].clone()); }
+                        if i < args.len() {
+                            head_session = Some(args[i].clone());
+                        }
                     }
                     other => name_parts.push(other),
                 }
@@ -970,7 +1322,10 @@ async fn handle_crew(
         "list" | "ls" => match crew_repo::list_for_workshop(pool, ws_id).await {
             Ok(crews) => {
                 if json_mode {
-                    println!("{}", serde_json::to_string_pretty(&crews).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&crews).unwrap_or_default()
+                    );
                 } else if crews.is_empty() {
                     println!("No crews in this workshop.");
                 } else {
@@ -996,7 +1351,10 @@ async fn handle_crew(
             let members = crew_repo::members(pool, &crew.id).await.unwrap_or_default();
             if json_mode {
                 let payload = serde_json::json!({ "crew": crew, "members": members });
-                println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
             } else {
                 println!("ID:      {}", crew.id);
                 println!("Name:    {}", crew.name);
@@ -1039,7 +1397,12 @@ async fn handle_crew(
                 i += 1;
             }
             match crew_repo::add_member(pool, &args[1], &args[2], role.as_deref()).await {
-                Ok(m) => println!("added {} to crew {} ({})", m.session_id, m.crew_id, m.role.as_deref().unwrap_or("hand")),
+                Ok(m) => println!(
+                    "added {} to crew {} ({})",
+                    m.session_id,
+                    m.crew_id,
+                    m.role.as_deref().unwrap_or("hand")
+                ),
                 Err(e) => die(&format!("{e}")),
             }
         }
@@ -1085,7 +1448,9 @@ async fn handle_hand(
     match args[0].as_str() {
         "spawn" => {
             if args.len() < 2 {
-                die("hand spawn requires <spark_id> [--agent <name>] [--role owner|merger] [--crew <id>]");
+                die(
+                    "hand spawn requires <spark_id> [--agent <name>] [--role owner|merger] [--crew <id>]",
+                );
             }
             let spark_id = args[1].clone();
             let mut agent_name: Option<String> = None;
@@ -1142,7 +1507,10 @@ async fn handle_hand(
                             "log": spawned.log_path,
                             "pid": spawned.child_pid,
                         });
-                        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload).unwrap_or_default()
+                        );
                     } else {
                         println!(
                             "spawned hand {} on spark {} (pid {:?})",
@@ -1158,15 +1526,24 @@ async fn handle_hand(
         "list" | "ls" => match assignment_repo::list_active(pool).await {
             Ok(active) => {
                 if json_mode {
-                    println!("{}", serde_json::to_string_pretty(&active).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&active).unwrap_or_default()
+                    );
                 } else if active.is_empty() {
                     println!("No active hand assignments.");
                 } else {
-                    println!("{:<12} {:<36} {:<10} {}", "SPARK", "SESSION", "ROLE", "ASSIGNED");
+                    println!(
+                        "{:<12} {:<36} {:<10} {}",
+                        "SPARK", "SESSION", "ROLE", "ASSIGNED"
+                    );
                     let sep = "-".repeat(80);
                     println!("{sep}");
                     for a in &active {
-                        println!("{:<12} {:<36} {:<10} {}", a.spark_id, a.session_id, a.role, a.assigned_at);
+                        println!(
+                            "{:<12} {:<36} {:<10} {}",
+                            a.spark_id, a.session_id, a.role, a.assigned_at
+                        );
                     }
                 }
             }

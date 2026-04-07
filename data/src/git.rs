@@ -403,9 +403,7 @@ pub fn parse_spark_refs(message: &str) -> Vec<String> {
         // Expect "[sp-XXXXXXXX]" — 8 hex chars after "sp-"
         if abs + 13 <= message.len() && message.as_bytes()[abs + 12] == b']' {
             let candidate = &message[abs + 1..abs + 12]; // "sp-XXXXXXXX"
-            if candidate.len() == 11
-                && candidate[3..].chars().all(|c| c.is_ascii_hexdigit())
-            {
+            if candidate.len() == 11 && candidate[3..].chars().all(|c| c.is_ascii_hexdigit()) {
                 refs.push(candidate.to_string());
             }
         }

@@ -7,7 +7,9 @@ use iced::widget::{Space, button, column, container, mouse_area, row, scrollable
 use iced::{Element, Length, Theme};
 
 use crate::coding_agents::{CodingAgent, ResumeStrategy};
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
+use crate::style::{
+    self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
+};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -35,6 +37,8 @@ pub struct AgentSession {
     pub tab_id: Option<u64>,
     /// Whether this session is currently running.
     pub active: bool,
+    /// Whether this row is persisted as active but no longer has a live process.
+    pub stale: bool,
     /// Agent-specific session/conversation ID for resumption.
     pub resume_id: Option<String>,
     /// When the session was started.
@@ -44,20 +48,42 @@ pub struct AgentSession {
 impl AgentSession {
     /// Can this session be resumed?
     pub fn can_resume(&self) -> bool {
-        !self.active && self.agent.resume != ResumeStrategy::None
+        !self.active && !self.stale && self.agent.resume != ResumeStrategy::None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDisplayState {
+    Active,
+    History,
+    Stale,
+}
+
+pub fn classify_session(
+    is_ended: bool,
+    has_live_terminal: bool,
+    has_live_process: bool,
+) -> SessionDisplayState {
+    if is_ended {
+        SessionDisplayState::History
+    } else if has_live_terminal || has_live_process {
+        SessionDisplayState::Active
+    } else {
+        SessionDisplayState::Stale
     }
 }
 
 /// Render the Hands panel.
-pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Element<'a, Message> {
+pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, _has_bg: bool) -> Element<'a, Message> {
     let header = text("Hands").size(FONT_HEADER).color(pal.text_primary);
 
     let mut content = column![header].spacing(6).padding(10);
 
     let active: Vec<_> = sessions.iter().filter(|s| s.active).collect();
-    let past: Vec<_> = sessions.iter().filter(|s| !s.active).collect();
+    let stale: Vec<_> = sessions.iter().filter(|s| s.stale).collect();
+    let past: Vec<_> = sessions.iter().filter(|s| !s.active && !s.stale).collect();
 
-    if active.is_empty() && past.is_empty() {
+    if active.is_empty() && stale.is_empty() && past.is_empty() {
         content = content.push(
             text("No active hands")
                 .size(FONT_BODY)
@@ -65,13 +91,49 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
         );
     }
 
+    if !stale.is_empty() {
+        content = content.push(Space::new().height(4));
+        content = content.push(text("Stale").size(FONT_LABEL).color(pal.text_secondary));
+
+        for session in &stale {
+            let indicator = text("\u{26A0} ").size(FONT_ICON_SM).color(pal.danger);
+
+            let label = text(&session.name)
+                .size(FONT_BODY)
+                .color(pal.text_secondary);
+            let badge = text("stale").size(FONT_SMALL).color(pal.danger);
+            let time_label = text(format_relative_time(&session.started_at))
+                .size(FONT_SMALL)
+                .color(pal.text_tertiary);
+
+            let delete_btn = button(text("\u{00D7}").size(FONT_ICON).color(pal.danger))
+                .style(button::text)
+                .padding([2, 4])
+                .on_press(Message::DeleteSession(session.id.clone()));
+
+            let session_row = row![
+                indicator,
+                label,
+                badge,
+                time_label,
+                Space::new().width(Length::Fill),
+                delete_btn
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center);
+
+            let item = container(session_row)
+                .width(Length::Fill)
+                .padding([4, 8])
+                .style(move |_theme: &Theme| style::hovered_item(&pal));
+
+            content = content.push(item);
+        }
+    }
+
     // Active sessions
     if !active.is_empty() {
-        content = content.push(
-            text("Active")
-                .size(FONT_LABEL)
-                .color(pal.text_secondary),
-        );
+        content = content.push(text("Active").size(FONT_LABEL).color(pal.text_secondary));
         for session in &active {
             let indicator = text("\u{25CF} ") // ● dot
                 .size(FONT_ICON_SM)
@@ -107,11 +169,7 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
     // Past sessions
     if !past.is_empty() {
         content = content.push(Space::new().height(4));
-        content = content.push(
-            text("History")
-                .size(FONT_LABEL)
-                .color(pal.text_secondary),
-        );
+        content = content.push(text("History").size(FONT_LABEL).color(pal.text_secondary));
 
         for session in &past {
             let can_resume = session.can_resume();
@@ -120,7 +178,9 @@ pub fn view<'a>(sessions: &'a [AgentSession], pal: Palette, has_bg: bool) -> Ele
                 .size(FONT_ICON_SM)
                 .color(pal.text_tertiary);
 
-            let label = text(&session.name).size(FONT_BODY).color(pal.text_secondary);
+            let label = text(&session.name)
+                .size(FONT_BODY)
+                .color(pal.text_secondary);
             let time_label = text(format_relative_time(&session.started_at))
                 .size(FONT_SMALL)
                 .color(pal.text_tertiary);
@@ -215,6 +275,7 @@ mod tests {
             },
             tab_id,
             active,
+            stale: false,
             resume_id: None,
             started_at: "2026-04-07T11:00:00+00:00".to_string(),
         }
@@ -268,5 +329,29 @@ mod tests {
             },
         ];
         let _ = view(&sessions, Palette::dark(), false);
+    }
+
+    #[test]
+    fn classify_session_marks_dead_active_rows_stale() {
+        assert_eq!(
+            classify_session(false, false, false),
+            SessionDisplayState::Stale
+        );
+    }
+
+    #[test]
+    fn classify_session_keeps_live_or_ended_rows_out_of_stale() {
+        assert_eq!(
+            classify_session(false, true, false),
+            SessionDisplayState::Active
+        );
+        assert_eq!(
+            classify_session(false, false, true),
+            SessionDisplayState::Active
+        );
+        assert_eq!(
+            classify_session(true, false, false),
+            SessionDisplayState::History
+        );
     }
 }
