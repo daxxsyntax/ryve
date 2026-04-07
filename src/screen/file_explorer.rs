@@ -255,9 +255,16 @@ fn collect_nodes<'a>(
     let is_expanded = state.expanded.contains(&node.path);
     let is_selected = state.selected.as_ref() == Some(&node.path);
 
-    // Determine git status color for this entry
+    // Determine git status for this entry. The aggregation is non-trivial
+    // for directories (it walks every entry in `git_statuses`), so we
+    // compute it ONCE here and derive both the foreground color and the
+    // letter badge from the same value.
     let rel_path = node.path.strip_prefix(root).unwrap_or(&node.path);
-    let git_color = file_git_color(rel_path, &node.kind, &state.git_statuses, pal);
+    let git_status = file_git_status(rel_path, &node.kind, &state.git_statuses);
+    let git_color = match git_status {
+        Some(status) => status_color(status),
+        None => pal.text_primary,
+    };
 
     let icon_handle = match node.kind {
         NodeKind::Directory => icons::folder_icon(&node.name, is_expanded),
@@ -267,9 +274,6 @@ fn collect_nodes<'a>(
 
     // Diff stats: for files look up directly, for directories aggregate children
     let diff = file_diff_stat(rel_path, &node.kind, &state.diff_stats);
-
-    // Aggregated git status (for the letter badge) — matches what git_color reflects.
-    let git_status = file_git_status(rel_path, &node.kind, &state.git_statuses);
 
     let mut label = row![
         Space::new().width(indent),
@@ -349,20 +353,6 @@ fn collect_nodes<'a>(
 
 // ── Git status colors ─────────────────────────────────
 
-/// Determine the display color for a file/directory based on git status.
-/// Directories inherit the "most important" status of their children.
-fn file_git_color(
-    rel_path: &Path,
-    kind: &NodeKind,
-    statuses: &HashMap<PathBuf, FileStatus>,
-    pal: &Palette,
-) -> Color {
-    match file_git_status(rel_path, kind, statuses) {
-        Some(status) => status_color(status),
-        None => pal.text_primary,
-    }
-}
-
 /// Resolve the effective git status for a file or directory.
 /// For directories, returns the "most important" status of any descendant.
 fn file_git_status(
@@ -374,13 +364,18 @@ fn file_git_status(
         return statuses.get(rel_path).copied();
     }
 
-    // Directory: check if any child file has a git status
-    let dir_prefix = rel_path.to_string_lossy();
+    // Directory: check if any child file (a strict descendant) has a git
+    // status. We use `Path::starts_with`, which compares whole path
+    // components, so a directory `src` does NOT match a sibling like
+    // `src2/foo.rs` — a bug the previous string-prefix check had.
     let mut most_important: Option<FileStatus> = None;
 
     for (path, status) in statuses {
-        let path_str = path.to_string_lossy();
-        if path_str.starts_with(dir_prefix.as_ref()) && path_str.len() > dir_prefix.len() {
+        if path == rel_path {
+            // The directory entry itself; skip — we only want descendants.
+            continue;
+        }
+        if path.starts_with(rel_path) {
             most_important = Some(match most_important {
                 None => *status,
                 Some(prev) => higher_priority_status(prev, *status),
@@ -479,18 +474,10 @@ mod tests {
         let mut statuses = HashMap::new();
         statuses.insert(PathBuf::from("src/main.rs"), FileStatus::Modified);
 
-        let got = file_git_status(
-            Path::new("src/main.rs"),
-            &NodeKind::File,
-            &statuses,
-        );
+        let got = file_git_status(Path::new("src/main.rs"), &NodeKind::File, &statuses);
         assert_eq!(got, Some(FileStatus::Modified));
 
-        let none = file_git_status(
-            Path::new("src/other.rs"),
-            &NodeKind::File,
-            &statuses,
-        );
+        let none = file_git_status(Path::new("src/other.rs"), &NodeKind::File, &statuses);
         assert_eq!(none, None);
     }
 
@@ -502,22 +489,14 @@ mod tests {
         statuses.insert(PathBuf::from("src/c.rs"), FileStatus::Untracked);
 
         // Directory should take the highest-priority child status (Conflicted).
-        let got = file_git_status(
-            Path::new("src"),
-            &NodeKind::Directory,
-            &statuses,
-        );
+        let got = file_git_status(Path::new("src"), &NodeKind::Directory, &statuses);
         assert_eq!(got, Some(FileStatus::Conflicted));
     }
 
     #[test]
     fn file_git_status_empty_directory_is_none() {
         let statuses: HashMap<PathBuf, FileStatus> = HashMap::new();
-        let got = file_git_status(
-            Path::new("src"),
-            &NodeKind::Directory,
-            &statuses,
-        );
+        let got = file_git_status(Path::new("src"), &NodeKind::Directory, &statuses);
         assert_eq!(got, None);
     }
 }

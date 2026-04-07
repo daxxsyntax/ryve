@@ -17,10 +17,9 @@ use std::sync::LazyLock;
 use data::git::LineChange;
 use data::sparks::types::SparkFileLink;
 use iced::mouse;
-use iced::widget::canvas::{self, Frame, Geometry, Path as CanvasPath};
+use iced::widget::canvas::{self, Cache as CanvasCache, Frame, Geometry, Path as CanvasPath};
 use iced::widget::{
-    Canvas, Column, Space, button, column, container, mouse_area, row, scrollable, text,
-    text_input,
+    Canvas, Column, Space, button, column, container, mouse_area, row, scrollable, text, text_input,
 };
 use iced::{Color, Element, Font, Length, Point, Rectangle, Size, Theme};
 use syntect::highlighting::{self, ThemeSet};
@@ -109,7 +108,7 @@ pub enum Message {
 
 // ── State ─────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FileViewerState {
     pub path: PathBuf,
     /// Raw file text — kept only for potential future edits / search.
@@ -134,6 +133,11 @@ pub struct FileViewerState {
     pub search_matches: Vec<usize>,
     /// Index into `search_matches` for the currently focused match.
     pub current_match: Option<usize>,
+    /// Cached minimap geometry. Stays valid across redraws and is only
+    /// rebuilt when the file content / highlight changes (we explicitly
+    /// `clear()` it from `set_content` and `evict`) or when the canvas
+    /// bounds change (handled internally by `canvas::Cache`).
+    pub minimap_cache: CanvasCache<iced::Renderer>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +169,7 @@ impl FileViewerState {
             search_query: String::new(),
             search_matches: Vec::new(),
             current_match: None,
+            minimap_cache: CanvasCache::new(),
         }
     }
 
@@ -180,6 +185,9 @@ impl FileViewerState {
         self.lines = lines;
         self.line_changes = line_changes;
         self.spark_links = spark_links;
+        // The minimap geometry is keyed off `lines` — invalidate the cache
+        // so the next draw rebuilds it.
+        self.minimap_cache.clear();
         // Re-run any active search against the freshly loaded content.
         if !self.search_query.is_empty() {
             self.recompute_search_matches();
@@ -194,6 +202,7 @@ impl FileViewerState {
         self.spark_links = Vec::new();
         self.search_matches.clear();
         self.current_match = None;
+        self.minimap_cache.clear();
     }
 
     /// Whether this viewer has content loaded.
@@ -262,13 +271,12 @@ impl FileViewerState {
 
     fn recompute_search_matches(&mut self) {
         self.search_matches.clear();
-        let needle = self.search_query.to_lowercase();
-        if needle.is_empty() {
+        if self.search_query.is_empty() {
             self.current_match = None;
             return;
         }
         for (idx, line) in self.content.lines().enumerate() {
-            if line.to_lowercase().contains(&needle) {
+            if line_contains_case_insensitive(line, &self.search_query) {
                 self.search_matches.push(idx);
             }
         }
@@ -459,6 +467,70 @@ pub fn language_label(path: &Path) -> &'static str {
     "Plain Text"
 }
 
+/// Case-insensitive substring search that does not allocate a lowercase copy
+/// of `haystack` on every call. This is the hot path for incremental in-file
+/// search — we iterate over `haystack` once per starting position and compare
+/// against `needle` on the fly. ASCII inputs use byte comparison; non-ASCII
+/// inputs fall through to a Unicode `to_lowercase()` per-char comparison
+/// (still allocation-free).
+fn line_contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+
+    // Fast path: both inputs are ASCII. Use a byte-level scan with
+    // `eq_ignore_ascii_case`, no allocation.
+    if haystack.is_ascii() && needle.is_ascii() {
+        let h = haystack.as_bytes();
+        let n = needle.as_bytes();
+        if n.len() > h.len() {
+            return false;
+        }
+        for window in h.windows(n.len()) {
+            if window.eq_ignore_ascii_case(n) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Unicode-aware path: walk every char boundary in the haystack and
+    // compare lowercase code points one at a time. This avoids allocating
+    // a lowered copy of either string.
+    let needle_lc: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+    if needle_lc.is_empty() {
+        return true;
+    }
+
+    let mut idx = 0;
+    while idx < haystack.len() {
+        if haystack.is_char_boundary(idx) {
+            let tail = &haystack[idx..];
+            let mut tail_chars = tail.chars().flat_map(|c| c.to_lowercase());
+            let mut needle_iter = needle_lc.iter().copied();
+            let matched = loop {
+                match (needle_iter.next(), tail_chars.next()) {
+                    (None, _) => break true,
+                    (Some(_), None) => break false,
+                    (Some(nc), Some(hc)) => {
+                        if nc != hc {
+                            break false;
+                        }
+                    }
+                }
+            };
+            if matched {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+    false
+}
+
 // ── Breadcrumb path ──────────────────────────────────
 
 /// One segment of the breadcrumb path. The label is what gets rendered;
@@ -479,8 +551,9 @@ pub struct BreadcrumbSegment {
 /// label, falling back to the full path string when the root has no file
 /// name component). Each intermediate segment is a parent directory, and
 /// the final segment is the file itself. When `file_path` is not under
-/// `workshop_root` the function falls back to the file's own ancestors so
-/// the user still gets a sensible breadcrumb.
+/// `workshop_root` the function returns just the workshop-root segment —
+/// callers should treat that as "no meaningful breadcrumb available" rather
+/// than relying on the file's own ancestors.
 pub fn breadcrumb_segments(workshop_root: &Path, file_path: &Path) -> Vec<BreadcrumbSegment> {
     let root_label = workshop_root
         .file_name()
@@ -609,8 +682,8 @@ pub fn view<'a>(
     let breadcrumb = breadcrumb_bar(workshop_root, &state.path, pal);
 
     if state.lines.is_empty() {
-        let loading = container(text("Loading...").size(14).color(pal.text_secondary))
-            .center(Length::Fill);
+        let loading =
+            container(text("Loading...").size(14).color(pal.text_secondary)).center(Length::Fill);
         return column![breadcrumb, loading]
             .width(Length::Fill)
             .height(Length::Fill)
@@ -748,6 +821,7 @@ pub fn view<'a>(
         bg: pal.surface,
         border: pal.border,
         viewport_color: pal.surface_active,
+        cache: &state.minimap_cache,
     })
     .width(Length::Fixed(MINIMAP_WIDTH))
     .height(Length::Fill);
@@ -842,6 +916,11 @@ struct Minimap<'a> {
     bg: Color,
     border: Color,
     viewport_color: Color,
+    /// Cached static geometry (background, divider, per-line spans). The
+    /// cache is owned by [`FileViewerState`] and is invalidated whenever
+    /// the file content changes; the viewport indicator is drawn on a
+    /// fresh frame because it moves on every scroll event.
+    cache: &'a CanvasCache<iced::Renderer>,
 }
 
 impl<'a> canvas::Program<Message> for Minimap<'a> {
@@ -855,77 +934,87 @@ impl<'a> canvas::Program<Message> for Minimap<'a> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
+        // Static layer: background, divider, per-line span rectangles.
+        // `canvas::Cache::draw` only invokes the closure when the cache
+        // is empty (post-`clear()`) or when the bounds change, so the
+        // O(lines × spans) loop is paid once per content/highlight
+        // update — not on every scroll or repaint.
+        let content_geometry = self.cache.draw(renderer, bounds.size(), |frame| {
+            // Background fill for the minimap strip.
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.bg);
 
-        // Background fill for the minimap strip.
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.bg);
+            // Left divider line to visually separate from the code body.
+            let divider = CanvasPath::rectangle(Point::ORIGIN, Size::new(1.0, bounds.height));
+            frame.fill(&divider, self.border);
 
-        // Left divider line to visually separate from the code body.
-        let divider = CanvasPath::rectangle(Point::ORIGIN, Size::new(1.0, bounds.height));
-        frame.fill(&divider, self.border);
-
-        let total_lines = self.lines.len();
-        if total_lines == 0 {
-            return vec![frame.into_geometry()];
-        }
-
-        // Compute per-line vertical slot. Short files stretch up to
-        // MINIMAP_MAX_LINE_H; long files compress so everything fits.
-        let slot_h = (bounds.height / total_lines as f32).min(MINIMAP_MAX_LINE_H);
-        // If the file is so long that slot_h drops well below 1px, every
-        // row we draw would vanish into the same physical pixel. Clamp
-        // the draw rectangle height so each line is still visible, even
-        // if they overlap slightly (this is what VS Code does too).
-        let draw_h = slot_h.max(1.0);
-        let usable_w = (bounds.width - 2.0 * MINIMAP_PADDING_X).max(0.0);
-
-        for (i, line) in self.lines.iter().enumerate() {
-            let y = i as f32 * slot_h;
-            if y >= bounds.height {
-                break;
+            let total_lines = self.lines.len();
+            if total_lines == 0 {
+                return;
             }
 
-            let mut x = MINIMAP_PADDING_X;
-            for span in &line.spans {
-                let span_len = span.text.chars().count() as f32;
-                let span_w = span_len * MINIMAP_CHAR_WIDTH;
+            // Compute per-line vertical slot. Short files stretch up to
+            // MINIMAP_MAX_LINE_H; long files compress so everything fits.
+            let slot_h = (bounds.height / total_lines as f32).min(MINIMAP_MAX_LINE_H);
+            // If the file is so long that slot_h drops well below 1px,
+            // every row we draw would vanish into the same physical
+            // pixel. Clamp the draw rectangle height so each line is
+            // still visible, even if they overlap slightly (this is
+            // what VS Code does too).
+            let draw_h = slot_h.max(1.0);
+            let usable_w = (bounds.width - 2.0 * MINIMAP_PADDING_X).max(0.0);
 
-                // Whitespace preserves indentation but draws nothing.
-                if !span.text.trim().is_empty() {
-                    let w = span_w.min(MINIMAP_PADDING_X + usable_w - x);
-                    if w <= 0.0 {
-                        break;
-                    }
-                    // Syntect gives us rich colors; soften alpha a touch
-                    // so the minimap doesn't scream at the user.
-                    let mut c = span.color;
-                    c.a *= 0.85;
-                    frame.fill_rectangle(Point::new(x, y), Size::new(w, draw_h), c);
-                }
-
-                x += span_w;
-                if x >= MINIMAP_PADDING_X + usable_w {
+            for (i, line) in self.lines.iter().enumerate() {
+                let y = i as f32 * slot_h;
+                if y >= bounds.height {
                     break;
                 }
-            }
-        }
 
-        // Viewport indicator — maps the visible scroll window onto the
-        // minimap's vertical extent.
+                let mut x = MINIMAP_PADDING_X;
+                for span in &line.spans {
+                    let span_len = span.text.chars().count() as f32;
+                    let span_w = span_len * MINIMAP_CHAR_WIDTH;
+
+                    // Whitespace preserves indentation but draws nothing.
+                    if !span.text.trim().is_empty() {
+                        let w = span_w.min(MINIMAP_PADDING_X + usable_w - x);
+                        if w <= 0.0 {
+                            break;
+                        }
+                        // Syntect gives us rich colors; soften alpha a touch
+                        // so the minimap doesn't scream at the user.
+                        let mut c = span.color;
+                        c.a *= 0.85;
+                        frame.fill_rectangle(Point::new(x, y), Size::new(w, draw_h), c);
+                    }
+
+                    x += span_w;
+                    if x >= MINIMAP_PADDING_X + usable_w {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Dynamic layer: the viewport indicator moves with every scroll
+        // event, so it lives on its own (uncached) frame layered above
+        // the cached content.
+        let total_lines = self.lines.len();
         if let Some((vp_y, vp_h)) = minimap_viewport_rect(
             total_lines,
             bounds.height,
             self.scroll_offset,
             self.viewport_height,
         ) {
-            frame.fill_rectangle(
+            let mut overlay = Frame::new(renderer, bounds.size());
+            overlay.fill_rectangle(
                 Point::new(0.0, vp_y),
                 Size::new(bounds.width, vp_h),
                 self.viewport_color,
             );
+            return vec![content_geometry, overlay.into_geometry()];
         }
 
-        vec![frame.into_geometry()]
+        vec![content_geometry]
     }
 }
 
@@ -1219,10 +1308,7 @@ mod tests {
         assert_eq!(segs[1].path, PathBuf::from("/home/dev/workshop/src"));
         assert!(!segs[1].is_file);
         assert_eq!(segs[2].label, "screen");
-        assert_eq!(
-            segs[2].path,
-            PathBuf::from("/home/dev/workshop/src/screen")
-        );
+        assert_eq!(segs[2].path, PathBuf::from("/home/dev/workshop/src/screen"));
         assert!(!segs[2].is_file);
         assert_eq!(segs[3].label, "file_viewer.rs");
         assert_eq!(

@@ -139,8 +139,8 @@ mod tests {
 
     #[test]
     fn toast_constants_are_sane() {
-        assert!(TOAST_LIFETIME_SECS >= 1);
-        assert!(MAX_TOASTS >= 1);
+        const _: () = assert!(TOAST_LIFETIME_SECS >= 1);
+        const _: () = assert!(MAX_TOASTS >= 1);
     }
 
     #[test]
