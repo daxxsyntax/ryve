@@ -12,7 +12,7 @@ use data::sparks::types::Spark;
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Element, Length, Theme};
 
-use crate::coding_agents::CodingAgent;
+use crate::coding_agents::{CodingAgent, CompatStatus};
 use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
 
 // ── Messages ────────────────────────────────────────────
@@ -66,8 +66,14 @@ pub fn view<'a>(
         );
     } else {
         for agent in available_agents {
+            // Spark ryve-133ebb9b: don't even let the user pick an agent
+            // whose CLI is too old — the spark would silently fail to
+            // launch otherwise.
+            let unsupported = agent.compatibility.is_unsupported();
             let is_selected = selected_agent == Some(agent.command.as_str());
-            let chip_text_color = if is_selected {
+            let chip_text_color = if unsupported {
+                pal.text_tertiary
+            } else if is_selected {
                 pal.window_bg
             } else {
                 pal.text_primary
@@ -91,9 +97,29 @@ pub fn view<'a>(
                 },
                 ..button::Style::default()
             })
-            .padding([4, 10])
-            .on_press(Message::SelectAgent(agent.command.clone()));
+            .padding([4, 10]);
+            let chip = if unsupported {
+                chip
+            } else {
+                chip.on_press(Message::SelectAgent(agent.command.clone()))
+            };
             agent_row = agent_row.push(chip);
+        }
+    }
+
+    // Inline upgrade hint for any unsupported agents currently on PATH.
+    // Drawn under the chip row so the message is unmissable but doesn't
+    // collide with the picker layout.
+    let mut upgrade_notes = column![].spacing(2);
+    let mut have_unsupported = false;
+    for agent in available_agents {
+        if let CompatStatus::Unsupported { reason, .. } = &agent.compatibility {
+            have_unsupported = true;
+            upgrade_notes = upgrade_notes.push(
+                text(format!("⚠ {}: {}", agent.display_name, reason))
+                    .size(FONT_SMALL)
+                    .color(pal.text_tertiary),
+            );
         }
     }
 
@@ -130,18 +156,15 @@ pub fn view<'a>(
     ]
     .align_y(iced::Alignment::Center);
 
-    let content = column![
-        header,
-        subtitle,
-        agents_label,
-        agent_row,
-        scrollable_list,
-        actions
-    ]
-    .spacing(10)
-    .padding(20)
-    .width(440)
-    .height(460);
+    let mut content = column![header, subtitle, agents_label, agent_row,]
+        .spacing(10)
+        .padding(20)
+        .width(440)
+        .height(460);
+    if have_unsupported {
+        content = content.push(upgrade_notes);
+    }
+    let content = content.push(scrollable_list).push(actions);
 
     let inner = container(content).style(move |_theme: &Theme| style::modal(&pal));
 

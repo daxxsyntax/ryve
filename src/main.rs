@@ -283,23 +283,45 @@ impl App {
         let available_agents = coding_agents::detect_available();
         let appearance = Appearance::detect();
 
-        (
-            Self {
-                appearance,
-                global_config,
-                available_agents,
-                workshops: Vec::new(),
-                active_workshop: None,
-                next_terminal_id: 1,
-                poll_in_flight: false,
-                shift_held: false,
-                splitter_drag: None,
-                window_size: Size::new(1400.0, 900.0),
-                toasts: Vec::new(),
-                next_toast_id: 1,
-            },
-            Task::none(),
-        )
+        let mut app = Self {
+            appearance,
+            global_config,
+            available_agents,
+            workshops: Vec::new(),
+            active_workshop: None,
+            next_terminal_id: 1,
+            poll_in_flight: false,
+            shift_held: false,
+            splitter_drag: None,
+            window_size: Size::new(1400.0, 900.0),
+            toasts: Vec::new(),
+            next_toast_id: 1,
+        };
+
+        // Surface an upgrade toast for any detected CLI whose version is
+        // outside Ryve's known-good range. Spark ryve-133ebb9b: catching
+        // this at boot — instead of when a Hand spawn fails cryptically —
+        // is the whole point of the version probe.
+        let unsupported: Vec<(String, String)> = app
+            .available_agents
+            .iter()
+            .filter_map(|a| match &a.compatibility {
+                coding_agents::CompatStatus::Unsupported { reason, .. } => {
+                    Some((a.display_name.clone(), reason.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        for (name, reason) in unsupported {
+            tasks.push(app.push_toast(
+                format!("Upgrade {name} CLI"),
+                reason,
+                ToastKind::Warning,
+            ));
+        }
+
+        (app, Task::batch(tasks))
     }
 
     fn active_workshop(&self) -> Option<&Workshop> {
@@ -598,6 +620,7 @@ impl App {
                                 command: p.agent_command.clone(),
                                 args: serde_json::from_str(&p.agent_args).unwrap_or_default(),
                                 resume: coding_agents::ResumeStrategy::None,
+                                compatibility: coding_agents::CompatStatus::Unknown,
                             });
                         ws.agent_sessions.push(AgentSession {
                             id: p.id,
@@ -855,6 +878,7 @@ impl App {
                                     command: cmd.clone(),
                                     args: args.clone(),
                                     resume: session.agent.resume.clone(),
+                                    compatibility: session.agent.compatibility.clone(),
                                 };
                                 let next_id = &mut self.next_terminal_id;
                                 let full_auto = self.global_config.agent_settings
@@ -1775,6 +1799,7 @@ impl App {
                     command: def.command.clone(),
                     args: def.args.clone(),
                     resume: coding_agents::ResumeStrategy::None,
+                    compatibility: coding_agents::CompatStatus::Unknown,
                 };
 
                 // Show spark picker before spawning the custom agent

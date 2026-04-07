@@ -17,6 +17,51 @@ pub struct CodingAgent {
     pub args: Vec<String>,
     /// How this agent supports session resumption
     pub resume: ResumeStrategy,
+    /// Compatibility status with Ryve's known-good version range. Populated
+    /// at detection time by [`detect_available`]; inline constructors used
+    /// by tests / fallback paths default to [`CompatStatus::Unknown`].
+    ///
+    /// See spark `ryve-133ebb9b`: CLI flag surfaces drift between releases
+    /// (e.g. codex removed `--instructions`, opencode renamed its run
+    /// subcommand). Ryve runs `<cmd> --version` on detection so the UI can
+    /// nudge the user to upgrade before a Hand spawn fails cryptically.
+    pub compatibility: CompatStatus,
+}
+
+/// Result of comparing the installed CLI version against Ryve's known-good
+/// range. The variant carries enough context for the UI to render a clear
+/// upgrade prompt without consulting any other state.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CompatStatus {
+    /// Detected version is inside the supported range.
+    Compatible {
+        /// Parsed `MAJOR.MINOR.PATCH` string for display.
+        version: String,
+    },
+    /// Detected version is outside the supported range. The user should
+    /// upgrade (or, more rarely, downgrade) before relying on this agent.
+    Unsupported {
+        /// Parsed `MAJOR.MINOR.PATCH` string for display.
+        version: String,
+        /// Human-readable explanation suitable for a toast or modal: names
+        /// the agent, the detected version, and the required range.
+        reason: String,
+    },
+    /// Version probe failed (binary missing `--version`, garbled output,
+    /// or no known range registered for this command). Treated as a soft
+    /// warning: the UI may still let the user pick the agent but should
+    /// surface that compatibility could not be confirmed.
+    #[default]
+    Unknown,
+}
+
+impl CompatStatus {
+    /// True iff the agent is known to be unsupported. Use this to gate
+    /// "Spawn" buttons in pickers.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, CompatStatus::Unsupported { .. })
+    }
+
 }
 
 impl CodingAgent {
@@ -172,6 +217,155 @@ pub enum ResumeStrategy {
     None,
 }
 
+/// Inclusive lower bound / exclusive upper bound semver range used to
+/// validate the installed CLI version against Ryve's known-good window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VersionRange {
+    /// Inclusive minimum `(major, minor, patch)`.
+    pub min: (u32, u32, u32),
+    /// Optional exclusive upper bound. `None` means "no upper limit".
+    pub max_exclusive: Option<(u32, u32, u32)>,
+}
+
+impl VersionRange {
+    fn contains(&self, v: (u32, u32, u32)) -> bool {
+        if v < self.min {
+            return false;
+        }
+        if let Some(max) = self.max_exclusive {
+            if v >= max {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn describe(&self) -> String {
+        let (a, b, c) = self.min;
+        let mut s = format!(">= {a}.{b}.{c}");
+        if let Some((x, y, z)) = self.max_exclusive {
+            s.push_str(&format!(", < {x}.{y}.{z}"));
+        }
+        s
+    }
+}
+
+/// Look up Ryve's known-good range for a given CLI command. Returns `None`
+/// for commands Ryve has no opinion about (custom user agents, test stubs).
+pub fn known_range(command: &str) -> Option<VersionRange> {
+    // The minima encode the contract documented inline in this file:
+    //   * `codex >= 0.118` — `--instructions` was removed; Ryve now relies
+    //     on `codex exec` + AGENTS.md instead.
+    //   * `opencode >= 1.2` — same AGENTS.md flow.
+    //   * `claude >= 1.0` — `--print` + `--system-prompt` headless mode.
+    //   * `aider >= 0.50` — `--message` / `--read` flag combo.
+    // Bumping these is the canonical way to tell users "your CLI is too old".
+    match command {
+        "codex" => Some(VersionRange { min: (0, 118, 0), max_exclusive: None }),
+        "opencode" => Some(VersionRange { min: (1, 2, 0), max_exclusive: None }),
+        "claude" => Some(VersionRange { min: (1, 0, 0), max_exclusive: None }),
+        "aider" => Some(VersionRange { min: (0, 50, 0), max_exclusive: None }),
+        _ => None,
+    }
+}
+
+/// Find the first `MAJOR.MINOR.PATCH` triple inside `s`. Tolerant of the
+/// surrounding text variations across `--version` outputs (e.g. `codex
+/// 0.118.3`, `aider 0.71.0`, `1.2.3 (opencode)`, `Claude Code 1.0.50`).
+pub fn parse_first_semver(s: &str) -> Option<(u32, u32, u32)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+        }
+        let candidate = &s[start..i];
+        let parts: Vec<&str> = candidate.split('.').collect();
+        if parts.len() >= 3 {
+            if let (Ok(a), Ok(b), Ok(c)) = (
+                parts[0].parse::<u32>(),
+                parts[1].parse::<u32>(),
+                // Strip any trailing non-digit (e.g. "0-rc1") for the patch.
+                parts[2]
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<u32>(),
+            ) {
+                return Some((a, b, c));
+            }
+        }
+        // Skip past this candidate to avoid an infinite loop on malformed
+        // input that started with a digit but couldn't be parsed.
+        if i == start {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Run `<command> --version` and return its combined output. Returns `None`
+/// if the binary failed to launch or exited non-zero. Some CLIs print to
+/// stderr instead of stdout (notably `aider`), so both streams are merged.
+fn run_version_command(command: &str) -> Option<String> {
+    let out = std::process::Command::new(command)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    if combined.trim().is_empty() {
+        combined = String::from_utf8_lossy(&out.stderr).into_owned();
+    }
+    Some(combined)
+}
+
+/// Pure version-comparison helper used by [`check_compatibility`] and tests.
+/// Separated so unit tests can exercise the matrix without forking processes.
+pub fn evaluate_version(
+    command: &str,
+    version_output: &str,
+) -> CompatStatus {
+    let Some(range) = known_range(command) else {
+        return CompatStatus::Unknown;
+    };
+    let Some(v) = parse_first_semver(version_output) else {
+        return CompatStatus::Unknown;
+    };
+    let detected = format!("{}.{}.{}", v.0, v.1, v.2);
+    if range.contains(v) {
+        CompatStatus::Compatible { version: detected }
+    } else {
+        let reason = format!(
+            "Ryve requires `{command}` {req}, but detected v{detected}. \
+             Upgrade the CLI — flag-surface changes between releases break \
+             Hand spawning.",
+            req = range.describe(),
+        );
+        CompatStatus::Unsupported {
+            version: detected,
+            reason,
+        }
+    }
+}
+
+/// Probe the installed CLI's version and classify it against Ryve's known
+/// range. Used by [`detect_available`] at boot.
+pub fn check_compatibility(command: &str) -> CompatStatus {
+    if known_range(command).is_none() {
+        return CompatStatus::Unknown;
+    }
+    let Some(out) = run_version_command(command) else {
+        return CompatStatus::Unknown;
+    };
+    evaluate_version(command, &out)
+}
+
 /// Known coding agents and their CLI commands.
 struct AgentDef {
     name: &'static str,
@@ -210,18 +404,27 @@ const KNOWN_AGENTS: &[AgentDef] = &[
     },
 ];
 
-/// Detect which coding agents are available on PATH.
+/// Detect which coding agents are available on PATH. Each detected agent
+/// has its `compatibility` field populated by probing `<cmd> --version`.
 pub fn detect_available() -> Vec<CodingAgent> {
     KNOWN_AGENTS
         .iter()
         .filter(|def| which(def.command))
-        .map(def_to_agent)
+        .map(|def| {
+            let mut agent = def_to_agent(def);
+            agent.compatibility = check_compatibility(&agent.command);
+            agent
+        })
         .collect()
 }
 
 /// Return every coding agent Ryve knows about, regardless of whether it is
 /// currently installed. Used by `ryve hand spawn --agent <name>` so the
 /// caller can resolve a name to a definition without first running `which`.
+///
+/// `compatibility` is left as [`CompatStatus::Unknown`] — callers that care
+/// (e.g. the GUI's boot probe) should run [`check_compatibility`] explicitly
+/// rather than paying for a `--version` fork on every CLI invocation.
 pub fn known_agents() -> Vec<CodingAgent> {
     KNOWN_AGENTS.iter().map(def_to_agent).collect()
 }
@@ -232,6 +435,7 @@ fn def_to_agent(def: &AgentDef) -> CodingAgent {
         command: def.command.to_string(),
         args: def.args.iter().map(|a| a.to_string()).collect(),
         resume: def.resume.clone(),
+        compatibility: CompatStatus::Unknown,
     }
 }
 
@@ -337,8 +541,127 @@ mod tests {
             command: "/usr/local/bin/stub-agent".into(),
             args: vec!["--baseline".into()],
             resume: ResumeStrategy::None,
+            compatibility: CompatStatus::Unknown,
         };
         let args = agent.build_headless_args("stub-prompt", &PathBuf::from("/tmp/x"));
         assert_eq!(args, vec!["--baseline".to_string(), "stub-prompt".to_string()]);
+    }
+
+    // ── Version-detection tests (spark ryve-133ebb9b) ───────────────────
+
+    #[test]
+    fn parse_first_semver_extracts_triple_from_varied_outputs() {
+        // Real-world `--version` output samples for each supported CLI.
+        let cases = [
+            ("codex 0.118.3", (0, 118, 3)),
+            ("1.2.4 (opencode)", (1, 2, 4)),
+            ("aider 0.71.0", (0, 71, 0)),
+            ("Claude Code 1.0.50 (build abc)", (1, 0, 50)),
+            ("v2.0.0-rc1", (2, 0, 0)),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_first_semver(input),
+                Some(expected),
+                "failed to parse {input:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_first_semver_returns_none_for_garbage() {
+        assert_eq!(parse_first_semver(""), None);
+        assert_eq!(parse_first_semver("no version here"), None);
+        // Two-component "version" should not match.
+        assert_eq!(parse_first_semver("codex 0.118"), None);
+    }
+
+    #[test]
+    fn version_range_contains_inclusive_min_and_exclusive_max() {
+        let r = VersionRange {
+            min: (1, 0, 0),
+            max_exclusive: Some((2, 0, 0)),
+        };
+        assert!(r.contains((1, 0, 0)), "min is inclusive");
+        assert!(r.contains((1, 99, 99)));
+        assert!(!r.contains((0, 99, 99)));
+        assert!(!r.contains((2, 0, 0)), "max is exclusive");
+    }
+
+    #[test]
+    fn evaluate_version_marks_old_codex_as_unsupported() {
+        // Codex 0.117 lacks the AGENTS.md flow Ryve depends on; the user
+        // must upgrade. The reason string should mention both the detected
+        // version and the requirement so the toast is actionable.
+        let status = evaluate_version("codex", "codex 0.117.0");
+        match status {
+            CompatStatus::Unsupported { version, reason } => {
+                assert_eq!(version, "0.117.0");
+                assert!(reason.contains("0.117.0"), "reason missing detected version: {reason}");
+                assert!(reason.contains("0.118"), "reason missing required min: {reason}");
+                assert!(reason.contains("codex"), "reason missing agent name: {reason}");
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evaluate_version_accepts_current_codex() {
+        let status = evaluate_version("codex", "codex 0.118.3");
+        assert!(matches!(
+            status,
+            CompatStatus::Compatible { ref version } if version == "0.118.3"
+        ));
+    }
+
+    #[test]
+    fn evaluate_version_accepts_future_codex() {
+        // No upper bound — future releases stay compatible until Ryve says
+        // otherwise. Regression guard against accidentally adding a max.
+        let status = evaluate_version("codex", "codex 99.0.0");
+        assert!(matches!(status, CompatStatus::Compatible { .. }));
+    }
+
+    #[test]
+    fn evaluate_version_handles_unknown_command() {
+        // Custom user agents have no registered range — must fall through
+        // to Unknown rather than panicking or claiming Compatible.
+        assert_eq!(
+            evaluate_version("my-custom-tool", "my-custom-tool 1.2.3"),
+            CompatStatus::Unknown,
+        );
+    }
+
+    #[test]
+    fn evaluate_version_handles_unparseable_output() {
+        assert_eq!(
+            evaluate_version("codex", "version: yes"),
+            CompatStatus::Unknown,
+        );
+    }
+
+    #[test]
+    fn compat_status_is_unsupported_only_for_unsupported_variant() {
+        assert!(!CompatStatus::Compatible { version: "1.0.0".into() }.is_unsupported());
+        assert!(!CompatStatus::Unknown.is_unsupported());
+        assert!(CompatStatus::Unsupported {
+            version: "0.1.0".into(),
+            reason: "old".into(),
+        }
+        .is_unsupported());
+    }
+
+    #[test]
+    fn known_range_covers_all_first_party_agents() {
+        // Regression: every agent in KNOWN_AGENTS should have a registered
+        // version range, otherwise detect_available will silently mark it
+        // Unknown forever.
+        for agent in known_agents() {
+            assert!(
+                known_range(&agent.command).is_some(),
+                "no version range registered for first-party agent {}",
+                agent.command,
+            );
+        }
     }
 }

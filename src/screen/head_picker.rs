@@ -12,7 +12,7 @@
 use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Element, Length, Theme};
 
-use crate::coding_agents::CodingAgent;
+use crate::coding_agents::{CodingAgent, CompatStatus};
 use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL};
 
 #[derive(Debug, Clone)]
@@ -74,23 +74,43 @@ pub fn view<'a>(
         );
     } else {
         for agent in available_agents {
+            // Spark ryve-133ebb9b: gate selection on the version probe.
+            // Unsupported agents show their detected version + a "please
+            // upgrade" hint and the row is non-clickable so the user can't
+            // launch a Head that will crash on first contact with the CLI.
+            let unsupported = agent.compatibility.is_unsupported();
+            let name_color = if unsupported {
+                pal.text_tertiary
+            } else {
+                pal.text_primary
+            };
             let row_content = row![
                 text(&agent.display_name)
                     .size(FONT_BODY)
-                    .color(pal.text_primary),
+                    .color(name_color),
                 Space::new().width(Length::Fill),
                 text(&agent.command)
                     .size(FONT_SMALL)
                     .color(pal.text_tertiary),
             ]
             .align_y(iced::Alignment::Center);
-            agent_list = agent_list.push(
-                button(row_content)
-                    .style(button::text)
-                    .width(Length::Fill)
-                    .padding([6, 8])
-                    .on_press(Message::SelectAgent(agent.command.clone())),
-            );
+            let mut row_col = column![row_content].spacing(2);
+            if let CompatStatus::Unsupported { version, .. } = &agent.compatibility {
+                row_col = row_col.push(
+                    text(format!("v{version} — upgrade required"))
+                        .size(FONT_SMALL)
+                        .color(pal.text_tertiary),
+                );
+            }
+            let btn = button(row_col)
+                .style(button::text)
+                .width(Length::Fill)
+                .padding([6, 8]);
+            agent_list = agent_list.push(if unsupported {
+                btn
+            } else {
+                btn.on_press(Message::SelectAgent(agent.command.clone()))
+            });
         }
     }
 

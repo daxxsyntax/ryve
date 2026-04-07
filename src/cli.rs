@@ -1195,5 +1195,6 @@ fn resolve_agent(name: Option<&str>) -> CodingAgent {
         command: name.to_string(),
         args: Vec::new(),
         resume: crate::coding_agents::ResumeStrategy::None,
+        compatibility: crate::coding_agents::CompatStatus::Unknown,
     }
 }

@@ -369,6 +369,7 @@ mod tests {
             command: stub_path.to_string_lossy().into_owned(),
             args: Vec::new(),
             resume: ResumeStrategy::None,
+            compatibility: crate::coding_agents::CompatStatus::Unknown,
         };
 
         let spawned = spawn_hand(&workshop_dir, &pool, &agent, &spark.id, HandKind::Owner, None)
