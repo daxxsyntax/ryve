@@ -49,10 +49,11 @@ pub async fn assign(
     .fetch_one(&mut *tx)
     .await?;
 
-    let assignment = sqlx::query_as::<_, HandAssignment>("SELECT * FROM hand_assignments WHERE id = ?")
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let assignment =
+        sqlx::query_as::<_, HandAssignment>("SELECT * FROM hand_assignments WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
 
     tx.commit().await?;
 

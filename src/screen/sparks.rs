@@ -7,7 +7,9 @@ use data::sparks::types::Spark;
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
+use crate::style::{
+    self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
+};
 
 // ── State ────────────────────────────────────────────
 
@@ -85,7 +87,11 @@ pub fn view<'a>(
     }
 
     if sparks.is_empty() && !create_form.visible {
-        list = list.push(text("No sparks yet").size(FONT_BODY).color(pal.text_tertiary));
+        list = list.push(
+            text("No sparks yet")
+                .size(FONT_BODY)
+                .color(pal.text_tertiary),
+        );
     } else {
         for spark in sparks {
             list = list.push(view_spark_row(spark, &pal));
@@ -118,18 +124,26 @@ fn view_spark_row<'a>(spark: &'a Spark, pal: &Palette) -> Element<'a, Message> {
     let priority_label = format!("P{}", spark.priority);
     let id = spark.id.clone();
 
-    let status_btn = button(text(status_indicator).size(FONT_ICON_SM).color(pal.text_secondary))
-        .style(button::text)
-        .padding([2, 4])
-        .on_press(Message::CycleStatus(id.clone(), next_status.to_string()));
+    let status_btn = button(
+        text(status_indicator)
+            .size(FONT_ICON_SM)
+            .color(pal.text_secondary),
+    )
+    .style(button::text)
+    .padding([2, 4])
+    .on_press(Message::CycleStatus(id.clone(), next_status.to_string()));
 
     row![
         status_btn,
         button(
             row![
-                text(priority_label).size(FONT_LABEL).color(pal.text_tertiary),
+                text(priority_label)
+                    .size(FONT_LABEL)
+                    .color(pal.text_tertiary),
                 text(&spark.title).size(FONT_BODY).color(pal.text_primary),
-            ].spacing(6).align_y(iced::Alignment::Center),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
         )
         .style(button::text)
         .width(Length::Fill)

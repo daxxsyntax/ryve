@@ -9,11 +9,11 @@
 //! being selected.
 
 use data::sparks::types::Spark;
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
 
 use crate::coding_agents::CodingAgent;
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
+use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette};
 
 // ── Messages ────────────────────────────────────────────
 
@@ -47,11 +47,10 @@ pub fn view<'a>(
     let header =
         row![title, Space::new().width(Length::Fill), close_btn].align_y(iced::Alignment::Center);
 
-    let subtitle = text(
-        "Pick a coding agent and a spark. Both are required before the Hand can launch.",
-    )
-    .size(FONT_SMALL)
-    .color(pal.text_secondary);
+    let subtitle =
+        text("Pick a coding agent and a spark. Both are required before the Hand can launch.")
+            .size(FONT_SMALL)
+            .color(pal.text_secondary);
 
     // Coding-agent chip row.
     let agents_label = text("Coding agent")
@@ -155,11 +154,7 @@ pub fn view<'a>(
         .into()
 }
 
-fn view_spark_row<'a>(
-    spark: &'a Spark,
-    agent_chosen: bool,
-    pal: &Palette,
-) -> Element<'a, Message> {
+fn view_spark_row<'a>(spark: &'a Spark, agent_chosen: bool, pal: &Palette) -> Element<'a, Message> {
     let pal = *pal;
     let status_indicator: &str = match spark.status.as_str() {
         "open" => "\u{25CB}",        // ○

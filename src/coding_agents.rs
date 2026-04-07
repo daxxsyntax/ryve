@@ -284,7 +284,10 @@ mod tests {
         let agent = agent_for("claude");
         let path = PathBuf::from("/tmp/p.md");
         let args = agent.build_headless_args("hello", &path);
-        assert!(args.iter().any(|a| a == "--print"), "claude needs --print: {args:?}");
+        assert!(
+            args.iter().any(|a| a == "--print"),
+            "claude needs --print: {args:?}"
+        );
         assert!(
             args.iter().any(|a| a == "--system-prompt"),
             "claude should still pass --system-prompt: {args:?}"
@@ -339,6 +342,9 @@ mod tests {
             resume: ResumeStrategy::None,
         };
         let args = agent.build_headless_args("stub-prompt", &PathBuf::from("/tmp/x"));
-        assert_eq!(args, vec!["--baseline".to_string(), "stub-prompt".to_string()]);
+        assert_eq!(
+            args,
+            vec!["--baseline".to_string(), "stub-prompt".to_string()]
+        );
     }
 }

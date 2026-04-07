@@ -16,7 +16,10 @@ pub async fn create(pool: &SqlitePool, new: NewSpark) -> Result<Spark, SparksErr
     let spark_type = new.spark_type.as_str();
     let metadata = new.metadata.unwrap_or_else(|| "{}".to_string());
 
-    let risk_level = new.risk_level.map(|r| r.as_str().to_string()).unwrap_or_else(|| "normal".to_string());
+    let risk_level = new
+        .risk_level
+        .map(|r| r.as_str().to_string())
+        .unwrap_or_else(|| "normal".to_string());
 
     sqlx::query(
         "INSERT INTO sparks (id, title, description, status, priority, spark_type, assignee, owner, parent_id, workshop_id, estimated_minutes, metadata, created_at, updated_at, due_at, risk_level, scope_boundary)

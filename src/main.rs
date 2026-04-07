@@ -15,8 +15,9 @@ use std::path::PathBuf;
 
 use data::sparks::types::{Contract, PersistedAgentSession, Spark};
 use iced::widget::{Space, button, column, container, row, stack, text};
-use iced::{event, keyboard, mouse, window};
 use iced::{Color, Element, Length, Point, Size, Subscription, Task, Theme};
+use iced::{event, keyboard, mouse, window};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use uuid::Uuid;
 
 use coding_agents::CodingAgent;
@@ -27,6 +28,16 @@ use screen::toast::{self, Toast, ToastKind};
 use style::Appearance;
 use widget::splitter::{self, SplitterDrag, SplitterKind};
 use workshop::Workshop;
+
+fn process_is_alive(child_pid: i64) -> bool {
+    let Ok(pid) = u32::try_from(child_pid) else {
+        return false;
+    };
+
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    system.process(Pid::from_u32(pid)).is_some()
+}
 
 fn main() -> iced::Result {
     // Dispatch: if the first non-flag arg is a known CLI subcommand,
@@ -121,7 +132,10 @@ enum Message {
     NewWorkshopDialog,
     WorkshopDirPicked(Option<PathBuf>),
     /// `workshop::init_workshop` failed (bad db, unreadable config, etc.).
-    WorkshopInitFailed { id: Uuid, error: String },
+    WorkshopInitFailed {
+        id: Uuid,
+        error: String,
+    },
 
     /// Workshop .ryve/ initialized
     WorkshopReady {
@@ -188,9 +202,14 @@ enum Message {
     /// Shift key state changed (for shift-click line selection).
     ShiftStateChanged(bool),
     /// Send initial spark prompt to a Hand's terminal after agent boots.
-    SendSparkPrompt { tab_id: u64, prompt: String },
+    SendSparkPrompt {
+        tab_id: u64,
+        prompt: String,
+    },
     /// Submit the previously-pasted prompt by sending Enter.
-    SubmitSparkPrompt { tab_id: u64 },
+    SubmitSparkPrompt {
+        tab_id: u64,
+    },
 
     /// User pressed a layout splitter handle.
     SplitterPressed(SplitterKind),
@@ -207,7 +226,11 @@ enum Message {
     Toast(toast::Message),
     /// Push a new toast onto the stack from an async task.
     #[allow(dead_code)]
-    ShowToast { title: String, body: String, kind: ToastKind },
+    ShowToast {
+        title: String,
+        body: String,
+        kind: ToastKind,
+    },
     /// A toast's lifetime elapsed — remove it if still present.
     ToastExpired(u64),
 }
@@ -324,17 +347,20 @@ impl App {
             ToastKind::Warning => log::warn!("toast: {title}: {body}"),
             ToastKind::Info => log::info!("toast: {title}: {body}"),
         }
-        self.toasts.push(Toast { id, title, body, kind });
+        self.toasts.push(Toast {
+            id,
+            title,
+            body,
+            kind,
+        });
         // Drop oldest when over the cap.
         while self.toasts.len() > toast::MAX_TOASTS {
             self.toasts.remove(0);
         }
         Task::perform(
             async move {
-                tokio::time::sleep(std::time::Duration::from_secs(
-                    toast::TOAST_LIFETIME_SECS,
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_secs(toast::TOAST_LIFETIME_SECS))
+                    .await;
                 id
             },
             Message::ToastExpired,
@@ -426,7 +452,9 @@ impl App {
                 agent_context,
             } => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
-                let Some(idx) = ws_idx else { return Task::none(); };
+                let Some(idx) = ws_idx else {
+                    return Task::none();
+                };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     ws.sparks_db = Some(pool.clone());
                     ws.config = config;
@@ -441,10 +469,10 @@ impl App {
                     let sparks_task = Task::perform(load_sparks(pool, ws_id), move |sparks| {
                         Message::SparksLoaded(id, sparks)
                     });
-                    let sessions_task = Task::perform(
-                        load_agent_sessions(pool2, ws_id2),
-                        move |sessions| Message::AgentSessionsLoaded(id, sessions),
-                    );
+                    let sessions_task =
+                        Task::perform(load_agent_sessions(pool2, ws_id2), move |sessions| {
+                            Message::AgentSessionsLoaded(id, sessions)
+                        });
                     let ignore = ws.config.explorer.ignore.clone();
                     let scan_task = Task::perform(
                         file_explorer::scan_directory(dir, ignore),
@@ -475,7 +503,9 @@ impl App {
             Message::SparksLoaded(id, sparks) => {
                 self.poll_in_flight = false;
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
-                let Some(idx) = ws_idx else { return Task::none(); };
+                let Some(idx) = ws_idx else {
+                    return Task::none();
+                };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     ws.sparks = sparks;
 
@@ -484,10 +514,9 @@ impl App {
                     let contracts_task = if let Some(ref pool) = ws.sparks_db {
                         let pool = pool.clone();
                         let ws_id = ws.workshop_id();
-                        Task::perform(
-                            load_failing_contract_count(pool, ws_id),
-                            move |n| Message::FailingContractsLoaded(id, n),
-                        )
+                        Task::perform(load_failing_contract_count(pool, ws_id), move |n| {
+                            Message::FailingContractsLoaded(id, n)
+                        })
                     } else {
                         Task::none()
                     };
@@ -499,10 +528,7 @@ impl App {
                         let config = ws.config.clone();
                         let sync_task = Task::perform(
                             async move {
-                                let _ = data::agent_context::sync(
-                                    &dir, &ryve_dir, &config,
-                                )
-                                .await;
+                                let _ = data::agent_context::sync(&dir, &ryve_dir, &config).await;
                             },
                             |_| Message::AgentContextSynced,
                         );
@@ -542,14 +568,14 @@ impl App {
                 let id = ws.id;
                 let pool2 = pool.clone();
                 let workshop_id2 = workshop_id.clone();
-                let load_task = Task::perform(
-                    load_contracts(pool, spark_id.clone()),
-                    move |list| Message::ContractsLoaded(id, spark_id.clone(), list),
-                );
-                let count_task = Task::perform(
-                    load_failing_contract_count(pool2, workshop_id2),
-                    move |n| Message::FailingContractsLoaded(id, n),
-                );
+                let load_task =
+                    Task::perform(load_contracts(pool, spark_id.clone()), move |list| {
+                        Message::ContractsLoaded(id, spark_id.clone(), list)
+                    });
+                let count_task =
+                    Task::perform(load_failing_contract_count(pool2, workshop_id2), move |n| {
+                        Message::FailingContractsLoaded(id, n)
+                    });
                 Task::batch([load_task, count_task])
             }
 
@@ -562,30 +588,38 @@ impl App {
                 // appear in the Hands panel without requiring the workshop
                 // to be reopened).
                 //
-                // Sessions already known in memory keep their `tab_id` and
-                // `active` flags so we don't clobber a live UI tab. New rows
-                // (from the CLI path) are appended with `tab_id = None`
-                // (no UI tab) and `active = ended_at.is_none()`.
+                // Sessions already known in memory keep their `tab_id` so we
+                // don't clobber a live UI tab. Persisted rows are then
+                // reclassified as active/history/stale from DB end-state,
+                // live UI terminal presence, and detached child PID liveness.
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
-                let Some(idx) = ws_idx else { return Task::none(); };
+                let Some(idx) = ws_idx else {
+                    return Task::none();
+                };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     let available = &self.available_agents;
-                    let known_ids: std::collections::HashSet<String> = ws
-                        .agent_sessions
-                        .iter()
-                        .map(|s| s.id.clone())
-                        .collect();
+                    let known_ids: std::collections::HashSet<String> =
+                        ws.agent_sessions.iter().map(|s| s.id.clone()).collect();
 
                     for p in persisted {
+                        let existing_tab_id = ws
+                            .agent_sessions
+                            .iter()
+                            .find(|s| s.id == p.id)
+                            .and_then(|s| s.tab_id);
+                        let display_state = screen::agents::classify_session(
+                            p.ended_at.is_some(),
+                            existing_tab_id.is_some(),
+                            p.child_pid.is_some_and(process_is_alive),
+                        );
+
                         if known_ids.contains(&p.id) {
-                            // Already in memory — preserve tab_id/active.
-                            // If the DB says the session ended, reflect it.
-                            if p.ended_at.is_some() {
-                                if let Some(s) =
-                                    ws.agent_sessions.iter_mut().find(|s| s.id == p.id)
-                                {
-                                    s.active = false;
-                                }
+                            // Already in memory — preserve tab_id, but refresh liveness.
+                            if let Some(s) = ws.agent_sessions.iter_mut().find(|s| s.id == p.id) {
+                                s.active =
+                                    display_state == screen::agents::SessionDisplayState::Active;
+                                s.stale =
+                                    display_state == screen::agents::SessionDisplayState::Stale;
                             }
                             continue;
                         }
@@ -603,11 +637,9 @@ impl App {
                             id: p.id,
                             name: p.agent_name,
                             agent,
-                            tab_id: None,
-                            // Headless / CLI-spawned hands have no UI tab,
-                            // so the only signal that they're still running
-                            // is the absence of an `ended_at` row.
-                            active: p.ended_at.is_none(),
+                            tab_id: existing_tab_id,
+                            active: display_state == screen::agents::SessionDisplayState::Active,
+                            stale: display_state == screen::agents::SessionDisplayState::Stale,
                             resume_id: p.resume_id,
                             started_at: p.started_at,
                         });
@@ -620,7 +652,9 @@ impl App {
 
             Message::FilesScanned(id, msg) => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
-                let Some(idx) = ws_idx else { return Task::none(); };
+                let Some(idx) = ws_idx else {
+                    return Task::none();
+                };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     if let file_explorer::Message::TreeLoaded(tree, statuses, diff_stats, branch) =
                         msg
@@ -857,7 +891,9 @@ impl App {
                                     resume: session.agent.resume.clone(),
                                 };
                                 let next_id = &mut self.next_terminal_id;
-                                let full_auto = self.global_config.agent_settings
+                                let full_auto = self
+                                    .global_config
+                                    .agent_settings
                                     .get(&resume_agent.command)
                                     .map_or(false, |s| s.full_auto);
                                 let tab_id = ws.spawn_terminal(
@@ -874,6 +910,7 @@ impl App {
                                 {
                                     s.tab_id = Some(tab_id);
                                     s.active = true;
+                                    s.stale = false;
                                 }
 
                                 // Mark as active in DB
@@ -934,10 +971,9 @@ impl App {
                     }
                     screen::spark_detail::Message::CycleContractKind => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.contract_create_form.kind =
-                                screen::spark_detail::next_contract_kind(
-                                    ws.contract_create_form.kind,
-                                );
+                            ws.contract_create_form.kind = screen::spark_detail::next_contract_kind(
+                                ws.contract_create_form.kind,
+                            );
                         }
                     }
                     screen::spark_detail::Message::ToggleContractEnforcement => {
@@ -986,16 +1022,12 @@ impl App {
                             let sid = spark_id.clone();
                             let create_task = Task::perform(
                                 async move {
-                                    let _ = data::sparks::contract_repo::create(
-                                        &pool,
-                                        new_contract,
-                                    )
-                                    .await;
-                                    data::sparks::contract_repo::list_for_spark(
-                                        &load_pool, &sid,
-                                    )
-                                    .await
-                                    .unwrap_or_default()
+                                    let _ =
+                                        data::sparks::contract_repo::create(&pool, new_contract)
+                                            .await;
+                                    data::sparks::contract_repo::list_for_spark(&load_pool, &sid)
+                                        .await
+                                        .unwrap_or_default()
                                 },
                                 move |list| Message::ContractsLoaded(ws_id, spark_id.clone(), list),
                             );
@@ -1016,11 +1048,8 @@ impl App {
                             let ws_id = ws.id;
                             return Task::perform(
                                 async move {
-                                    let _ = data::sparks::contract_repo::delete(
-                                        &pool,
-                                        contract_id,
-                                    )
-                                    .await;
+                                    let _ = data::sparks::contract_repo::delete(&pool, contract_id)
+                                        .await;
                                 },
                                 move |_| Message::ContractCheckFinished {
                                     ws_id,
@@ -1084,7 +1113,10 @@ impl App {
                                     async move {
                                         if new_status == "closed" {
                                             let _ = data::sparks::spark_repo::close(
-                                                &pool, &spark_id, "completed", "user",
+                                                &pool,
+                                                &spark_id,
+                                                "completed",
+                                                "user",
                                             )
                                             .await;
                                         } else {
@@ -1167,10 +1199,9 @@ impl App {
                                 let pool = pool.clone();
                                 let ws_id = ws.workshop_id();
                                 let id = ws.id;
-                                return Task::perform(
-                                    load_sparks(pool, ws_id),
-                                    move |sparks| Message::SparksLoaded(id, sparks),
-                                );
+                                return Task::perform(load_sparks(pool, ws_id), move |sparks| {
+                                    Message::SparksLoaded(id, sparks)
+                                });
                             }
                         }
                     }
@@ -1254,7 +1285,10 @@ impl App {
                                     async move {
                                         if new_status == "closed" {
                                             let _ = data::sparks::spark_repo::close(
-                                                &pool, &spark_id, "completed", "user",
+                                                &pool,
+                                                &spark_id,
+                                                "completed",
+                                                "user",
                                             )
                                             .await;
                                         } else {
@@ -1297,14 +1331,15 @@ impl App {
             Message::Background(msg) => self.handle_background_message(msg),
             Message::BackgroundLoaded(id, Some(bytes)) => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
-                let Some(idx) = ws_idx else { return Task::none(); };
+                let Some(idx) = ws_idx else {
+                    return Task::none();
+                };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     // Compute luminance to choose adaptive font color
                     if let Some(lum) = workshop::compute_image_luminance(&bytes) {
                         ws.bg_is_dark = Some(lum < 0.5);
                     }
-                    ws.background_handle =
-                        Some(iced::widget::image::Handle::from_bytes(bytes));
+                    ws.background_handle = Some(iced::widget::image::Handle::from_bytes(bytes));
                 }
                 Task::none()
             }
@@ -1359,11 +1394,7 @@ impl App {
                         ws.background_picker.loading = false;
                         ws.background_picker.results.clear();
                         ws.background_picker.thumbnails.clear();
-                        self.push_toast(
-                            "Unsplash search failed",
-                            e,
-                            ToastKind::Error,
-                        )
+                        self.push_toast("Unsplash search failed", e, ToastKind::Error)
                     }
                 }
             }
@@ -1373,11 +1404,7 @@ impl App {
                 if let Some(idx) = self.active_workshop {
                     self.workshops[idx].background_picker.loading = false;
                 }
-                self.push_toast(
-                    "Background download failed",
-                    error,
-                    ToastKind::Error,
-                )
+                self.push_toast("Background download failed", error, ToastKind::Error)
             }
             Message::LocalFileCopied(filename) => {
                 let Some(idx) = self.active_workshop else {
@@ -1419,9 +1446,7 @@ impl App {
                     .collect();
                 let mut warning_tasks: Vec<Task<Message>> = warnings
                     .into_iter()
-                    .map(|w| {
-                        self.push_toast("Worktree fallback", w, ToastKind::Warning)
-                    })
+                    .map(|w| self.push_toast("Worktree fallback", w, ToastKind::Warning))
                     .collect();
 
                 if self.poll_in_flight {
@@ -1450,6 +1475,7 @@ impl App {
                             agent: agent.clone(),
                             tab_id: Some(tab_id),
                             active: true,
+                            stale: false,
                             resume_id: None,
                             started_at: chrono::Utc::now().to_rfc3339(),
                         });
@@ -1464,11 +1490,16 @@ impl App {
                                 agent_command: agent.command.clone(),
                                 agent_args: agent.args.clone(),
                                 session_label: Some("auto-detected".to_string()),
+                                child_pid: None,
                                 resume_id: None,
                             };
                             tasks.push(Task::perform(
                                 async move {
-                                    let _ = data::sparks::agent_session_repo::create(&pool, &new_session).await;
+                                    let _ = data::sparks::agent_session_repo::create(
+                                        &pool,
+                                        &new_session,
+                                    )
+                                    .await;
                                 },
                                 |_| Message::AgentSessionSaved,
                             ));
@@ -1530,7 +1561,12 @@ impl App {
                 let Some(ref default_cmd) = self.global_config.default_agent else {
                     return Task::none();
                 };
-                let Some(agent) = self.available_agents.iter().find(|a| &a.command == default_cmd).cloned() else {
+                let Some(agent) = self
+                    .available_agents
+                    .iter()
+                    .find(|a| &a.command == default_cmd)
+                    .cloned()
+                else {
                     return Task::none();
                 };
                 // Delegate to the existing NewCodingAgent flow
@@ -1635,7 +1671,25 @@ impl App {
                 let ws = &mut self.workshops[idx];
                 if let Some(term) = ws.terminals.get_mut(&id) {
                     let action = term.handle(iced_term::Command::ProxyToBackend(cmd.clone()));
-                    ws.handle_terminal_action(id, action);
+                    let ended_sessions = ws.handle_terminal_action(id, action);
+                    if !ended_sessions.is_empty() {
+                        if let Some(ref pool) = ws.sparks_db {
+                            let pool = pool.clone();
+                            let tasks = ended_sessions.into_iter().map(|sid| {
+                                let pool = pool.clone();
+                                Task::perform(
+                                    async move {
+                                        let _ = data::sparks::agent_session_repo::end_session(
+                                            &pool, &sid,
+                                        )
+                                        .await;
+                                    },
+                                    |_| Message::AgentSessionSaved,
+                                )
+                            });
+                            return Task::batch(tasks.collect::<Vec<_>>());
+                        }
+                    }
                 }
             }
             return Task::none();
@@ -1698,6 +1752,7 @@ impl App {
                     if session.tab_id == Some(id) {
                         session.tab_id = None;
                         session.active = false;
+                        session.stale = false;
                         if let Some(ref pool) = ws.sparks_db {
                             let pool = pool.clone();
                             let sid = session.id.clone();
@@ -1723,8 +1778,13 @@ impl App {
             }
             screen::bench::Message::NewTerminal => {
                 let next_id = &mut self.next_terminal_id;
-                let tab_id =
-                    self.workshops[idx].spawn_terminal("Terminal".to_string(), None, next_id, None, false);
+                let tab_id = self.workshops[idx].spawn_terminal(
+                    "Terminal".to_string(),
+                    None,
+                    next_id,
+                    None,
+                    false,
+                );
                 if let Some(term) = self.workshops[idx].terminals.get(&tab_id) {
                     return iced_term::TerminalView::focus(term.widget_id().clone());
                 }
@@ -1733,7 +1793,9 @@ impl App {
                 // Legacy direct spawn — preserved for the auto-prompt-default
                 // path used by NewDefaultHand. Goes straight to the spark
                 // picker with the agent already chosen.
-                let full_auto = self.global_config.agent_settings
+                let full_auto = self
+                    .global_config
+                    .agent_settings
                     .get(&agent.command)
                     .map_or(false, |s| s.full_auto);
 
@@ -1792,10 +1854,7 @@ impl App {
         Task::none()
     }
 
-    fn handle_spark_picker_message(
-        &mut self,
-        msg: screen::spark_picker::Message,
-    ) -> Task<Message> {
+    fn handle_spark_picker_message(&mut self, msg: screen::spark_picker::Message) -> Task<Message> {
         let Some(idx) = self.active_workshop else {
             return Task::none();
         };
@@ -1842,10 +1901,7 @@ impl App {
         }
     }
 
-    fn handle_head_picker_message(
-        &mut self,
-        msg: screen::head_picker::Message,
-    ) -> Task<Message> {
+    fn handle_head_picker_message(&mut self, msg: screen::head_picker::Message) -> Task<Message> {
         let Some(idx) = self.active_workshop else {
             return Task::none();
         };
@@ -1882,11 +1938,7 @@ impl App {
     }
 
     /// Proceed with spawning the pending agent and assigning a spark.
-    fn spawn_pending_agent(
-        &mut self,
-        workshop_idx: usize,
-        spark_id: String,
-    ) -> Task<Message> {
+    fn spawn_pending_agent(&mut self, workshop_idx: usize, spark_id: String) -> Task<Message> {
         let ws = &mut self.workshops[workshop_idx];
         let pending = match ws.pending_agent_spawn.take() {
             Some(p) => p,
@@ -1926,6 +1978,7 @@ impl App {
             agent: pending_agent,
             tab_id: Some(tab_id),
             active: true,
+            stale: false,
             resume_id: None,
             started_at: chrono::Utc::now().to_rfc3339(),
         });
@@ -1943,12 +1996,12 @@ impl App {
                 agent_command,
                 agent_args,
                 session_label: None,
+                child_pid: None,
                 resume_id: None,
             };
             tasks.push(Task::perform(
                 async move {
-                    let _ =
-                        data::sparks::agent_session_repo::create(&pool, &new_session).await;
+                    let _ = data::sparks::agent_session_repo::create(&pool, &new_session).await;
                 },
                 |_| Message::AgentSessionSaved,
             ));
@@ -2025,6 +2078,7 @@ impl App {
             agent: agent.clone(),
             tab_id: Some(tab_id),
             active: true,
+            stale: false,
             resume_id: None,
             started_at: chrono::Utc::now().to_rfc3339(),
         });
@@ -2040,6 +2094,7 @@ impl App {
                 agent_command,
                 agent_args,
                 session_label: Some("head".to_string()),
+                child_pid: None,
                 resume_id: None,
             };
             tasks.push(Task::perform(
@@ -2209,7 +2264,9 @@ impl App {
                 self.global_config.default_agent = cmd;
                 let config = self.global_config.clone();
                 Task::perform(
-                    async move { config.save().ok(); },
+                    async move {
+                        config.save().ok();
+                    },
                     |_| Message::BackgroundConfigSaved,
                 )
             }
@@ -2222,7 +2279,9 @@ impl App {
                 entry.full_auto = !entry.full_auto;
                 let config = self.global_config.clone();
                 Task::perform(
-                    async move { config.save().ok(); },
+                    async move {
+                        config.save().ok();
+                    },
                     |_| Message::BackgroundConfigSaved,
                 )
             }
@@ -2375,8 +2434,13 @@ impl App {
                         })
                         .collect();
                     layers.push(
-                        screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                            .map(Message::Background),
+                        screen::background_picker::view(
+                            &ws.background_picker,
+                            &pal,
+                            has_bg,
+                            agents,
+                        )
+                        .map(Message::Background),
                     );
                 }
 
@@ -2533,14 +2597,10 @@ impl App {
             .width(ws.sparks_width())
             .height(Length::Fill);
 
-        let sidebar_bench_splitter = widget::splitter::vertical(
-            Message::SplitterPressed(SplitterKind::SidebarRight),
-            &pal,
-        );
-        let bench_sparks_splitter = widget::splitter::vertical(
-            Message::SplitterPressed(SplitterKind::SparksLeft),
-            &pal,
-        );
+        let sidebar_bench_splitter =
+            widget::splitter::vertical(Message::SplitterPressed(SplitterKind::SidebarRight), &pal);
+        let bench_sparks_splitter =
+            widget::splitter::vertical(Message::SplitterPressed(SplitterKind::SparksLeft), &pal);
 
         // -- Bottom: status bar --
         let spark_summary = {
@@ -2567,7 +2627,7 @@ impl App {
             gs
         };
         let active_hands = ws.agent_sessions.iter().filter(|a| a.active).count();
-        let total_hands = ws.agent_sessions.len();
+        let total_hands = ws.agent_sessions.iter().filter(|a| !a.stale).count();
 
         // Build file viewer info if the active bench tab is a file viewer.
         let file_info = ws.bench.active_tab.and_then(|tab_id| {
@@ -2677,13 +2737,8 @@ impl App {
         if let Some(ref pending) = ws.pending_agent_spawn {
             let selected = pending.agent.as_ref().map(|a| a.command.as_str());
             layers.push(
-                screen::spark_picker::view(
-                    &ws.sparks,
-                    &self.available_agents,
-                    selected,
-                    &pal,
-                )
-                .map(Message::SparkPicker),
+                screen::spark_picker::view(&ws.sparks, &self.available_agents, selected, &pal)
+                    .map(Message::SparkPicker),
             );
         }
 
@@ -2701,7 +2756,12 @@ impl App {
             .into()
     }
 
-    fn view_agents<'a>(&'a self, ws: &'a Workshop, has_bg: bool, pal: &style::Palette) -> Element<'a, Message> {
+    fn view_agents<'a>(
+        &'a self,
+        ws: &'a Workshop,
+        has_bg: bool,
+        pal: &style::Palette,
+    ) -> Element<'a, Message> {
         screen::agents::view(&ws.agent_sessions, *pal, has_bg).map(Message::Agents)
     }
 
@@ -2858,10 +2918,7 @@ async fn run_contract_check(
 /// Count the failing or pending required contracts for a workshop. Used by
 /// the status bar warning indicator. Errors are swallowed (treated as zero)
 /// since this is a non-critical display value.
-async fn load_failing_contract_count(
-    pool: sqlx::SqlitePool,
-    workshop_id: String,
-) -> usize {
+async fn load_failing_contract_count(pool: sqlx::SqlitePool, workshop_id: String) -> usize {
     data::sparks::contract_repo::list_failing(&pool, &workshop_id)
         .await
         .map(|v| v.len())

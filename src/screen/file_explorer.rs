@@ -10,7 +10,9 @@ use data::git::{DiffStat, FileStatus};
 use iced::widget::{Space, button, column, container, row, scrollable, svg, text};
 use iced::{Color, Element, Length, Theme};
 
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
+use crate::style::{
+    self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
+};
 
 use crate::icons;
 

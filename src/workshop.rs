@@ -23,7 +23,6 @@ use crate::screen::file_viewer::FileViewerState;
 
 const BOTTOM_PIN_NEWLINES: usize = 200;
 
-
 /// State for a pending agent spawn waiting for spark selection.
 ///
 /// `agent` is `None` when the user opened the picker via "+ → New Hand"
@@ -327,18 +326,17 @@ impl Workshop {
     }
 
     /// Handle terminal shutdown/title-change for a given terminal id.
-    pub fn handle_terminal_action(&mut self, id: u64, action: iced_term::actions::Action) {
+    pub fn handle_terminal_action(
+        &mut self,
+        id: u64,
+        action: iced_term::actions::Action,
+    ) -> Vec<String> {
         match action {
             iced_term::actions::Action::Shutdown => {
                 self.terminals.remove(&id);
-                // Mark agent sessions as ended, keep in history
-                for session in self.agent_sessions.iter_mut() {
-                    if session.tab_id == Some(id) {
-                        session.tab_id = None;
-                        session.active = false;
-                    }
-                }
+                let ended_sessions = self.end_agent_sessions_for_tab(id);
                 self.bench.close_tab(id);
+                ended_sessions
             }
             iced_term::actions::Action::ChangeTitle(title) => {
                 if let Some(tab) = self.bench.tabs.iter_mut().find(|t| t.id == id) {
@@ -351,9 +349,23 @@ impl Workshop {
                 {
                     session.name = title;
                 }
+                Vec::new()
             }
-            iced_term::actions::Action::Ignore => {}
+            iced_term::actions::Action::Ignore => Vec::new(),
         }
+    }
+
+    pub fn end_agent_sessions_for_tab(&mut self, id: u64) -> Vec<String> {
+        let mut ended_sessions = Vec::new();
+        for session in self.agent_sessions.iter_mut() {
+            if session.tab_id == Some(id) {
+                session.tab_id = None;
+                session.active = false;
+                session.stale = false;
+                ended_sessions.push(session.id.clone());
+            }
+        }
+        ended_sessions
     }
 
     /// Scan terminals for agent processes that aren't yet tracked as sessions.
@@ -628,6 +640,8 @@ pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::spa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coding_agents::{CodingAgent, ResumeStrategy};
+    use crate::screen::agents::AgentSession;
 
     #[test]
     fn workshop_id_derives_from_directory_name() {
@@ -657,5 +671,32 @@ mod tests {
         // UUIDs differ, but workshop_id is the same
         assert_ne!(ws1.id, ws2.id);
         assert_eq!(ws1.workshop_id(), ws2.workshop_id());
+    }
+
+    #[test]
+    fn ending_tab_marks_agent_ended_not_stale() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        ws.agent_sessions.push(AgentSession {
+            id: "session-1".to_string(),
+            name: "Codex".to_string(),
+            agent: CodingAgent {
+                display_name: "Codex".to_string(),
+                command: "codex".to_string(),
+                args: Vec::new(),
+                resume: ResumeStrategy::None,
+            },
+            tab_id: Some(7),
+            active: true,
+            stale: false,
+            resume_id: None,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        });
+
+        let ended = ws.end_agent_sessions_for_tab(7);
+
+        assert_eq!(ended, vec!["session-1".to_string()]);
+        assert_eq!(ws.agent_sessions[0].tab_id, None);
+        assert!(!ws.agent_sessions[0].active);
+        assert!(!ws.agent_sessions[0].stale);
     }
 }

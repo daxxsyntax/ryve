@@ -195,6 +195,7 @@ mod tests {
                 agent_command: "echo".into(),
                 agent_args: vec![],
                 session_label: None,
+                child_pid: None,
                 resume_id: None,
             },
         )
@@ -306,12 +307,16 @@ mod tests {
         let s1 = make_session(&pool, "ws").await;
         let s2 = make_session(&pool, "ws").await;
 
-        add_member(&pool, &crew.id, &s1, Some("hand")).await.unwrap();
+        add_member(&pool, &crew.id, &s1, Some("hand"))
+            .await
+            .unwrap();
         add_member(&pool, &crew.id, &s2, Some("merger"))
             .await
             .unwrap();
         // Idempotent re-add returns existing row, no duplicate.
-        add_member(&pool, &crew.id, &s1, Some("hand")).await.unwrap();
+        add_member(&pool, &crew.id, &s1, Some("hand"))
+            .await
+            .unwrap();
 
         let listed = members(&pool, &crew.id).await.unwrap();
         assert_eq!(listed.len(), 2);
@@ -365,7 +370,9 @@ mod tests {
         .await
         .unwrap();
         let sid = make_session(&pool, "ws").await;
-        add_member(&pool, &crew.id, &sid, Some("hand")).await.unwrap();
+        add_member(&pool, &crew.id, &sid, Some("hand"))
+            .await
+            .unwrap();
         let listed = crews_for_session(&pool, &sid).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, crew.id);

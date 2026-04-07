@@ -191,10 +191,7 @@ impl FileViewerState {
     /// the active selection anchor; when nothing is selected we report
     /// position (1, 1).
     pub fn cursor_position(&self) -> (usize, usize) {
-        let line = self
-            .selection_anchor
-            .map(|i| i + 1)
-            .unwrap_or(1);
+        let line = self.selection_anchor.map(|i| i + 1).unwrap_or(1);
         // Selections are line-granular, so column is always the start of
         // the line. This is honest given the viewer's capabilities.
         (line, 1)
@@ -312,9 +309,7 @@ pub fn language_label(path: &Path) -> &'static str {
     }
 
     // Fall back to syntect, but only return a static label.
-    if !ext.is_empty()
-        && SYNTAX_SET.find_syntax_by_extension(&ext).is_some()
-    {
+    if !ext.is_empty() && SYNTAX_SET.find_syntax_by_extension(&ext).is_some() {
         // syntect knew about it but we don't have a friendly name; show
         // the extension uppercased via a single static label set.
         return "Source";
@@ -429,8 +424,7 @@ pub fn view<'a>(state: &'a FileViewerState, pal: &Palette, has_bg: bool) -> Elem
         // Wrap in mouse_area for line selection via click.
         // Shift state is tracked globally; main.rs decides whether to
         // set anchor or extend the selection range.
-        let clickable_row = mouse_area(styled_row)
-            .on_press(Message::ClickLine(idx));
+        let clickable_row = mouse_area(styled_row).on_press(Message::ClickLine(idx));
 
         rows.push(clickable_row.into());
     }
@@ -494,9 +488,15 @@ fn render_highlighted_line<'a>(line: &'a HighlightedLine) -> Element<'a, Message
         let mut t = text(&span.text).size(FONT_SIZE).color(span.color);
 
         let font = if span.bold {
-            Font { weight: iced::font::Weight::Bold, ..MONO_FONT }
+            Font {
+                weight: iced::font::Weight::Bold,
+                ..MONO_FONT
+            }
         } else if span.italic {
-            Font { style: iced::font::Style::Italic, ..MONO_FONT }
+            Font {
+                style: iced::font::Style::Italic,
+                ..MONO_FONT
+            }
         } else {
             MONO_FONT
         };

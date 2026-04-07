@@ -107,11 +107,15 @@ fn generate_workshop_md() -> String {
     md.push_str("3. **Respect architectural constraints** — run `ryve constraint list` to check. Violations are blocking.\n");
     md.push_str("4. **Check required contracts** before considering a spark done: `ryve contract list <spark-id>`.\n");
     md.push_str("5. **Do not work on a spark that is already claimed** by another Hand.\n");
-    md.push_str("6. If you discover a new bug or task, create a spark for it (see commands below).\n\n");
+    md.push_str(
+        "6. If you discover a new bug or task, create a spark for it (see commands below).\n\n",
+    );
 
     // ── Workgraph commands ───────────────────────────────────────
     md.push_str("## Workgraph Commands\n\n");
-    md.push_str("Use `ryve` to query and update the workgraph. **Always run from the workshop root.**\n\n");
+    md.push_str(
+        "Use `ryve` to query and update the workgraph. **Always run from the workshop root.**\n\n",
+    );
 
     md.push_str("### Query state\n\n");
     md.push_str("```sh\nryve spark list              # active sparks\n");

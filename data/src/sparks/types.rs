@@ -402,6 +402,7 @@ pub struct PersistedAgentSession {
     pub status: String,
     pub started_at: String,
     pub ended_at: Option<String>,
+    pub child_pid: Option<i64>,
     /// Agent-specific session/conversation ID used for resumption.
     pub resume_id: Option<String>,
 }
@@ -413,6 +414,7 @@ pub struct NewAgentSession {
     pub agent_command: String,
     pub agent_args: Vec<String>,
     pub session_label: Option<String>,
+    pub child_pid: Option<i64>,
     pub resume_id: Option<String>,
 }
 

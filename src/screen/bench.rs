@@ -3,15 +3,15 @@
 
 //! Bench panel — tabbed workspace for terminal sessions and coding agents.
 
-use iced::widget::{
-    Space, button, column, container, row, scrollable, text, tooltip,
-};
+use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
 use iced::{Element, Length, Theme};
 
 use std::path::PathBuf;
 
 use crate::coding_agents::CodingAgent;
-use crate::style::{self, Palette, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL};
+use crate::style::{
+    self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
+};
 use data::ryve_dir::AgentDef;
 
 /// A tab in the bench — either a plain terminal, coding agent, or file viewer.
@@ -117,16 +117,24 @@ impl BenchState {
                 .style(move |_theme: &Theme| style::tab_pill(&pal, is_active));
 
             tab_row = tab_row.push(
-                tooltip(pill, text(tip_text).size(FONT_SMALL), tooltip::Position::Bottom)
-                    .gap(4)
-                    .style(move |_theme: &Theme| style::dropdown(&pal)),
+                tooltip(
+                    pill,
+                    text(tip_text).size(FONT_SMALL),
+                    tooltip::Position::Bottom,
+                )
+                .gap(4)
+                .style(move |_theme: &Theme| style::dropdown(&pal)),
             );
         }
 
-        let new_btn = button(text("+  \u{25BE}").size(FONT_ICON).color(pal.text_secondary))
-            .style(button::text)
-            .padding([4, 10])
-            .on_press(Message::ToggleDropdown);
+        let new_btn = button(
+            text("+  \u{25BE}")
+                .size(FONT_ICON)
+                .color(pal.text_secondary),
+        )
+        .style(button::text)
+        .padding([4, 10])
+        .on_press(Message::ToggleDropdown);
 
         // Wrap the tabs in a horizontal scrollable so long tab lists don't push
         // the "+" button offscreen. The scrollable fills the available width;
@@ -163,13 +171,13 @@ impl BenchState {
         // tiny picker for Head.
         let any_agent_available = !available_agents.is_empty();
 
-        let head_button = button(
-            text("New Head...").size(FONT_BODY).color(if any_agent_available {
+        let head_button = button(text("New Head...").size(FONT_BODY).color(
+            if any_agent_available {
                 pal.text_primary
             } else {
                 pal.text_tertiary
-            }),
-        )
+            },
+        ))
         .style(button::text)
         .width(Length::Fill);
         let head_button = if any_agent_available {
@@ -179,13 +187,13 @@ impl BenchState {
         };
         menu = menu.push(head_button);
 
-        let hand_button = button(
-            text("New Hand...").size(FONT_BODY).color(if any_agent_available {
+        let hand_button = button(text("New Hand...").size(FONT_BODY).color(
+            if any_agent_available {
                 pal.text_primary
             } else {
                 pal.text_tertiary
-            }),
-        )
+            },
+        ))
         .style(button::text)
         .width(Length::Fill);
         let hand_button = if any_agent_available {
@@ -196,10 +204,14 @@ impl BenchState {
         menu = menu.push(hand_button);
 
         menu = menu.push(
-            button(text("New Terminal...").size(FONT_BODY).color(pal.text_primary))
-                .style(button::text)
-                .width(Length::Fill)
-                .on_press(Message::NewTerminal),
+            button(
+                text("New Terminal...")
+                    .size(FONT_BODY)
+                    .color(pal.text_primary),
+            )
+            .style(button::text)
+            .width(Length::Fill)
+            .on_press(Message::NewTerminal),
         );
 
         if !any_agent_available {
@@ -214,9 +226,7 @@ impl BenchState {
         // bypass the picker because the user explicitly named the agent
         // when they registered it under .ryve/agents/.
         if !custom_agents.is_empty() {
-            menu = menu.push(
-                text("Custom").size(FONT_LABEL).color(pal.text_tertiary),
-            );
+            menu = menu.push(text("Custom").size(FONT_LABEL).color(pal.text_tertiary));
             for (i, def) in custom_agents.iter().enumerate() {
                 let label = format!("New {}...", def.name);
                 menu = menu.push(

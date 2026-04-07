@@ -7,10 +7,10 @@
 //! toasts in the bottom-right corner of the UI. Toasts auto-expire after a
 //! fixed lifetime and can be clicked-to-dismiss at any time.
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Background, Border, Color, Element, Length, Theme};
 
-use crate::style::{Palette, FONT_LABEL, FONT_SMALL};
+use crate::style::{FONT_LABEL, FONT_SMALL, Palette};
 
 /// How long a toast remains on screen before it auto-dismisses.
 pub const TOAST_LIFETIME_SECS: u64 = 8;
@@ -58,8 +58,7 @@ pub fn view<'a>(toasts: &'a [Toast], pal: &Palette) -> Option<Element<'a, Messag
     let anchored = container(
         column![
             Space::new().height(Length::Fill),
-            row![Space::new().width(Length::Fill), stack]
-                .align_y(iced::Alignment::End),
+            row![Space::new().width(Length::Fill), stack].align_y(iced::Alignment::End),
         ]
         .width(Length::Fill)
         .height(Length::Fill),
@@ -84,9 +83,7 @@ fn toast_card<'a>(t: &'a Toast, pal: &Palette) -> Element<'a, Message> {
         ToastKind::Info => pal.accent,
     };
 
-    let title = text(&t.title)
-        .size(FONT_LABEL)
-        .color(pal.text_primary);
+    let title = text(&t.title).size(FONT_LABEL).color(pal.text_primary);
 
     let dismiss = button(text("\u{00D7}").size(FONT_LABEL).color(pal.text_secondary))
         .style(button::text)
@@ -104,11 +101,7 @@ fn toast_card<'a>(t: &'a Toast, pal: &Palette) -> Element<'a, Message> {
 
     let mut col = column![header].spacing(4);
     if !t.body.is_empty() {
-        col = col.push(
-            text(&t.body)
-                .size(FONT_SMALL)
-                .color(pal.text_secondary),
-        );
+        col = col.push(text(&t.body).size(FONT_SMALL).color(pal.text_secondary));
     }
 
     container(col)

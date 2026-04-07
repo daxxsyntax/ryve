@@ -14,8 +14,8 @@ pub async fn create(pool: &SqlitePool, session: &NewAgentSession) -> Result<(), 
     let args_json = serde_json::to_string(&session.agent_args).unwrap_or_else(|_| "[]".into());
 
     sqlx::query(
-        "INSERT INTO agent_sessions (id, workshop_id, agent_name, agent_command, agent_args, session_label, status, started_at, resume_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+        "INSERT INTO agent_sessions (id, workshop_id, agent_name, agent_command, agent_args, session_label, status, started_at, child_pid, resume_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
     )
     .bind(&session.id)
     .bind(&session.workshop_id)
@@ -24,6 +24,7 @@ pub async fn create(pool: &SqlitePool, session: &NewAgentSession) -> Result<(), 
     .bind(&args_json)
     .bind(&session.session_label)
     .bind(&now)
+    .bind(session.child_pid)
     .bind(&session.resume_id)
     .execute(pool)
     .await?;
@@ -76,6 +77,21 @@ pub async fn set_resume_id(
 ) -> Result<(), SparksError> {
     sqlx::query("UPDATE agent_sessions SET resume_id = ? WHERE id = ?")
         .bind(resume_id)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+/// Record the detached child PID so liveness can be checked later.
+pub async fn set_child_pid(
+    pool: &SqlitePool,
+    session_id: &str,
+    child_pid: u32,
+) -> Result<(), SparksError> {
+    sqlx::query("UPDATE agent_sessions SET child_pid = ? WHERE id = ?")
+        .bind(i64::from(child_pid))
         .bind(session_id)
         .execute(pool)
         .await?;

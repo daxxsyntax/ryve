@@ -7,7 +7,7 @@
 use iced::widget::{Space, button, container, row, text};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, Palette, FONT_ICON, FONT_LABEL};
+use crate::style::{self, FONT_ICON, FONT_LABEL, Palette};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -224,7 +224,11 @@ pub fn view<'a>(
         };
         right = right.push(text(position).size(FONT_LABEL).color(pal.text_secondary));
         right = right.push(separator(&pal));
-        right = right.push(text(info.language).size(FONT_LABEL).color(pal.text_secondary));
+        right = right.push(
+            text(info.language)
+                .size(FONT_LABEL)
+                .color(pal.text_secondary),
+        );
         right = right.push(separator(&pal));
     }
 
