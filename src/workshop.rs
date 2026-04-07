@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use data::ryve_dir::{AgentDef, RyveDir, WorkshopConfig};
-use data::sparks::types::{Contract, Spark};
+use data::sparks::types::{Bond, Contract, Ember, HandAssignment, Spark};
 use iced::Theme;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -54,6 +54,15 @@ pub struct Workshop {
     pub sparks: Vec<Spark>,
     /// Cached count of failing or pending required contracts (loaded from DB).
     pub failing_contracts: usize,
+    /// Cached failing/pending required contracts (loaded from DB) — used by
+    /// the Home overview to render the failing list, not just a count.
+    pub failing_contracts_list: Vec<Contract>,
+    /// Active hand assignments across all sparks in this workshop. Loaded
+    /// alongside sparks so the Home overview can join sparks ↔ Hands.
+    pub hand_assignments: Vec<HandAssignment>,
+    /// Active embers (Hand → Hand notifications) for this workshop. Refreshed
+    /// on every sparks poll so the Home overview reflects current activity.
+    pub embers: Vec<Ember>,
     /// Custom agent definitions from `.ryve/agents/`.
     pub custom_agents: Vec<AgentDef>,
     /// Agent context from `.ryve/context/AGENTS.md`.
@@ -64,10 +73,20 @@ pub struct Workshop {
     pub background_picker: PickerState,
     /// Inline spark create form state.
     pub spark_create_form: crate::screen::sparks::CreateForm,
+    /// Inline status popover state for the workgraph panel.
+    pub spark_status_menu: crate::screen::sparks::StatusMenu,
     /// Currently selected spark ID (for detail view).
     pub selected_spark: Option<String>,
     /// Cached contracts for the currently selected spark.
     pub selected_spark_contracts: Vec<Contract>,
+    /// Cached bonds (dependency edges) for the currently selected spark.
+    /// Includes bonds in both directions so the detail view can render
+    /// "Blocks" and "Blocked by" lists.
+    pub selected_spark_bonds: Vec<Bond>,
+    /// Set of spark IDs that have at least one open blocking bond pointing
+    /// at them. Recomputed alongside `sparks` so the panel can show a
+    /// blocked indicator without re-querying per row.
+    pub blocked_spark_ids: HashSet<String>,
     /// Inline contract-create form for the spark detail view.
     pub contract_create_form: crate::screen::spark_detail::ContractCreateForm,
     /// Whether the background image is dark (for adaptive font color).
@@ -98,13 +117,19 @@ impl Workshop {
             sparks_db: None,
             sparks: Vec::new(),
             failing_contracts: 0,
+            failing_contracts_list: Vec::new(),
+            hand_assignments: Vec::new(),
+            embers: Vec::new(),
             custom_agents: Vec::new(),
             agent_context: None,
             background_handle: None,
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
+            spark_status_menu: Default::default(),
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
+            selected_spark_bonds: Vec::new(),
+            blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
             bg_is_dark: None,
             pending_agent_spawn: None,
@@ -139,6 +164,10 @@ impl Workshop {
                     ),
                     // Skip coding-agent tabs — see doc comment above.
                     TabKind::CodingAgent(_) => return None,
+                    // Home is a singleton dashboard rebuilt from in-memory
+                    // data on demand; persisting it would just create a
+                    // duplicate when the user reopens it manually.
+                    TabKind::Home => return None,
                 };
                 Some(data::sparks::open_tab_repo::PersistedTab {
                     workshop_id: workshop_id.clone(),
@@ -187,6 +216,28 @@ impl Workshop {
     /// Workgraph panel width from config.
     pub fn sparks_width(&self) -> f32 {
         self.config.layout.sparks_width
+    }
+
+    /// Open the Home overview tab, or focus the existing one if it's
+    /// already open. Singleton — repeated invocations are no-ops beyond
+    /// activating the tab. Returns the tab id.
+    pub fn open_home_tab(&mut self, next_terminal_id: &mut u64) -> u64 {
+        if let Some(existing) = self
+            .bench
+            .tabs
+            .iter()
+            .find(|t| matches!(t.kind, TabKind::Home))
+            .map(|t| t.id)
+        {
+            self.bench.active_tab = Some(existing);
+            return existing;
+        }
+
+        let tab_id = *next_terminal_id;
+        *next_terminal_id += 1;
+        self.bench
+            .create_tab(tab_id, "Home".to_string(), TabKind::Home);
+        tab_id
     }
 
     /// Open a file viewer tab, or switch to it if already open.

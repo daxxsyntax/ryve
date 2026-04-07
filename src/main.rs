@@ -13,7 +13,9 @@ mod workshop;
 
 use std::path::PathBuf;
 
-use data::sparks::types::{Contract, PersistedAgentSession, Spark};
+use std::collections::HashSet;
+
+use data::sparks::types::{Bond, Contract, Ember, HandAssignment, PersistedAgentSession, Spark};
 use iced::widget::{Space, button, column, container, row, stack, text};
 use iced::{Color, Element, Length, Point, Size, Subscription, Task, Theme};
 use iced::{event, keyboard, mouse, window};
@@ -149,8 +151,22 @@ enum Message {
     SparksLoaded(Uuid, Vec<Spark>),
     /// Failing/pending required contract count loaded from DB
     FailingContractsLoaded(Uuid, usize),
+    /// Failing/pending required contract list loaded from DB (for Home overview)
+    FailingContractsListLoaded(Uuid, Vec<Contract>),
+    /// Active hand assignments loaded from DB (for Home overview)
+    HandAssignmentsLoaded(Uuid, Vec<HandAssignment>),
+    /// Active embers loaded from DB (for Home overview)
+    EmbersLoaded(Uuid, Vec<Ember>),
     /// Contracts for the currently selected spark loaded from DB.
     ContractsLoaded(Uuid, String, Vec<Contract>),
+    /// Bonds (dependency edges) for the currently selected spark loaded
+    /// from DB. Includes both incoming and outgoing edges so the detail
+    /// view can render Blocks / Blocked-by lists.
+    BondsLoaded(Uuid, String, Vec<Bond>),
+    /// Set of spark IDs in the workshop that have at least one open
+    /// blocking bond pointing at them. Computed on every sparks reload so
+    /// the panel can show a "blocked" indicator next to each row.
+    BlockedSparkIdsLoaded(Uuid, HashSet<String>),
     /// A contract check command finished — store the resolved status,
     /// then trigger a contracts reload for the spark.
     ContractCheckFinished {
@@ -175,6 +191,7 @@ enum Message {
     Agents(screen::agents::Message),
     Bench(screen::bench::Message),
     Sparks(screen::sparks::Message),
+    Home(screen::home::Message),
     SparkDetail(screen::spark_detail::Message),
     SparkPicker(screen::spark_picker::Message),
     HeadPicker(screen::head_picker::Message),
@@ -258,6 +275,12 @@ impl std::fmt::Debug for Message {
             Self::ContractsLoaded(id, sid, c) => {
                 write!(f, "ContractsLoaded({id}, {sid}, {} contracts)", c.len())
             }
+            Self::BondsLoaded(id, sid, b) => {
+                write!(f, "BondsLoaded({id}, {sid}, {} bonds)", b.len())
+            }
+            Self::BlockedSparkIdsLoaded(id, ids) => {
+                write!(f, "BlockedSparkIdsLoaded({id}, {} ids)", ids.len())
+            }
             Self::ContractCheckFinished { ws_id, spark_id } => {
                 write!(f, "ContractCheckFinished({ws_id}, {spark_id})")
             }
@@ -275,6 +298,14 @@ impl std::fmt::Debug for Message {
             Self::Agents(m) => write!(f, "Agents({m:?})"),
             Self::Bench(m) => write!(f, "Bench({m:?})"),
             Self::Sparks(m) => write!(f, "Sparks({m:?})"),
+            Self::Home(m) => write!(f, "Home({m:?})"),
+            Self::FailingContractsListLoaded(id, c) => {
+                write!(f, "FailingContractsListLoaded({id}, {} contracts)", c.len())
+            }
+            Self::HandAssignmentsLoaded(id, a) => {
+                write!(f, "HandAssignmentsLoaded({id}, {} assignments)", a.len())
+            }
+            Self::EmbersLoaded(id, e) => write!(f, "EmbersLoaded({id}, {} embers)", e.len()),
             Self::SparkDetail(m) => write!(f, "SparkDetail({m:?})"),
             Self::SparkPicker(m) => write!(f, "SparkPicker({m:?})"),
             Self::HeadPicker(m) => write!(f, "HeadPicker({m:?})"),
@@ -584,33 +615,51 @@ impl App {
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     ws.sparks = sparks;
 
-                    // Refresh failing contract count alongside sparks so the
-                    // status bar warning indicator stays in sync.
-                    let contracts_task = if let Some(ref pool) = ws.sparks_db {
-                        let pool = pool.clone();
+                    // Refresh failing contract count + blocked-spark set +
+                    // Home dashboard sources (failing contract list, active
+                    // hand assignments, active embers) alongside sparks so
+                    // the status bar, per-row blocked indicator, and Home
+                    // dashboard all stay in sync with the workgraph panel —
+                    // there is no separate Home poll.
+                    let mut tasks: Vec<Task<Message>> = Vec::new();
+                    if let Some(ref pool) = ws.sparks_db {
                         let ws_id = ws.workshop_id();
-                        Task::perform(load_failing_contract_count(pool, ws_id), move |n| {
-                            Message::FailingContractsLoaded(id, n)
-                        })
-                    } else {
-                        Task::none()
-                    };
+                        tasks.push(Task::perform(
+                            load_failing_contract_count(pool.clone(), ws_id.clone()),
+                            move |n| Message::FailingContractsLoaded(id, n),
+                        ));
+                        tasks.push(Task::perform(
+                            load_blocked_spark_ids(pool.clone(), ws_id.clone()),
+                            move |ids| Message::BlockedSparkIdsLoaded(id, ids),
+                        ));
+                        tasks.push(Task::perform(
+                            load_failing_contract_list(pool.clone(), ws_id.clone()),
+                            move |list| Message::FailingContractsListLoaded(id, list),
+                        ));
+                        tasks.push(Task::perform(
+                            load_hand_assignments(pool.clone(), ws_id.clone()),
+                            move |list| Message::HandAssignmentsLoaded(id, list),
+                        ));
+                        tasks.push(Task::perform(
+                            load_embers(pool.clone(), ws_id),
+                            move |list| Message::EmbersLoaded(id, list),
+                        ));
+                    }
 
                     // Sync .ryve/WORKSHOP.md and pointers (including into worktrees)
                     if !ws.config.agents.disable_sync {
                         let dir = ws.directory.clone();
                         let ryve_dir = ws.ryve_dir.clone();
                         let config = ws.config.clone();
-                        let sync_task = Task::perform(
+                        tasks.push(Task::perform(
                             async move {
                                 let _ = data::agent_context::sync(&dir, &ryve_dir, &config).await;
                             },
                             |_| Message::AgentContextSynced,
-                        );
-                        return Task::batch([contracts_task, sync_task]);
+                        ));
                     }
 
-                    return contracts_task;
+                    return Task::batch(tasks);
                 }
                 Task::none()
             }
@@ -620,6 +669,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FailingContractsListLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.failing_contracts_list = list;
+                }
+                Task::none()
+            }
+            Message::HandAssignmentsLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.hand_assignments = list;
+                }
+                Task::none()
+            }
+            Message::EmbersLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.embers = list;
+                }
+                Task::none()
+            }
+            Message::Home(home_msg) => self.handle_home_message(home_msg),
             Message::ContractsLoaded(id, spark_id, contracts) => {
                 if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
                     // Only apply if this spark is still selected — avoids
@@ -627,6 +695,20 @@ impl App {
                     if ws.selected_spark.as_deref() == Some(spark_id.as_str()) {
                         ws.selected_spark_contracts = contracts;
                     }
+                }
+                Task::none()
+            }
+            Message::BondsLoaded(id, spark_id, bonds) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    if ws.selected_spark.as_deref() == Some(spark_id.as_str()) {
+                        ws.selected_spark_bonds = bonds;
+                    }
+                }
+                Task::none()
+            }
+            Message::BlockedSparkIdsLoaded(id, ids) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.blocked_spark_ids = ids;
                 }
                 Task::none()
             }
@@ -1157,6 +1239,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.selected_spark = None;
                             ws.selected_spark_contracts.clear();
+                            ws.selected_spark_bonds.clear();
                             ws.contract_create_form.reset();
                         }
                     }
@@ -1410,15 +1493,25 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.selected_spark = Some(spark_id.clone());
                             ws.selected_spark_contracts.clear();
+                            ws.selected_spark_bonds.clear();
                             ws.contract_create_form.reset();
                             if let Some(ref pool) = ws.sparks_db {
-                                let pool = pool.clone();
+                                let pool_c = pool.clone();
+                                let pool_b = pool.clone();
                                 let ws_id = ws.id;
-                                let sid = spark_id.clone();
-                                return Task::perform(
-                                    load_contracts(pool, sid.clone()),
-                                    move |list| Message::ContractsLoaded(ws_id, sid.clone(), list),
+                                let sid_c = spark_id.clone();
+                                let sid_b = spark_id.clone();
+                                let contracts_task = Task::perform(
+                                    load_contracts(pool_c, sid_c.clone()),
+                                    move |list| {
+                                        Message::ContractsLoaded(ws_id, sid_c.clone(), list)
+                                    },
                                 );
+                                let bonds_task = Task::perform(
+                                    load_bonds(pool_b, sid_b.clone()),
+                                    move |list| Message::BondsLoaded(ws_id, sid_b.clone(), list),
+                                );
+                                return Task::batch([contracts_task, bonds_task]);
                             }
                         }
                     }
@@ -1542,37 +1635,62 @@ impl App {
                             );
                         }
                     }
-                    screen::sparks::Message::CycleStatus(spark_id, new_status) => {
-                        if let Some(ws) = self.workshops.get(idx) {
+                    screen::sparks::Message::OpenStatusMenu(spark_id) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.open(spark_id);
+                        }
+                    }
+                    screen::sparks::Message::CloseStatusMenu => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
+                        }
+                    }
+                    screen::sparks::Message::BeginCloseFlow(_spark_id) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.enter_close_stage();
+                        }
+                    }
+                    screen::sparks::Message::SetStatus(spark_id, new_status) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
                             if let Some(ref pool) = ws.sparks_db {
                                 let pool = pool.clone();
                                 let ws_id = ws.workshop_id();
                                 let id = ws.id;
                                 return Task::perform(
                                     async move {
-                                        if new_status == "closed" {
-                                            let _ = data::sparks::spark_repo::close(
-                                                &pool,
-                                                &spark_id,
-                                                "completed",
-                                                "user",
+                                        if let Some(s) =
+                                            data::sparks::types::SparkStatus::from_str(&new_status)
+                                        {
+                                            let upd = data::sparks::types::UpdateSpark {
+                                                status: Some(s),
+                                                ..Default::default()
+                                            };
+                                            let _ = data::sparks::spark_repo::update(
+                                                &pool, &spark_id, upd, "user",
                                             )
                                             .await;
-                                        } else {
-                                            let status = data::sparks::types::SparkStatus::from_str(
-                                                &new_status,
-                                            );
-                                            if let Some(s) = status {
-                                                let upd = data::sparks::types::UpdateSpark {
-                                                    status: Some(s),
-                                                    ..Default::default()
-                                                };
-                                                let _ = data::sparks::spark_repo::update(
-                                                    &pool, &spark_id, upd, "user",
-                                                )
-                                                .await;
-                                            }
                                         }
+                                        load_sparks(pool, ws_id).await
+                                    },
+                                    move |sparks| Message::SparksLoaded(id, sparks),
+                                );
+                            }
+                        }
+                    }
+                    screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
+                            if let Some(ref pool) = ws.sparks_db {
+                                let pool = pool.clone();
+                                let ws_id = ws.workshop_id();
+                                let id = ws.id;
+                                return Task::perform(
+                                    async move {
+                                        let _ = data::sparks::spark_repo::close(
+                                            &pool, &spark_id, &reason, "user",
+                                        )
+                                        .await;
                                         load_sparks(pool, ws_id).await
                                     },
                                     move |sparks| Message::SparksLoaded(id, sparks),
@@ -1922,6 +2040,40 @@ impl App {
         }
     }
 
+    /// Route Home dashboard interactions: clicking a spark surfaces it in
+    /// the workgraph panel; clicking a Hand focuses its bench tab if it's
+    /// still alive. No DB writes — the Home view is read-only.
+    fn handle_home_message(&mut self, msg: screen::home::Message) -> Task<Message> {
+        let Some(idx) = self.active_workshop else {
+            return Task::none();
+        };
+        let ws = &mut self.workshops[idx];
+        match msg {
+            screen::home::Message::SelectSpark(id) => {
+                ws.selected_spark = Some(id.clone());
+                if let Some(ref pool) = ws.sparks_db {
+                    let pool = pool.clone();
+                    let ws_id = ws.id;
+                    return Task::perform(load_contracts(pool, id.clone()), move |list| {
+                        Message::ContractsLoaded(ws_id, id.clone(), list)
+                    });
+                }
+                Task::none()
+            }
+            screen::home::Message::FocusHand(session_id) => {
+                let tab_id = ws
+                    .agent_sessions
+                    .iter()
+                    .find(|s| s.id == session_id)
+                    .and_then(|s| s.tab_id);
+                if let Some(tab_id) = tab_id {
+                    ws.bench.active_tab = Some(tab_id);
+                }
+                Task::none()
+            }
+        }
+    }
+
     fn handle_bench_message(&mut self, msg: screen::bench::Message) -> Task<Message> {
         // Terminal events can come from any workshop, so we need to
         // find the right one by terminal ID for terminal events.
@@ -2058,6 +2210,14 @@ impl App {
             }
             screen::bench::Message::ToggleDropdown => {
                 self.workshops[idx].bench.dropdown_open = !self.workshops[idx].bench.dropdown_open;
+            }
+            screen::bench::Message::OpenHome => {
+                self.workshops[idx].bench.dropdown_open = false;
+                let next_id = &mut self.next_terminal_id;
+                self.workshops[idx].open_home_tab(next_id);
+                // No persistence: Home is a singleton dashboard rebuilt
+                // from in-memory data on demand.
+                return Task::none();
             }
             screen::bench::Message::NewTerminal => {
                 let next_id = &mut self.next_terminal_id;
@@ -2866,18 +3026,34 @@ impl App {
                 screen::spark_detail::view(
                     spark,
                     &ws.selected_spark_contracts,
+                    &ws.selected_spark_bonds,
+                    &ws.sparks,
                     &ws.contract_create_form,
                     &pal,
                     has_bg,
                 )
                 .map(Message::SparkDetail)
             } else {
-                screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
-                    .map(Message::Sparks)
+                screen::sparks::view(
+                    &ws.sparks,
+                    &ws.blocked_spark_ids,
+                    &pal,
+                    has_bg,
+                    &ws.spark_create_form,
+                    &ws.spark_status_menu,
+                )
+                .map(Message::Sparks)
             }
         } else {
-            screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
-                .map(Message::Sparks)
+            screen::sparks::view(
+                &ws.sparks,
+                &ws.blocked_spark_ids,
+                &pal,
+                has_bg,
+                &ws.spark_create_form,
+                &ws.spark_status_menu,
+            )
+            .map(Message::Sparks)
         };
 
         let sparks_col = container(sparks_panel)
@@ -3061,7 +3237,26 @@ impl App {
         let tab_bar = ws.bench.view_tab_bar(pal).map(Message::Bench);
 
         let content: Element<'a, Message> = if let Some(active_id) = ws.bench.active_tab {
-            if let Some(term) = ws.terminals.get(&active_id) {
+            let active_kind = ws
+                .bench
+                .tabs
+                .iter()
+                .find(|t| t.id == active_id)
+                .map(|t| &t.kind);
+            if matches!(active_kind, Some(screen::bench::TabKind::Home)) {
+                screen::home::view(
+                    screen::home::HomeData {
+                        sparks: &ws.sparks,
+                        agent_sessions: &ws.agent_sessions,
+                        assignments: &ws.hand_assignments,
+                        failing_contracts: &ws.failing_contracts_list,
+                        embers: &ws.embers,
+                    },
+                    pal,
+                    has_bg,
+                )
+                .map(Message::Home)
+            } else if let Some(term) = ws.terminals.get(&active_id) {
                 iced_term::TerminalView::show_with_transparent_bg(term, has_bg)
                     .map(|e| Message::Bench(screen::bench::Message::TerminalEvent(e)))
                     .into()
@@ -3190,6 +3385,25 @@ async fn load_contracts(pool: sqlx::SqlitePool, spark_id: String) -> Vec<Contrac
         .unwrap_or_default()
 }
 
+/// Load all bonds touching a single spark (incoming + outgoing). Errors
+/// are swallowed since this is a non-critical display value.
+async fn load_bonds(pool: sqlx::SqlitePool, spark_id: String) -> Vec<Bond> {
+    data::sparks::bond_repo::list_for_spark(&pool, &spark_id)
+        .await
+        .unwrap_or_default()
+}
+
+/// Load the set of spark IDs that have at least one open blocking bond
+/// pointing at them, scoped to the given workshop. Errors are swallowed.
+async fn load_blocked_spark_ids(
+    pool: sqlx::SqlitePool,
+    workshop_id: String,
+) -> HashSet<String> {
+    data::sparks::bond_repo::list_blocked_spark_ids(&pool, &workshop_id)
+        .await
+        .unwrap_or_default()
+}
+
 /// Execute a contract check command via the user's shell from the workshop
 /// directory and translate the exit status into a `ContractStatus`.
 ///
@@ -3222,6 +3436,55 @@ async fn load_failing_contract_count(pool: sqlx::SqlitePool, workshop_id: String
         .await
         .map(|v| v.len())
         .unwrap_or(0)
+}
+
+/// Load the full list of failing/pending required contracts for the Home
+/// overview. Errors are swallowed since this is a non-critical display value.
+async fn load_failing_contract_list(
+    pool: sqlx::SqlitePool,
+    workshop_id: String,
+) -> Vec<Contract> {
+    data::sparks::contract_repo::list_failing(&pool, &workshop_id)
+        .await
+        .unwrap_or_default()
+}
+
+/// Load all active hand assignments for the workshop, used by the Home
+/// overview to join sparks ↔ Hands. Filters down to status='active' on
+/// the SQL side already.
+async fn load_hand_assignments(
+    pool: sqlx::SqlitePool,
+    workshop_id: String,
+) -> Vec<HandAssignment> {
+    // assignment_repo::list_active is workshop-agnostic — filter to this
+    // workshop's sparks here so the Home view doesn't bleed across workshops
+    // sharing the same database file.
+    let all = data::sparks::assignment_repo::list_active(&pool)
+        .await
+        .unwrap_or_default();
+    let workshop_spark_ids: std::collections::HashSet<String> =
+        data::sparks::spark_repo::list(
+            &pool,
+            data::sparks::types::SparkFilter {
+                workshop_id: Some(workshop_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    all.into_iter()
+        .filter(|a| workshop_spark_ids.contains(&a.spark_id))
+        .collect()
+}
+
+/// Load active embers for the Home overview.
+async fn load_embers(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<Ember> {
+    data::sparks::ember_repo::list_active(&pool, &workshop_id)
+        .await
+        .unwrap_or_default()
 }
 
 /// Load all sparks for a workshop from the database.

@@ -3,6 +3,8 @@
 
 //! Workgraph panel — displays and manages sparks for the active workshop.
 
+use std::collections::HashSet;
+
 use data::sparks::types::Spark;
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
@@ -65,6 +67,57 @@ impl CreateForm {
     }
 }
 
+// ── Status menu ──────────────────────────────────────
+
+/// Inline status popover state. Tracks which spark (if any) currently
+/// has its status menu open and whether we're in the close-reason
+/// sub-menu. The menu is rendered next to the row in `view_spark_row`.
+#[derive(Debug, Clone, Default)]
+pub struct StatusMenu {
+    pub open_for: Option<String>,
+    pub close_stage: bool,
+}
+
+impl StatusMenu {
+    pub fn dismiss(&mut self) {
+        self.open_for = None;
+        self.close_stage = false;
+    }
+
+    pub fn open(&mut self, spark_id: String) {
+        self.open_for = Some(spark_id);
+        self.close_stage = false;
+    }
+
+    pub fn enter_close_stage(&mut self) {
+        self.close_stage = true;
+    }
+
+    pub fn is_open_for(&self, spark_id: &str) -> bool {
+        self.open_for.as_deref() == Some(spark_id)
+    }
+}
+
+/// Available close reasons offered when the user chooses "Closed" from
+/// the status menu. The first column is the value persisted to
+/// `closed_reason`; the second is the human-readable label.
+pub const CLOSE_REASONS: &[(&str, &str)] = &[
+    ("completed", "Completed"),
+    ("obsolete", "Obsolete"),
+    ("duplicate", "Duplicate"),
+    ("wontfix", "Won't fix"),
+];
+
+/// All status options exposed via the popover menu, in display order.
+/// `closed` is handled separately because it triggers the close-reason
+/// sub-menu rather than a direct status update.
+pub const STATUS_OPTIONS: &[(&str, &str)] = &[
+    ("open", "Open"),
+    ("in_progress", "In Progress"),
+    ("blocked", "Blocked"),
+    ("deferred", "Deferred"),
+];
+
 // ── Messages ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -80,17 +133,27 @@ pub enum Message {
     CreateFormParentEpicChanged(Option<String>),
     SubmitNewSpark,
     CancelCreate,
-    /// Quick status cycle: open → in_progress → closed
-    CycleStatus(String, String),
+    /// Open the inline status popover for a spark.
+    OpenStatusMenu(String),
+    /// Dismiss the status popover.
+    CloseStatusMenu,
+    /// Apply a non-closed status (open / in_progress / blocked / deferred).
+    SetStatus(String, String),
+    /// Switch the popover into the close-reason sub-menu.
+    BeginCloseFlow(String),
+    /// Close the spark with a specific reason.
+    CloseSparkWithReason(String, String),
 }
 
 // ── View ─────────────────────────────────────────────
 
 pub fn view<'a>(
     sparks: &'a [Spark],
+    blocked_ids: &'a HashSet<String>,
     pal: &Palette,
     has_bg: bool,
     create_form: &'a CreateForm,
+    status_menu: &'a StatusMenu,
 ) -> Element<'a, Message> {
     let pal = *pal;
 
@@ -124,7 +187,8 @@ pub fn view<'a>(
         );
     } else {
         for spark in sparks {
-            list = list.push(view_spark_row(spark, &pal));
+            let is_blocked = blocked_ids.contains(&spark.id);
+            list = list.push(view_spark_row(spark, is_blocked, &pal, status_menu));
         }
     }
 
@@ -312,18 +376,25 @@ where
         .into()
 }
 
-fn view_spark_row<'a>(spark: &'a Spark, pal: &Palette) -> Element<'a, Message> {
-    let pal = *pal;
-    let status_indicator: &str = match spark.status.as_str() {
+fn status_symbol(status: &str) -> &'static str {
+    match status {
         "open" => "\u{25CB}",        // ○
         "in_progress" => "\u{25D4}", // ◔
         "blocked" => "\u{25A0}",     // ■
         "deferred" => "\u{25CC}",    // ◌
         "closed" => "\u{25CF}",      // ●
         _ => "\u{25CB}",
-    };
+    }
+}
 
-    let next_status = next_status_str(&spark.status);
+fn view_spark_row<'a>(
+    spark: &'a Spark,
+    is_blocked: bool,
+    pal: &Palette,
+    status_menu: &'a StatusMenu,
+) -> Element<'a, Message> {
+    let pal = *pal;
+    let status_indicator = status_symbol(&spark.status);
     let priority_label = format!("P{}", spark.priority);
     let id = spark.id.clone();
 
@@ -334,38 +405,205 @@ fn view_spark_row<'a>(spark: &'a Spark, pal: &Palette) -> Element<'a, Message> {
     )
     .style(button::text)
     .padding([2, 4])
-    .on_press(Message::CycleStatus(id.clone(), next_status.to_string()));
+    .on_press(Message::OpenStatusMenu(id.clone()));
 
-    row![
+    // When a spark has open blockers, dim the title and surface a 🔒-style
+    // padlock so agents glance-read "don't claim this" without opening detail.
+    let title_color = if is_blocked {
+        pal.text_tertiary
+    } else {
+        pal.text_primary
+    };
+
+    let mut row_inner = row![
+        text(priority_label)
+            .size(FONT_LABEL)
+            .color(pal.text_tertiary),
+        text(&spark.title).size(FONT_BODY).color(title_color),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    if is_blocked {
+        row_inner = row_inner.push(
+            text("\u{1F512}")
+                .size(FONT_LABEL)
+                .color(pal.text_tertiary),
+        );
+    }
+
+    let main_row = row![
         status_btn,
-        button(
-            row![
-                text(priority_label)
-                    .size(FONT_LABEL)
-                    .color(pal.text_tertiary),
-                text(&spark.title).size(FONT_BODY).color(pal.text_primary),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-        )
-        .style(button::text)
-        .width(Length::Fill)
-        .padding([5, 6])
-        .on_press(Message::SelectSpark(id))
+        button(row_inner)
+            .style(button::text)
+            .width(Length::Fill)
+            .padding([5, 6])
+            .on_press(Message::SelectSpark(id.clone()))
     ]
     .spacing(2)
-    .align_y(iced::Alignment::Center)
-    .into()
+    .align_y(iced::Alignment::Center);
+
+    if status_menu.is_open_for(&spark.id) {
+        column![
+            main_row,
+            view_status_menu(&spark.id, &spark.status, status_menu.close_stage, &pal),
+        ]
+        .spacing(2)
+        .into()
+    } else {
+        main_row.into()
+    }
 }
 
-/// Cycle: open → in_progress → closed → open
-fn next_status_str(current: &str) -> &'static str {
-    match current {
-        "open" => "in_progress",
-        "in_progress" => "closed",
-        "closed" => "open",
-        "blocked" => "open",
-        "deferred" => "open",
-        _ => "open",
+fn view_status_menu<'a>(
+    spark_id: &'a str,
+    current_status: &str,
+    close_stage: bool,
+    pal: &Palette,
+) -> Element<'a, Message> {
+    let pal = *pal;
+
+    let menu_body: Element<Message> = if close_stage {
+        let mut chips = row![
+            text("Close as:")
+                .size(FONT_SMALL)
+                .color(pal.text_tertiary),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        for (key, label) in CLOSE_REASONS {
+            let sid = spark_id.to_string();
+            let key_owned = (*key).to_string();
+            chips = chips.push(menu_chip(label, false, &pal, move || {
+                Message::CloseSparkWithReason(sid.clone(), key_owned.clone())
+            }));
+        }
+        chips.into()
+    } else {
+        let mut chips = row![].spacing(6).align_y(iced::Alignment::Center);
+        for (key, label) in STATUS_OPTIONS {
+            let selected = current_status == *key;
+            let sid = spark_id.to_string();
+            let key_owned = (*key).to_string();
+            chips = chips.push(menu_chip(label, selected, &pal, move || {
+                Message::SetStatus(sid.clone(), key_owned.clone())
+            }));
+        }
+        let sid_close = spark_id.to_string();
+        let closed_selected = current_status == "closed";
+        chips = chips.push(menu_chip("Closed", closed_selected, &pal, move || {
+            Message::BeginCloseFlow(sid_close.clone())
+        }));
+        chips.into()
+    };
+
+    let cancel_btn = button(text("\u{00D7}").size(FONT_LABEL).color(pal.text_tertiary))
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::CloseStatusMenu);
+
+    let popover = row![menu_body, Space::new().width(Length::Fill), cancel_btn]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+
+    container(popover)
+        .padding([6, 8])
+        .width(Length::Fill)
+        .style(move |_t: &Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(iced::Color {
+                a: 0.06,
+                ..pal.text_primary
+            })),
+            border: iced::Border {
+                color: pal.border,
+                width: 1.0,
+                radius: iced::border::Radius::from(6.0),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn menu_chip<'a, F>(
+    label: &str,
+    selected: bool,
+    pal: &Palette,
+    on_press: F,
+) -> Element<'a, Message>
+where
+    F: 'a + Fn() -> Message,
+{
+    let pal = *pal;
+    let text_color = if selected {
+        pal.window_bg
+    } else {
+        pal.text_primary
+    };
+    button(text(label.to_string()).size(FONT_LABEL).color(text_color))
+        .style(move |_t: &Theme, _s| button::Style {
+            background: Some(iced::Background::Color(if selected {
+                pal.accent
+            } else {
+                pal.surface
+            })),
+            text_color,
+            border: iced::Border {
+                color: pal.border,
+                width: 1.0,
+                radius: iced::border::Radius::from(8.0),
+            },
+            ..button::Style::default()
+        })
+        .padding([3, 8])
+        .on_press_with(on_press)
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_menu_dismiss_clears_state() {
+        let mut m = StatusMenu::default();
+        m.open("sp-1".into());
+        m.enter_close_stage();
+        assert!(m.is_open_for("sp-1"));
+        assert!(m.close_stage);
+        m.dismiss();
+        assert!(m.open_for.is_none());
+        assert!(!m.close_stage);
+    }
+
+    #[test]
+    fn opening_a_new_menu_resets_close_stage() {
+        let mut m = StatusMenu::default();
+        m.open("sp-1".into());
+        m.enter_close_stage();
+        m.open("sp-2".into());
+        assert!(m.is_open_for("sp-2"));
+        assert!(!m.close_stage);
+    }
+
+    #[test]
+    fn close_reasons_cover_expected_values() {
+        let keys: Vec<&str> = CLOSE_REASONS.iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&"completed"));
+        assert!(keys.contains(&"obsolete"));
+        assert!(keys.contains(&"duplicate"));
+        assert!(keys.contains(&"wontfix"));
+    }
+
+    #[test]
+    fn status_options_cover_all_non_closed_states() {
+        let keys: Vec<&str> = STATUS_OPTIONS.iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, vec!["open", "in_progress", "blocked", "deferred"]);
+    }
+
+    #[test]
+    fn status_symbol_distinguishes_states() {
+        assert_ne!(status_symbol("open"), status_symbol("in_progress"));
+        assert_ne!(status_symbol("blocked"), status_symbol("deferred"));
+        assert_ne!(status_symbol("closed"), status_symbol("open"));
     }
 }
