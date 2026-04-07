@@ -484,6 +484,18 @@ fn create_hand_worktree(
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
+    // Drop AGENTS.md into the worktree so agents without a system-prompt
+    // CLI flag (codex, opencode) still see WORKSHOP.md instructions.
+    let workshop_md = ryve_dir.workshop_md_path();
+    if workshop_md.exists() {
+        let agents_md = wt_dir.join("AGENTS.md");
+        if !agents_md.exists() {
+            if let Err(e) = std::fs::copy(&workshop_md, &agents_md) {
+                log::warn!("Failed to write AGENTS.md to worktree: {e}");
+            }
+        }
+    }
+
     Ok(wt_dir)
 }
 

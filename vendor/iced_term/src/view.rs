@@ -91,7 +91,17 @@ impl<'a> TerminalView<'a> {
         shell: &mut iced_graphics::core::Shell<'_, Event>,
     ) {
         let layout_size = layout.bounds().size();
-        if state.size != layout_size {
+        // Check both the per-widget cache and the backend's actual size.
+        // The cache alone is unreliable when iced reuses widget tree state
+        // across siblings (e.g. switching tabs that each render their own
+        // TerminalView at the same tree position) — the cache may already
+        // hold the correct size while the backend is still at its default
+        // 1×1 cell grid, leaving the terminal rendered tiny until a window
+        // resize triggers another update.
+        let backend_size = self.term.backend.renderable_content().terminal_size;
+        let backend_matches = backend_size.layout_width == layout_size.width
+            && backend_size.layout_height == layout_size.height;
+        if state.size != layout_size || !backend_matches {
             state.size = layout_size;
             let cmd = Command::Resize(
                 Some(layout_size),

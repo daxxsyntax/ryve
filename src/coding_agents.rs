@@ -52,9 +52,10 @@ impl CodingAgent {
     pub fn system_prompt_flag(&self) -> Option<(&'static str, bool)> {
         match self.command.as_str() {
             "claude" => Some(("--system-prompt", true)),
-            "codex" => Some(("--instructions", true)),
             "aider" => Some(("--read", true)),
-            "opencode" => Some(("--prompt", false)),
+            // codex (>=0.118) and opencode (>=1.2) have no system-prompt CLI
+            // flag — they read AGENTS.md from cwd instead. Ryve drops an
+            // AGENTS.md into the hand worktree (see create_hand_worktree).
             _ => None,
         }
     }

@@ -81,8 +81,8 @@ pub struct TerminalSize {
     pub cell_height: u16,
     num_cols: u16,
     num_lines: u16,
-    layout_width: f32,
-    layout_height: f32,
+    pub layout_width: f32,
+    pub layout_height: f32,
 }
 
 impl Default for TerminalSize {
