@@ -163,8 +163,28 @@ impl CodingAgent {
             }
             "codex" => {
                 // `codex exec <prompt>` runs once non-interactively.
+                //
+                // We MUST NOT use `--full-auto` here. `--full-auto` is a
+                // shortcut for `--sandbox workspace-write`, which only allows
+                // writes inside the agent's cwd. Hands run with cwd set to
+                // their per-Hand worktree at `.ryve/worktrees/<id>/`, but the
+                // workshop sqlite DB lives one level up at `.ryve/sparks.db`.
+                // workspace-write therefore makes the DB readonly from the
+                // Hand's perspective, and every `ryve spark status` /
+                // `ryve spark close` / `ryve comment add` /
+                // `ryve assign heartbeat` call fails with
+                // "attempt to write a readonly database". The Hand looks
+                // stuck/dead from the orchestrator side and the Head has to
+                // release+respawn it (see spark ryve-f232cc66 / repro hand
+                // 19c282fd-2402-45e2-a8d2-6aaf7df7f6e5 on ryve-1483878d).
+                //
+                // Ryve already places each Hand in an isolated git worktree
+                // and trusts its own coordinated agents — the same trust
+                // model that lets us pass `--dangerously-skip-permissions`
+                // to claude. Use codex's equivalent so the Hand can write
+                // to the workshop DB outside its cwd.
                 args.push("exec".to_string());
-                args.push("--full-auto".to_string());
+                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
                 args.push(prompt.to_string());
             }
             "aider" => {
@@ -196,13 +216,20 @@ impl CodingAgent {
     /// Return the CLI flags to enable full-auto mode (no confirmation prompts).
     /// Each agent has its own mechanism:
     /// - Claude Code: `--dangerously-skip-permissions`
-    /// - Codex: `--full-auto`
+    /// - Codex: `--dangerously-bypass-approvals-and-sandbox` (see note below)
     /// - Aider: `--yes-always`
     /// - OpenCode: (no known flag)
+    ///
+    /// NOTE on codex: we deliberately do NOT use `--full-auto` here. That
+    /// flag implies `--sandbox workspace-write`, which makes anything
+    /// outside the Hand's cwd readonly. The workshop sqlite DB lives at
+    /// `.ryve/sparks.db` (above the Hand's worktree at
+    /// `.ryve/worktrees/<id>/`), so workspace-write blocks every ryve CLI
+    /// write the Hand needs to make. See spark ryve-f232cc66.
     pub fn full_auto_flags(&self) -> Vec<String> {
         match self.command.as_str() {
             "claude" => vec!["--dangerously-skip-permissions".to_string()],
-            "codex" => vec!["--full-auto".to_string()],
+            "codex" => vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
             "aider" => vec!["--yes-always".to_string()],
             _ => vec![],
         }
@@ -531,8 +558,33 @@ mod tests {
         let agent = agent_for("codex");
         let args = agent.build_headless_args("do the thing", &PathBuf::from("/tmp/x"));
         assert_eq!(args.first().map(String::as_str), Some("exec"));
-        assert!(args.contains(&"--full-auto".to_string()));
+        // Regression for spark ryve-f232cc66: codex Hands MUST run with the
+        // sandbox bypassed, otherwise the workshop sqlite DB (which lives
+        // outside the Hand's worktree cwd) is readonly and every ryve CLI
+        // write fails. `--full-auto` would re-introduce that bug because it
+        // implies `--sandbox workspace-write`.
+        assert!(
+            args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
+            "codex headless args must bypass the sandbox so the Hand can \
+             write to the workshop DB outside its worktree: {args:?}"
+        );
+        assert!(
+            !args.contains(&"--full-auto".to_string()),
+            "codex headless args must NOT use --full-auto (workspace-write \
+             sandbox makes the workshop DB readonly): {args:?}"
+        );
         assert_eq!(args.last().map(String::as_str), Some("do the thing"));
+    }
+
+    /// Same regression check via `full_auto_flags`, the public helper that
+    /// other call sites (e.g. interactive spawn paths in `workshop`) use to
+    /// build a codex command line. If this ever drifts back to `--full-auto`
+    /// the readonly-DB bug returns.
+    #[test]
+    fn full_auto_flags_codex_bypasses_sandbox() {
+        let agent = agent_for("codex");
+        let flags = agent.full_auto_flags();
+        assert_eq!(flags, vec!["--dangerously-bypass-approvals-and-sandbox".to_string()]);
     }
 
     #[test]
