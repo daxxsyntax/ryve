@@ -21,6 +21,7 @@ use coding_agents::CodingAgent;
 use screen::agents::AgentSession;
 use screen::file_explorer;
 use screen::file_viewer;
+use screen::toast::{self, Toast, ToastKind};
 use style::Appearance;
 use widget::splitter::{self, SplitterDrag, SplitterKind};
 use workshop::Workshop;
@@ -104,6 +105,10 @@ struct App {
     /// Last known window size — used to convert vertical splitter
     /// drag deltas into a sidebar split ratio.
     window_size: Size,
+    /// Active toast notifications (global across all workshops).
+    toasts: Vec<Toast>,
+    /// Monotonic counter for toast ids.
+    next_toast_id: u64,
 }
 
 #[derive(Clone)]
@@ -113,6 +118,8 @@ enum Message {
     CloseWorkshop(usize),
     NewWorkshopDialog,
     WorkshopDirPicked(Option<PathBuf>),
+    /// `workshop::init_workshop` failed (bad db, unreadable config, etc.).
+    WorkshopInitFailed { id: Uuid, error: String },
 
     /// Workshop .ryve/ initialized
     WorkshopReady {
@@ -152,6 +159,10 @@ enum Message {
         photographer: String,
         photographer_url: String,
     },
+    /// Result of an Unsplash search request (success or error).
+    UnsplashSearchResult(Result<data::unsplash::SearchResult, String>),
+    /// Background photo download failed.
+    UnsplashDownloadFailed(String),
     /// Local file copied to backgrounds dir
     LocalFileCopied(String),
     /// Background config saved
@@ -180,6 +191,14 @@ enum Message {
     LayoutSaved,
     /// Window was resized.
     WindowResized(Size),
+
+    /// Toast notifications
+    Toast(toast::Message),
+    /// Push a new toast onto the stack from an async task.
+    #[allow(dead_code)]
+    ShowToast { title: String, body: String, kind: ToastKind },
+    /// A toast's lifetime elapsed — remove it if still present.
+    ToastExpired(u64),
 }
 
 impl std::fmt::Debug for Message {
@@ -189,6 +208,9 @@ impl std::fmt::Debug for Message {
             Self::CloseWorkshop(i) => write!(f, "CloseWorkshop({i})"),
             Self::NewWorkshopDialog => write!(f, "NewWorkshopDialog"),
             Self::WorkshopDirPicked(p) => write!(f, "WorkshopDirPicked({p:?})"),
+            Self::WorkshopInitFailed { id, error } => {
+                write!(f, "WorkshopInitFailed({id}, {error})")
+            }
             Self::WorkshopReady { id, .. } => write!(f, "WorkshopReady({id})"),
             Self::SparksLoaded(id, s) => write!(f, "SparksLoaded({id}, {} sparks)", s.len()),
             Self::FailingContractsLoaded(id, n) => {
@@ -212,6 +234,10 @@ impl std::fmt::Debug for Message {
             Self::UnsplashDownloaded { filename, .. } => {
                 write!(f, "UnsplashDownloaded({filename})")
             }
+            Self::UnsplashSearchResult(r) => {
+                write!(f, "UnsplashSearchResult(ok={})", r.is_ok())
+            }
+            Self::UnsplashDownloadFailed(e) => write!(f, "UnsplashDownloadFailed({e})"),
             Self::LocalFileCopied(name) => write!(f, "LocalFileCopied({name})"),
             Self::BackgroundConfigSaved => write!(f, "BackgroundConfigSaved"),
             Self::AgentContextSynced => write!(f, "AgentContextSynced"),
@@ -226,6 +252,9 @@ impl std::fmt::Debug for Message {
             Self::SplitterReleased => write!(f, "SplitterReleased"),
             Self::LayoutSaved => write!(f, "LayoutSaved"),
             Self::WindowResized(s) => write!(f, "WindowResized({:.0}x{:.0})", s.width, s.height),
+            Self::Toast(m) => write!(f, "Toast({m:?})"),
+            Self::ShowToast { title, kind, .. } => write!(f, "ShowToast({title}, {kind:?})"),
+            Self::ToastExpired(id) => write!(f, "ToastExpired({id})"),
         }
     }
 }
@@ -248,6 +277,8 @@ impl App {
                 shift_held: false,
                 splitter_drag: None,
                 window_size: Size::new(1400.0, 900.0),
+                toasts: Vec::new(),
+                next_toast_id: 1,
             },
             Task::none(),
         )
@@ -255,6 +286,41 @@ impl App {
 
     fn active_workshop(&self) -> Option<&Workshop> {
         self.active_workshop.and_then(|i| self.workshops.get(i))
+    }
+
+    /// Push a new toast onto the stack and return a `Task` that will
+    /// emit `ToastExpired` after the toast's lifetime.
+    fn push_toast(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        kind: ToastKind,
+    ) -> Task<Message> {
+        let id = self.next_toast_id;
+        self.next_toast_id += 1;
+        let title = title.into();
+        let body = body.into();
+        // Also log to console so failures remain greppable in release logs.
+        match kind {
+            ToastKind::Error => log::error!("toast: {title}: {body}"),
+            ToastKind::Warning => log::warn!("toast: {title}: {body}"),
+            ToastKind::Info => log::info!("toast: {title}: {body}"),
+        }
+        self.toasts.push(Toast { id, title, body, kind });
+        // Drop oldest when over the cap.
+        while self.toasts.len() > toast::MAX_TOASTS {
+            self.toasts.remove(0);
+        }
+        Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    toast::TOAST_LIFETIME_SECS,
+                ))
+                .await;
+                id
+            },
+            Message::ToastExpired,
+        )
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -305,13 +371,34 @@ impl App {
                         custom_agents: init.custom_agents,
                         agent_context: init.agent_context,
                     },
-                    Err(e) => {
-                        log::error!("Failed to init workshop: {e}");
-                        Message::WorkshopDirPicked(None)
-                    }
+                    Err(e) => Message::WorkshopInitFailed {
+                        id: ws_id,
+                        error: e.to_string(),
+                    },
                 })
             }
             Message::WorkshopDirPicked(None) => Task::none(),
+            Message::WorkshopInitFailed { id, error } => {
+                // Remove the half-initialized workshop so we don't leave a
+                // ghost tab pointing at a broken directory.
+                if let Some(pos) = self.workshops.iter().position(|ws| ws.id == id) {
+                    self.workshops.remove(pos);
+                    if self.workshops.is_empty() {
+                        self.active_workshop = None;
+                    } else if let Some(active) = self.active_workshop {
+                        if active >= pos && active > 0 {
+                            self.active_workshop = Some(active - 1);
+                        } else if self.workshops.is_empty() {
+                            self.active_workshop = None;
+                        }
+                    }
+                }
+                self.push_toast(
+                    "Workshop failed to open",
+                    format!("Database or config init error: {error}"),
+                    ToastKind::Error,
+                )
+            }
 
             Message::WorkshopReady {
                 id,
@@ -630,6 +717,29 @@ impl App {
                                 }
                             }
                         }
+                    }
+                    file_viewer::Message::FileLoadFailed {
+                        tab_id,
+                        path,
+                        error,
+                    } => {
+                        // Close the empty viewer tab since there's nothing to show,
+                        // then toast the failure so it doesn't vanish.
+                        for ws in &mut self.workshops {
+                            if ws.file_viewers.remove(&tab_id).is_some() {
+                                ws.bench.close_tab(tab_id);
+                                break;
+                            }
+                        }
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                        return self.push_toast(
+                            format!("Failed to open {name}"),
+                            error,
+                            ToastKind::Error,
+                        );
                     }
                 }
                 Task::none()
@@ -986,6 +1096,42 @@ impl App {
                     ),
                 ])
             }
+            Message::UnsplashSearchResult(result) => {
+                let Some(idx) = self.active_workshop else {
+                    return Task::none();
+                };
+                let ws = &mut self.workshops[idx];
+                match result {
+                    Ok(sr) => {
+                        // Re-enter the existing SearchResults flow to populate thumbnails.
+                        Task::done(Message::Background(
+                            screen::background_picker::Message::SearchResults(sr.photos),
+                        ))
+                    }
+                    Err(e) => {
+                        ws.background_picker.loading = false;
+                        ws.background_picker.results.clear();
+                        ws.background_picker.thumbnails.clear();
+                        self.push_toast(
+                            "Unsplash search failed",
+                            e,
+                            ToastKind::Error,
+                        )
+                    }
+                }
+            }
+            Message::UnsplashDownloadFailed(error) => {
+                // Critical: clear the loading state that SelectPhoto set, so
+                // the picker doesn't hang forever. This was the real bug.
+                if let Some(idx) = self.active_workshop {
+                    self.workshops[idx].background_picker.loading = false;
+                }
+                self.push_toast(
+                    "Background download failed",
+                    error,
+                    ToastKind::Error,
+                )
+            }
             Message::LocalFileCopied(filename) => {
                 let Some(idx) = self.active_workshop else {
                     return Task::none();
@@ -1017,11 +1163,25 @@ impl App {
             Message::BackgroundConfigSaved => Task::none(),
             Message::AgentContextSynced => Task::none(),
             Message::SparksPoll => {
+                // Opportunistically surface any worktree warnings that the
+                // synchronous spawn paths accumulated since the last tick.
+                let warnings: Vec<String> = self
+                    .workshops
+                    .iter_mut()
+                    .filter_map(|ws| ws.take_worktree_warning())
+                    .collect();
+                let mut warning_tasks: Vec<Task<Message>> = warnings
+                    .into_iter()
+                    .map(|w| {
+                        self.push_toast("Worktree fallback", w, ToastKind::Warning)
+                    })
+                    .collect();
+
                 if self.poll_in_flight {
-                    return Task::none();
+                    return Task::batch(warning_tasks);
                 }
 
-                let mut tasks: Vec<Task<Message>> = Vec::new();
+                let mut tasks: Vec<Task<Message>> = std::mem::take(&mut warning_tasks);
 
                 // Auto-detect agent processes in plain terminals
                 for ws in self.workshops.iter_mut() {
@@ -1174,6 +1334,17 @@ impl App {
             Message::LayoutSaved => Task::none(),
             Message::WindowResized(size) => {
                 self.window_size = size;
+                Task::none()
+            }
+
+            // ── Toast notifications ──────────────────────
+            Message::ShowToast { title, body, kind } => self.push_toast(title, body, kind),
+            Message::Toast(toast::Message::Dismiss(id)) => {
+                self.toasts.retain(|t| t.id != id);
+                Task::none()
+            }
+            Message::ToastExpired(id) => {
+                self.toasts.retain(|t| t.id != id);
                 Task::none()
             }
         }
@@ -1503,18 +1674,12 @@ impl App {
 
                 let api_key = std::env::var("UNSPLASH_ACCESS_KEY").unwrap_or_default();
                 Task::perform(
-                    async move { data::unsplash::search(&api_key, &query, 1).await },
-                    |result| match result {
-                        Ok(sr) => Message::Background(
-                            screen::background_picker::Message::SearchResults(sr.photos),
-                        ),
-                        Err(e) => {
-                            log::error!("Unsplash search failed: {e}");
-                            Message::Background(screen::background_picker::Message::SearchResults(
-                                Vec::new(),
-                            ))
-                        }
+                    async move {
+                        data::unsplash::search(&api_key, &query, 1)
+                            .await
+                            .map_err(|e| e.to_string())
                     },
+                    |result| Message::UnsplashSearchResult(result),
                 )
             }
             screen::background_picker::Message::SearchResults(photos) => {
@@ -1558,17 +1723,18 @@ impl App {
                 let photographer_url = photo.photographer_url.clone();
 
                 Task::perform(
-                    async move { data::unsplash::download(&api_key, &photo, &bg_dir).await },
+                    async move {
+                        data::unsplash::download(&api_key, &photo, &bg_dir)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
                     move |result| match result {
                         Ok(filename) => Message::UnsplashDownloaded {
                             filename,
                             photographer: photographer.clone(),
                             photographer_url: photographer_url.clone(),
                         },
-                        Err(e) => {
-                            log::error!("Unsplash download failed: {e}");
-                            Message::BackgroundConfigSaved // no-op
-                        }
+                        Err(e) => Message::UnsplashDownloadFailed(e),
                     },
                 )
             }
@@ -1695,6 +1861,15 @@ impl App {
             .height(Length::Fill)
             .into();
 
+        let toast_pal = ws
+            .map(|ws| match ws.bg_is_dark {
+                Some(true) => style::Palette::dark(),
+                Some(false) => style::Palette::light(),
+                None => self.appearance.palette(),
+            })
+            .unwrap_or_else(|| self.appearance.palette());
+        let toast_overlay = toast::view(&self.toasts, &toast_pal).map(|e| e.map(Message::Toast));
+
         // Layer background image behind everything (including tab bar)
         if let Some(ws) = ws {
             if ws.background_handle.is_some() || ws.background_picker.open {
@@ -1757,14 +1932,15 @@ impl App {
                     );
                 }
 
-                return stack(layers)
+                let stacked: Element<'_, Message> = stack(layers)
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .into();
+                return overlay_with_toasts(stacked, toast_overlay);
             }
         }
 
-        main_content
+        overlay_with_toasts(main_content, toast_overlay)
     }
 
     /// Top-level tab bar for workshops — liquid glass pill tabs.
@@ -2214,6 +2390,20 @@ fn splitter_event_filter(
             Some(Message::SplitterReleased)
         }
         _ => None,
+    }
+}
+
+/// Stack toast notifications on top of an existing view, if any are active.
+fn overlay_with_toasts<'a>(
+    base: Element<'a, Message>,
+    toasts: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    match toasts {
+        Some(toast_layer) => stack![base, toast_layer]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        None => base,
     }
 }
 
