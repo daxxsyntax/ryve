@@ -268,6 +268,9 @@ fn collect_nodes<'a>(
     // Diff stats: for files look up directly, for directories aggregate children
     let diff = file_diff_stat(rel_path, &node.kind, &state.diff_stats);
 
+    // Aggregated git status (for the letter badge) — matches what git_color reflects.
+    let git_status = file_git_status(rel_path, &node.kind, &state.git_statuses);
+
     let mut label = row![
         Space::new().width(indent),
         icon_widget,
@@ -276,6 +279,16 @@ fn collect_nodes<'a>(
     ]
     .spacing(4)
     .align_y(iced::Alignment::Center);
+
+    // Accessible text badge for git status (colorblind-friendly alongside the color).
+    if let Some(status) = git_status {
+        label = label.push(
+            text(status_letter(status).to_string())
+                .size(FONT_LABEL)
+                .font(iced::Font::MONOSPACE)
+                .color(status_color(status)),
+        );
+    }
 
     // Show +N / -N badges when there are changes
     if diff.additions > 0 {
@@ -344,11 +357,21 @@ fn file_git_color(
     statuses: &HashMap<PathBuf, FileStatus>,
     pal: &Palette,
 ) -> Color {
+    match file_git_status(rel_path, kind, statuses) {
+        Some(status) => status_color(status),
+        None => pal.text_primary,
+    }
+}
+
+/// Resolve the effective git status for a file or directory.
+/// For directories, returns the "most important" status of any descendant.
+fn file_git_status(
+    rel_path: &Path,
+    kind: &NodeKind,
+    statuses: &HashMap<PathBuf, FileStatus>,
+) -> Option<FileStatus> {
     if *kind == NodeKind::File {
-        if let Some(status) = statuses.get(rel_path) {
-            return status_color(*status);
-        }
-        return pal.text_primary;
+        return statuses.get(rel_path).copied();
     }
 
     // Directory: check if any child file has a git status
@@ -365,10 +388,7 @@ fn file_git_color(
         }
     }
 
-    match most_important {
-        Some(status) => status_color(status),
-        None => pal.text_primary,
-    }
+    most_important
 }
 
 /// Get aggregated diff stats for a file or directory.
@@ -407,6 +427,21 @@ fn status_color(status: FileStatus) -> Color {
     }
 }
 
+/// Short accessible letter label for a git status, rendered alongside the
+/// status color so colorblind users can still distinguish states.
+fn status_letter(status: FileStatus) -> char {
+    match status {
+        FileStatus::Modified => 'M',
+        FileStatus::Added => 'A',
+        FileStatus::Deleted => 'D',
+        FileStatus::Renamed => 'R',
+        FileStatus::Copied => 'C',
+        FileStatus::Untracked => '?',
+        FileStatus::Ignored => 'I',
+        FileStatus::Conflicted => 'U',
+    }
+}
+
 fn higher_priority_status(a: FileStatus, b: FileStatus) -> FileStatus {
     fn rank(s: FileStatus) -> u8 {
         match s {
@@ -421,4 +456,68 @@ fn higher_priority_status(a: FileStatus, b: FileStatus) -> FileStatus {
         }
     }
     if rank(b) > rank(a) { b } else { a }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_letter_covers_all_variants() {
+        assert_eq!(status_letter(FileStatus::Modified), 'M');
+        assert_eq!(status_letter(FileStatus::Added), 'A');
+        assert_eq!(status_letter(FileStatus::Deleted), 'D');
+        assert_eq!(status_letter(FileStatus::Renamed), 'R');
+        assert_eq!(status_letter(FileStatus::Copied), 'C');
+        assert_eq!(status_letter(FileStatus::Untracked), '?');
+        assert_eq!(status_letter(FileStatus::Conflicted), 'U');
+        assert_eq!(status_letter(FileStatus::Ignored), 'I');
+    }
+
+    #[test]
+    fn file_git_status_returns_direct_file_status() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        let got = file_git_status(
+            Path::new("src/main.rs"),
+            &NodeKind::File,
+            &statuses,
+        );
+        assert_eq!(got, Some(FileStatus::Modified));
+
+        let none = file_git_status(
+            Path::new("src/other.rs"),
+            &NodeKind::File,
+            &statuses,
+        );
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn file_git_status_aggregates_directory_children() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src/a.rs"), FileStatus::Modified);
+        statuses.insert(PathBuf::from("src/b.rs"), FileStatus::Conflicted);
+        statuses.insert(PathBuf::from("src/c.rs"), FileStatus::Untracked);
+
+        // Directory should take the highest-priority child status (Conflicted).
+        let got = file_git_status(
+            Path::new("src"),
+            &NodeKind::Directory,
+            &statuses,
+        );
+        assert_eq!(got, Some(FileStatus::Conflicted));
+    }
+
+    #[test]
+    fn file_git_status_empty_directory_is_none() {
+        let statuses: HashMap<PathBuf, FileStatus> = HashMap::new();
+        let got = file_git_status(
+            Path::new("src"),
+            &NodeKind::Directory,
+            &statuses,
+        );
+        assert_eq!(got, None);
+    }
 }
