@@ -1542,37 +1542,62 @@ impl App {
                             );
                         }
                     }
-                    screen::sparks::Message::CycleStatus(spark_id, new_status) => {
-                        if let Some(ws) = self.workshops.get(idx) {
+                    screen::sparks::Message::OpenStatusMenu(spark_id) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.open(spark_id);
+                        }
+                    }
+                    screen::sparks::Message::CloseStatusMenu => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
+                        }
+                    }
+                    screen::sparks::Message::BeginCloseFlow(_spark_id) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.enter_close_stage();
+                        }
+                    }
+                    screen::sparks::Message::SetStatus(spark_id, new_status) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
                             if let Some(ref pool) = ws.sparks_db {
                                 let pool = pool.clone();
                                 let ws_id = ws.workshop_id();
                                 let id = ws.id;
                                 return Task::perform(
                                     async move {
-                                        if new_status == "closed" {
-                                            let _ = data::sparks::spark_repo::close(
-                                                &pool,
-                                                &spark_id,
-                                                "completed",
-                                                "user",
+                                        if let Some(s) =
+                                            data::sparks::types::SparkStatus::from_str(&new_status)
+                                        {
+                                            let upd = data::sparks::types::UpdateSpark {
+                                                status: Some(s),
+                                                ..Default::default()
+                                            };
+                                            let _ = data::sparks::spark_repo::update(
+                                                &pool, &spark_id, upd, "user",
                                             )
                                             .await;
-                                        } else {
-                                            let status = data::sparks::types::SparkStatus::from_str(
-                                                &new_status,
-                                            );
-                                            if let Some(s) = status {
-                                                let upd = data::sparks::types::UpdateSpark {
-                                                    status: Some(s),
-                                                    ..Default::default()
-                                                };
-                                                let _ = data::sparks::spark_repo::update(
-                                                    &pool, &spark_id, upd, "user",
-                                                )
-                                                .await;
-                                            }
                                         }
+                                        load_sparks(pool, ws_id).await
+                                    },
+                                    move |sparks| Message::SparksLoaded(id, sparks),
+                                );
+                            }
+                        }
+                    }
+                    screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.spark_status_menu.dismiss();
+                            if let Some(ref pool) = ws.sparks_db {
+                                let pool = pool.clone();
+                                let ws_id = ws.workshop_id();
+                                let id = ws.id;
+                                return Task::perform(
+                                    async move {
+                                        let _ = data::sparks::spark_repo::close(
+                                            &pool, &spark_id, &reason, "user",
+                                        )
+                                        .await;
                                         load_sparks(pool, ws_id).await
                                     },
                                     move |sparks| Message::SparksLoaded(id, sparks),
@@ -2872,12 +2897,24 @@ impl App {
                 )
                 .map(Message::SparkDetail)
             } else {
-                screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
-                    .map(Message::Sparks)
+                screen::sparks::view(
+                    &ws.sparks,
+                    &pal,
+                    has_bg,
+                    &ws.spark_create_form,
+                    &ws.spark_status_menu,
+                )
+                .map(Message::Sparks)
             }
         } else {
-            screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
-                .map(Message::Sparks)
+            screen::sparks::view(
+                &ws.sparks,
+                &pal,
+                has_bg,
+                &ws.spark_create_form,
+                &ws.spark_status_menu,
+            )
+            .map(Message::Sparks)
         };
 
         let sparks_col = container(sparks_panel)
