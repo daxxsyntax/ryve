@@ -16,8 +16,12 @@ use std::sync::LazyLock;
 
 use data::git::LineChange;
 use data::sparks::types::SparkFileLink;
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
-use iced::{Color, Element, Font, Length, Theme};
+use iced::mouse;
+use iced::widget::canvas::{self, Frame, Geometry, Path as CanvasPath};
+use iced::widget::{
+    Canvas, Space, button, column, container, mouse_area, row, scrollable, text,
+};
+use iced::{Color, Element, Font, Length, Point, Rectangle, Size, Theme};
 use syntect::highlighting::{self, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
@@ -393,6 +397,22 @@ const BREADCRUMB_SIZE: f32 = 12.0;
 /// Extra lines rendered above/below the visible window to reduce flicker.
 const OVERSCAN: usize = 20;
 
+// ── Minimap constants ────────────────────────────────
+
+/// Width of the condensed minimap strip on the right edge of the viewer.
+pub const MINIMAP_WIDTH: f32 = 84.0;
+/// Horizontal inset inside the minimap so blocks don't touch the edges.
+const MINIMAP_PADDING_X: f32 = 3.0;
+/// Approximate character width used to scale spans in the minimap.
+/// `MINIMAP_WIDTH - 2 * MINIMAP_PADDING_X` ≈ 78, giving us ~78 columns
+/// at 1px per char — enough to distinguish indentation structure.
+const MINIMAP_CHAR_WIDTH: f32 = 1.0;
+/// Max per-line vertical slot in the minimap. Short files stretch up to
+/// this height; long files compress below it.
+const MINIMAP_MAX_LINE_H: f32 = 2.0;
+/// Minimum viewport indicator height so it stays grabbable in huge files.
+const MINIMAP_MIN_VIEWPORT_H: f32 = 14.0;
+
 /// Render the breadcrumb bar shown above the file content. Each directory
 /// segment is a clickable button that navigates the file explorer to that
 /// directory; the final file segment is rendered as plain text.
@@ -566,7 +586,7 @@ pub fn view<'a>(
         .spacing(0)
         .width(Length::Fill);
 
-    let scroll = scrollable(code_column)
+    let code_scrollable = scrollable(code_column)
         .height(Length::Fill)
         .width(Length::Fill)
         .on_scroll(|viewport| {
@@ -577,10 +597,160 @@ pub fn view<'a>(
             }
         });
 
-    column![breadcrumb, scroll]
+    // Condensed overview on the right edge. Draws one row per line,
+    // colored by the syntax spans of that line, plus a viewport indicator.
+    let minimap = Canvas::new(Minimap {
+        lines: &state.lines,
+        scroll_offset: state.scroll_offset,
+        viewport_height: state.viewport_height,
+        bg: pal.surface,
+        border: pal.border,
+        viewport_color: pal.surface_active,
+    })
+    .width(Length::Fixed(MINIMAP_WIDTH))
+    .height(Length::Fill);
+
+    let code_area = row![code_scrollable, minimap]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    column![breadcrumb, code_area]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+// ── Minimap canvas program ───────────────────────────
+
+/// Canvas-backed condensed overview of the file. Renders each source
+/// line as a strip of small rectangles colored by the line's syntax
+/// spans. A translucent rectangle marks the current viewport.
+///
+/// The minimap is purely visual — clicks are not routed back to the
+/// scroll state. Scroll continues to live on the main scrollable.
+#[derive(Debug)]
+struct Minimap<'a> {
+    lines: &'a [HighlightedLine],
+    scroll_offset: f32,
+    viewport_height: f32,
+    bg: Color,
+    border: Color,
+    viewport_color: Color,
+}
+
+impl<'a> canvas::Program<Message> for Minimap<'a> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        // Background fill for the minimap strip.
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.bg);
+
+        // Left divider line to visually separate from the code body.
+        let divider = CanvasPath::rectangle(Point::ORIGIN, Size::new(1.0, bounds.height));
+        frame.fill(&divider, self.border);
+
+        let total_lines = self.lines.len();
+        if total_lines == 0 {
+            return vec![frame.into_geometry()];
+        }
+
+        // Compute per-line vertical slot. Short files stretch up to
+        // MINIMAP_MAX_LINE_H; long files compress so everything fits.
+        let slot_h = (bounds.height / total_lines as f32).min(MINIMAP_MAX_LINE_H);
+        // If the file is so long that slot_h drops well below 1px, every
+        // row we draw would vanish into the same physical pixel. Clamp
+        // the draw rectangle height so each line is still visible, even
+        // if they overlap slightly (this is what VS Code does too).
+        let draw_h = slot_h.max(1.0);
+        let usable_w = (bounds.width - 2.0 * MINIMAP_PADDING_X).max(0.0);
+
+        for (i, line) in self.lines.iter().enumerate() {
+            let y = i as f32 * slot_h;
+            if y >= bounds.height {
+                break;
+            }
+
+            let mut x = MINIMAP_PADDING_X;
+            for span in &line.spans {
+                let span_len = span.text.chars().count() as f32;
+                let span_w = span_len * MINIMAP_CHAR_WIDTH;
+
+                // Whitespace preserves indentation but draws nothing.
+                if !span.text.trim().is_empty() {
+                    let w = span_w.min(MINIMAP_PADDING_X + usable_w - x);
+                    if w <= 0.0 {
+                        break;
+                    }
+                    // Syntect gives us rich colors; soften alpha a touch
+                    // so the minimap doesn't scream at the user.
+                    let mut c = span.color;
+                    c.a *= 0.85;
+                    frame.fill_rectangle(Point::new(x, y), Size::new(w, draw_h), c);
+                }
+
+                x += span_w;
+                if x >= MINIMAP_PADDING_X + usable_w {
+                    break;
+                }
+            }
+        }
+
+        // Viewport indicator — maps the visible scroll window onto the
+        // minimap's vertical extent.
+        if let Some((vp_y, vp_h)) = minimap_viewport_rect(
+            total_lines,
+            bounds.height,
+            self.scroll_offset,
+            self.viewport_height,
+        ) {
+            frame.fill_rectangle(
+                Point::new(0.0, vp_y),
+                Size::new(bounds.width, vp_h),
+                self.viewport_color,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Compute the `(y, height)` of the minimap's viewport indicator.
+///
+/// Returns `None` when there is no content or no viewport to show.
+/// The computed rectangle is clamped so it never extends past the
+/// bottom of the minimap, and never collapses below
+/// `MINIMAP_MIN_VIEWPORT_H` (so it stays visible in huge files).
+fn minimap_viewport_rect(
+    total_lines: usize,
+    minimap_height: f32,
+    scroll_offset: f32,
+    viewport_height: f32,
+) -> Option<(f32, f32)> {
+    if total_lines == 0 || minimap_height <= 0.0 || viewport_height <= 0.0 {
+        return None;
+    }
+    let total_content_height = total_lines as f32 * LINE_HEIGHT;
+    if total_content_height <= 0.0 {
+        return None;
+    }
+    let ratio = (minimap_height / total_content_height).min(1.0);
+    let vp_h = (viewport_height * ratio)
+        .max(MINIMAP_MIN_VIEWPORT_H)
+        .min(minimap_height);
+    // Clamp `vp_y` so the indicator is always fully visible — even if
+    // the caller reports a scroll offset past the end of the content.
+    let vp_y = (scroll_offset * ratio).max(0.0).min(minimap_height - vp_h);
+    Some((vp_y, vp_h))
 }
 
 /// Render the git gutter indicator for a line.
@@ -793,6 +963,55 @@ mod tests {
         assert!(!segs[0].is_file);
         assert_eq!(segs[1].label, "README.md");
         assert!(segs[1].is_file);
+    }
+
+    #[test]
+    fn minimap_viewport_rect_none_when_empty() {
+        assert!(minimap_viewport_rect(0, 400.0, 0.0, 300.0).is_none());
+        assert!(minimap_viewport_rect(100, 0.0, 0.0, 300.0).is_none());
+        assert!(minimap_viewport_rect(100, 400.0, 0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn minimap_viewport_rect_short_file_fills_minimap() {
+        // 10 lines × 22px = 220px of content — shorter than the 400px
+        // minimap, so ratio is clamped to 1.0 and the indicator reflects
+        // the real pixel heights (with the min height floor applied).
+        let (y, h) = minimap_viewport_rect(10, 400.0, 0.0, 220.0).unwrap();
+        assert_eq!(y, 0.0);
+        // viewport_height * ratio = 220 * 1 = 220, above MIN_VIEWPORT_H
+        assert!((h - 220.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn minimap_viewport_rect_long_file_scales_down() {
+        // 1000 lines × 22 = 22000 total, minimap 400, viewport 660.
+        // ratio = 400/22000 ≈ 0.01818
+        // vp_h = 660 * ratio ≈ 12 — below MIN_VIEWPORT_H (14), so clamped.
+        let (y, h) = minimap_viewport_rect(1000, 400.0, 0.0, 660.0).unwrap();
+        assert_eq!(y, 0.0);
+        assert!(h >= MINIMAP_MIN_VIEWPORT_H);
+    }
+
+    #[test]
+    fn minimap_viewport_rect_scrolled_midfile() {
+        // Scroll halfway through a long file — the indicator should sit
+        // roughly in the middle of the minimap.
+        let total = 1000;
+        let minimap_h = 400.0;
+        let half = (total as f32 * LINE_HEIGHT) / 2.0;
+        let (y, h) = minimap_viewport_rect(total, minimap_h, half, 660.0).unwrap();
+        assert!(y > 0.0);
+        assert!(y + h <= minimap_h + 0.001);
+    }
+
+    #[test]
+    fn minimap_viewport_rect_scroll_past_end_is_clamped() {
+        // Scrolling past the end (shouldn't happen in practice, but we
+        // don't trust upstream) must not produce a rect outside bounds.
+        let (y, h) = minimap_viewport_rect(100, 200.0, 100_000.0, 400.0).unwrap();
+        assert!(y <= 200.0);
+        assert!(y + h <= 200.0 + 0.001);
     }
 
     #[test]
