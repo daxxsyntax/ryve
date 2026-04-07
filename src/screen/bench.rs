@@ -27,6 +27,10 @@ pub enum TabKind {
     Terminal,
     CodingAgent(CodingAgent),
     FileViewer(PathBuf),
+    /// Read-only spy view tailing the log file of a CLI-spawned background
+    /// Hand. The string carries the agent_session id so the parent app can
+    /// drive periodic reloads of the right tab. Spark ryve-8c14734a.
+    LogTail { session_id: String, log_path: PathBuf },
 }
 
 /// State for the bench panel.
@@ -96,6 +100,9 @@ impl BenchState {
                 TabKind::Terminal => ("\u{25B8}", "Terminal".to_string()),
                 TabKind::CodingAgent(agent) => ("\u{2726}", agent.display_name.clone()),
                 TabKind::FileViewer(path) => ("\u{25A2}", path.to_string_lossy().to_string()),
+                TabKind::LogTail { log_path, .. } => {
+                    ("\u{1F441}", format!("spy: {}", log_path.display()))
+                }
             };
 
             let tab_content = row![
