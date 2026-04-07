@@ -288,6 +288,7 @@ impl Workshop {
                 command: def.command.clone(),
                 args: def.args.clone(),
                 resume: crate::coding_agents::ResumeStrategy::None,
+                compatibility: crate::coding_agents::CompatStatus::Unknown,
             }),
         );
 
@@ -426,6 +427,7 @@ fn detect_agent_in_process_tree(shell_pid: u32) -> Option<CodingAgent> {
                             command: cmd.to_string(),
                             args: Vec::new(),
                             resume: resume.clone(),
+                            compatibility: crate::coding_agents::CompatStatus::Unknown,
                         });
                     }
                 }
@@ -684,6 +686,7 @@ mod tests {
                 command: "codex".to_string(),
                 args: Vec::new(),
                 resume: ResumeStrategy::None,
+                compatibility: crate::coding_agents::CompatStatus::Unknown,
             },
             tab_id: Some(7),
             active: true,

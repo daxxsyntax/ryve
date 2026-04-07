@@ -272,6 +272,7 @@ mod tests {
                 command: "test".to_string(),
                 args: vec![],
                 resume,
+                compatibility: crate::coding_agents::CompatStatus::Unknown,
             },
             tab_id,
             active,
