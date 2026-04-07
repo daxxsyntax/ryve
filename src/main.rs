@@ -75,6 +75,8 @@ struct App {
     next_terminal_id: u64,
     /// Guard: true while a SparksPoll load is in flight
     poll_in_flight: bool,
+    /// Whether the Shift key is currently held (for shift-click line selection).
+    shift_held: bool,
 }
 
 #[derive(Clone)]
@@ -108,6 +110,8 @@ enum Message {
     Agents(screen::agents::Message),
     Bench(screen::bench::Message),
     Sparks(screen::sparks::Message),
+    SparkDetail(screen::spark_detail::Message),
+    SparkPicker(screen::spark_picker::Message),
     Background(screen::background_picker::Message),
     StatusBar(screen::status_bar::Message),
 
@@ -129,6 +133,11 @@ enum Message {
     SparksPoll,
     /// Spawn a new Hand with the default agent (Cmd+H)
     NewDefaultHand,
+    HandAssignmentSaved,
+    /// Shift key state changed (for shift-click line selection).
+    ShiftStateChanged(bool),
+    /// Send initial spark prompt to a Hand's terminal after agent boots.
+    SendSparkPrompt { tab_id: u64, prompt: String },
 }
 
 impl std::fmt::Debug for Message {
@@ -150,6 +159,8 @@ impl std::fmt::Debug for Message {
             Self::Agents(m) => write!(f, "Agents({m:?})"),
             Self::Bench(m) => write!(f, "Bench({m:?})"),
             Self::Sparks(m) => write!(f, "Sparks({m:?})"),
+            Self::SparkDetail(m) => write!(f, "SparkDetail({m:?})"),
+            Self::SparkPicker(m) => write!(f, "SparkPicker({m:?})"),
             Self::Background(m) => write!(f, "Background({m:?})"),
             Self::StatusBar(m) => write!(f, "StatusBar({m:?})"),
             Self::BackgroundLoaded(id, _) => write!(f, "BackgroundLoaded({id})"),
@@ -161,6 +172,9 @@ impl std::fmt::Debug for Message {
             Self::AgentContextSynced => write!(f, "AgentContextSynced"),
             Self::SparksPoll => write!(f, "SparksPoll"),
             Self::NewDefaultHand => write!(f, "NewDefaultHand"),
+            Self::HandAssignmentSaved => write!(f, "HandAssignmentSaved"),
+            Self::ShiftStateChanged(held) => write!(f, "ShiftStateChanged({held})"),
+            Self::SendSparkPrompt { tab_id, .. } => write!(f, "SendSparkPrompt({tab_id})"),
         }
     }
 }
@@ -180,6 +194,7 @@ impl App {
                 active_workshop: None,
                 next_terminal_id: 1,
                 poll_in_flight: false,
+                shift_held: false,
             },
             Task::none(),
         )
@@ -502,6 +517,45 @@ impl App {
                             }
                         }
                     }
+                    file_viewer::Message::ClickLine(idx) => {
+                        if let Some(ws_idx) = self.active_workshop {
+                            let ws = &mut self.workshops[ws_idx];
+                            if let Some(active_id) = ws.bench.active_tab {
+                                if let Some(viewer) = ws.file_viewers.get_mut(&active_id) {
+                                    if self.shift_held {
+                                        viewer.selection_end = Some(idx);
+                                    } else {
+                                        viewer.selection_anchor = Some(idx);
+                                        viewer.selection_end = Some(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    file_viewer::Message::CopySelection => {
+                        if let Some(ws_idx) = self.active_workshop {
+                            let ws = &self.workshops[ws_idx];
+                            if let Some(active_id) = ws.bench.active_tab {
+                                if let Some(viewer) = ws.file_viewers.get(&active_id) {
+                                    if let Some(selected) = viewer.selected_text() {
+                                        if let Ok(mut clip) = arboard::Clipboard::new() {
+                                            let _ = clip.set_text(selected);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    file_viewer::Message::ClearSelection => {
+                        if let Some(ws_idx) = self.active_workshop {
+                            let ws = &mut self.workshops[ws_idx];
+                            if let Some(active_id) = ws.bench.active_tab {
+                                if let Some(viewer) = ws.file_viewers.get_mut(&active_id) {
+                                    viewer.clear_selection();
+                                }
+                            }
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -590,6 +644,79 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SparkDetail(msg) => {
+                let Some(idx) = self.active_workshop else {
+                    return Task::none();
+                };
+                match msg {
+                    screen::spark_detail::Message::Back => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.selected_spark = None;
+                        }
+                    }
+                    screen::spark_detail::Message::CycleStatus(spark_id, new_status) => {
+                        if let Some(ws) = self.workshops.get(idx) {
+                            if let Some(ref pool) = ws.sparks_db {
+                                let pool = pool.clone();
+                                let ws_id = ws.workshop_id();
+                                let id = ws.id;
+                                return Task::perform(
+                                    async move {
+                                        if new_status == "closed" {
+                                            let _ = data::sparks::spark_repo::close(
+                                                &pool, &spark_id, "completed", "user",
+                                            )
+                                            .await;
+                                        } else {
+                                            let status = data::sparks::types::SparkStatus::from_str(
+                                                &new_status,
+                                            );
+                                            if let Some(s) = status {
+                                                let upd = data::sparks::types::UpdateSpark {
+                                                    status: Some(s),
+                                                    ..Default::default()
+                                                };
+                                                let _ = data::sparks::spark_repo::update(
+                                                    &pool, &spark_id, upd, "user",
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        load_sparks(pool, ws_id).await
+                                    },
+                                    move |sparks| Message::SparksLoaded(id, sparks),
+                                );
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::SparkPicker(msg) => self.handle_spark_picker_message(msg),
+            Message::HandAssignmentSaved => Task::none(),
+            Message::SendSparkPrompt { tab_id, prompt } => {
+                // Find the terminal across all workshops and send the prompt as input.
+                // Wrap in bracketed paste so TUI agents see it as a single paste,
+                // then send Enter to submit.
+                for ws in &mut self.workshops {
+                    if let Some(term) = ws.terminals.get_mut(&tab_id) {
+                        let mut bytes = Vec::with_capacity(prompt.len() + 16);
+                        bytes.extend_from_slice(b"\x1b[200~");
+                        bytes.extend_from_slice(prompt.as_bytes());
+                        bytes.extend_from_slice(b"\x1b[201~");
+                        bytes.push(b'\r');
+                        term.handle(iced_term::Command::ProxyToBackend(
+                            iced_term::BackendCommand::Write(bytes),
+                        ));
+                        break;
+                    }
+                }
+                Task::none()
+            }
+            Message::ShiftStateChanged(pressed) => {
+                self.shift_held = pressed;
+                Task::none()
+            }
             Message::Bench(msg) => self.handle_bench_message(msg),
             Message::Sparks(msg) => {
                 let Some(idx) = self.active_workshop else {
@@ -609,8 +736,10 @@ impl App {
                             }
                         }
                     }
-                    screen::sparks::Message::SelectSpark(_id) => {
-                        // TODO: open spark detail view
+                    screen::sparks::Message::SelectSpark(id) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.selected_spark = Some(id);
+                        }
                     }
                     screen::sparks::Message::ShowCreateForm => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
@@ -1000,55 +1129,19 @@ impl App {
                 }
             }
             screen::bench::Message::NewCodingAgent(agent) => {
-                let title = agent.display_name.clone();
-                let session_id = Uuid::new_v4().to_string();
                 let full_auto = self.global_config.agent_settings
                     .get(&agent.command)
                     .map_or(false, |s| s.full_auto);
-                let next_id = &mut self.next_terminal_id;
-                let tab_id = self.workshops[idx].spawn_terminal(
-                    title.clone(),
-                    Some(&agent),
-                    next_id,
-                    Some(&session_id),
-                    full_auto,
-                );
-                self.workshops[idx].agent_sessions.push(AgentSession {
-                    id: session_id.clone(),
-                    name: title.clone(),
-                    agent: agent.clone(),
-                    tab_id: Some(tab_id),
-                    active: true,
-                    resume_id: None,
-                    started_at: chrono::Utc::now().to_rfc3339(),
-                });
 
-                // Persist to DB
-                let mut tasks: Vec<Task<Message>> = Vec::new();
-                if let Some(ref pool) = self.workshops[idx].sparks_db {
-                    let pool = pool.clone();
-                    let ws_id = self.workshops[idx].workshop_id();
-                    let new_session = data::sparks::types::NewAgentSession {
-                        id: session_id,
-                        workshop_id: ws_id,
-                        agent_name: title,
-                        agent_command: agent.command.clone(),
-                        agent_args: agent.args.clone(),
-                        session_label: None,
-                        resume_id: None,
-                    };
-                    tasks.push(Task::perform(
-                        async move {
-                            let _ =
-                                data::sparks::agent_session_repo::create(&pool, &new_session).await;
-                        },
-                        |_| Message::AgentSessionSaved,
-                    ));
-                }
-                if let Some(term) = self.workshops[idx].terminals.get(&tab_id) {
-                    tasks.push(iced_term::TerminalView::focus(term.widget_id().clone()));
-                }
-                return Task::batch(tasks);
+                // Show spark picker before spawning the agent
+                let ws = &mut self.workshops[idx];
+                ws.bench.dropdown_open = false;
+                ws.pending_agent_spawn = Some(workshop::PendingAgentSpawn {
+                    agent,
+                    is_custom: false,
+                    custom_def: None,
+                    full_auto,
+                });
             }
             screen::bench::Message::NewCustomAgent(agent_idx) => {
                 let ws = &mut self.workshops[idx];
@@ -1056,54 +1149,148 @@ impl App {
                     Some(d) => d.clone(),
                     None => return Task::none(),
                 };
-                let session_id = Uuid::new_v4().to_string();
-                let next_id = &mut self.next_terminal_id;
-                let tab_id = ws.spawn_custom_agent(&def, next_id, &session_id);
-                ws.agent_sessions.push(AgentSession {
-                    id: session_id.clone(),
-                    name: def.name.clone(),
-                    agent: CodingAgent {
-                        display_name: def.name.clone(),
-                        command: def.command.clone(),
-                        args: def.args.clone(),
-                        resume: coding_agents::ResumeStrategy::None,
-                    },
-                    tab_id: Some(tab_id),
-                    active: true,
-                    resume_id: None,
-                    started_at: chrono::Utc::now().to_rfc3339(),
-                });
+                let agent = CodingAgent {
+                    display_name: def.name.clone(),
+                    command: def.command.clone(),
+                    args: def.args.clone(),
+                    resume: coding_agents::ResumeStrategy::None,
+                };
 
-                let mut tasks: Vec<Task<Message>> = Vec::new();
-                if let Some(ref pool) = ws.sparks_db {
-                    let pool = pool.clone();
-                    let ws_id = ws.workshop_id();
-                    let new_session = data::sparks::types::NewAgentSession {
-                        id: session_id,
-                        workshop_id: ws_id,
-                        agent_name: def.name,
-                        agent_command: def.command,
-                        agent_args: def.args,
-                        session_label: None,
-                        resume_id: None,
-                    };
-                    tasks.push(Task::perform(
-                        async move {
-                            let _ =
-                                data::sparks::agent_session_repo::create(&pool, &new_session).await;
-                        },
-                        |_| Message::AgentSessionSaved,
-                    ));
-                }
-                if let Some(term) = ws.terminals.get(&tab_id) {
-                    tasks.push(iced_term::TerminalView::focus(term.widget_id().clone()));
-                }
-                return Task::batch(tasks);
+                // Show spark picker before spawning the custom agent
+                ws.bench.dropdown_open = false;
+                ws.pending_agent_spawn = Some(workshop::PendingAgentSpawn {
+                    agent,
+                    is_custom: true,
+                    custom_def: Some(def),
+                    full_auto: false,
+                });
             }
             // TerminalEvent handled above
             screen::bench::Message::TerminalEvent(_) => {}
         }
         Task::none()
+    }
+
+    fn handle_spark_picker_message(
+        &mut self,
+        msg: screen::spark_picker::Message,
+    ) -> Task<Message> {
+        let Some(idx) = self.active_workshop else {
+            return Task::none();
+        };
+
+        match msg {
+            screen::spark_picker::Message::SelectSpark(spark_id) => {
+                self.spawn_pending_agent(idx, spark_id)
+            }
+            screen::spark_picker::Message::Cancel => {
+                self.workshops[idx].pending_agent_spawn = None;
+                Task::none()
+            }
+        }
+    }
+
+    /// Proceed with spawning the pending agent and assigning a spark.
+    fn spawn_pending_agent(
+        &mut self,
+        workshop_idx: usize,
+        spark_id: String,
+    ) -> Task<Message> {
+        let ws = &mut self.workshops[workshop_idx];
+        let pending = match ws.pending_agent_spawn.take() {
+            Some(p) => p,
+            None => return Task::none(),
+        };
+
+        let session_id = Uuid::new_v4().to_string();
+        let title = pending.agent.display_name.clone();
+        let agent_command = pending.agent.command.clone();
+        let agent_args = pending.agent.args.clone();
+
+        let tab_id = if pending.is_custom {
+            if let Some(ref def) = pending.custom_def {
+                ws.spawn_custom_agent(def, &mut self.next_terminal_id, &session_id)
+            } else {
+                return Task::none();
+            }
+        } else {
+            ws.spawn_terminal(
+                title.clone(),
+                Some(&pending.agent),
+                &mut self.next_terminal_id,
+                Some(&session_id),
+                pending.full_auto,
+            )
+        };
+
+        ws.agent_sessions.push(AgentSession {
+            id: session_id.clone(),
+            name: title.clone(),
+            agent: pending.agent,
+            tab_id: Some(tab_id),
+            active: true,
+            resume_id: None,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        });
+
+        // Persist session to DB + optional spark assignment
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        if let Some(ref pool) = ws.sparks_db {
+            let pool = pool.clone();
+            let ws_id = ws.workshop_id();
+            let sid_for_assign = session_id.clone();
+            let new_session = data::sparks::types::NewAgentSession {
+                id: session_id,
+                workshop_id: ws_id,
+                agent_name: title,
+                agent_command,
+                agent_args,
+                session_label: None,
+                resume_id: None,
+            };
+            tasks.push(Task::perform(
+                async move {
+                    let _ =
+                        data::sparks::agent_session_repo::create(&pool, &new_session).await;
+                },
+                |_| Message::AgentSessionSaved,
+            ));
+
+            // Create hand-spark assignment (spark is required)
+            let pool2 = ws.sparks_db.clone().unwrap();
+
+            // Compose the initial prompt: house rules + spark details + DONE checklist
+            let prompt = compose_hand_prompt(&ws.sparks, &spark_id);
+
+            let spark_id_clone = spark_id.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let assignment = data::sparks::types::NewHandAssignment {
+                        session_id: sid_for_assign,
+                        spark_id: spark_id_clone,
+                        role: data::sparks::types::AssignmentRole::Owner,
+                    };
+                    let _ = data::sparks::assignment_repo::assign(&pool2, assignment).await;
+                },
+                |_| Message::HandAssignmentSaved,
+            ));
+
+            // Send the initial prompt to the agent after a delay (let it boot)
+            let prompt_tab_id = tab_id;
+            tasks.push(Task::perform(
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                },
+                move |_| Message::SendSparkPrompt {
+                    tab_id: prompt_tab_id,
+                    prompt,
+                },
+            ));
+        }
+        if let Some(term) = ws.terminals.get(&tab_id) {
+            tasks.push(iced_term::TerminalView::focus(term.widget_id().clone()));
+        }
+        Task::batch(tasks)
     }
 
     fn handle_background_message(
@@ -1282,15 +1469,29 @@ impl App {
             iced::time::every(std::time::Duration::from_secs(3)).map(|_| Message::SparksPoll);
 
         let hotkeys = keyboard::listen().map(|event| {
-            if let keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(c),
-                modifiers,
-                ..
-            } = &event
-            {
-                if modifiers.command() && c.as_str() == "h" {
-                    return Message::NewDefaultHand;
+            match &event {
+                keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Character(c),
+                    modifiers,
+                    ..
+                } => {
+                    if modifiers.command() && c.as_str() == "h" {
+                        return Message::NewDefaultHand;
+                    }
+                    if modifiers.command() && c.as_str() == "c" {
+                        return Message::FileViewer(file_viewer::Message::CopySelection);
+                    }
                 }
+                keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    ..
+                } => {
+                    return Message::FileViewer(file_viewer::Message::ClearSelection);
+                }
+                keyboard::Event::ModifiersChanged(modifiers) => {
+                    return Message::ShiftStateChanged(modifiers.shift());
+                }
+                _ => {}
             }
             // Swallow unmatched keyboard events — SparksPoll is a harmless no-op
             Message::SparksPoll
@@ -1505,9 +1706,18 @@ impl App {
         // -- Center: bench (tabbed area) --
         let bench = self.view_bench(ws, has_bg, &pal);
 
-        // -- Right: sparks panel --
-        let sparks_panel = screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
-            .map(Message::Sparks);
+        // -- Right: sparks panel (or detail view) --
+        let sparks_panel = if let Some(ref selected_id) = ws.selected_spark {
+            if let Some(spark) = ws.sparks.iter().find(|s| s.id == *selected_id) {
+                screen::spark_detail::view(spark, &pal, has_bg).map(Message::SparkDetail)
+            } else {
+                screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
+                    .map(Message::Sparks)
+            }
+        } else {
+            screen::sparks::view(&ws.sparks, &pal, has_bg, &ws.spark_create_form)
+                .map(Message::Sparks)
+        };
 
         let sparks_col = container(sparks_panel)
             .width(ws.sparks_width())
@@ -1623,6 +1833,14 @@ impl App {
             );
         }
 
+        // Spark picker modal overlay (shown before spawning a Hand)
+        if ws.pending_agent_spawn.is_some() {
+            layers.push(
+                screen::spark_picker::view(&ws.sparks, &pal)
+                    .map(Message::SparkPicker),
+            );
+        }
+
         stack(layers)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1696,6 +1914,78 @@ impl App {
     fn theme(&self) -> Theme {
         self.appearance.theme()
     }
+}
+
+/// Compose the initial prompt sent to a newly-spawned Hand.
+///
+/// Always includes the house rules. If the spark exists in the cached list,
+/// also includes its title, description, and intent so the Hand can begin
+/// work immediately without further user input.
+fn compose_hand_prompt(sparks: &[Spark], spark_id: &str) -> String {
+    let mut prompt = String::new();
+
+    // ── House rules ────────────────────────────────────
+    prompt.push_str(
+        "You are a Hand in a Ryve workshop. Read these rules carefully — they govern \
+         everything you do in this session.\n\n\
+         HOUSE RULES:\n\
+         1. Use `ryve-cli` for ALL workgraph operations: spark list/show/status/close, \
+         bond, contract, comment, stamp. NEVER touch `.ryve/sparks.db` directly with \
+         sqlite3 or any other tool — it bypasses event logging and validation.\n\
+         2. Reference the spark id in every commit message: `[sp-xxxx]`.\n\
+         3. Respect architectural constraints: `ryve-cli constraint list`. \
+         Violations are blocking.\n\
+         4. Before declaring the spark complete, verify your work against \
+         `.ryve/checklists/DONE.md`. Every item must be satisfied.\n\
+         5. When the work is complete and the DONE checklist passes, close the spark: \
+         `ryve-cli spark close <id> completed`. Then exit.\n\n",
+    );
+
+    // ── Spark assignment ───────────────────────────────
+    prompt.push_str(&format!(
+        "ASSIGNMENT: spark {spark_id}. You have been assigned this spark. \
+         Mark it in progress now: `ryve-cli spark status {spark_id} in_progress`\n\n"
+    ));
+
+    if let Some(spark) = sparks.iter().find(|s| s.id == spark_id) {
+        prompt.push_str(&format!("Title: {}\n", spark.title));
+        if !spark.description.is_empty() {
+            prompt.push_str(&format!("\nDescription:\n{}\n", spark.description));
+        }
+        let intent = spark.intent();
+        if let Some(ref ps) = intent.problem_statement {
+            prompt.push_str(&format!("\nProblem statement:\n{ps}\n"));
+        }
+        if !intent.acceptance_criteria.is_empty() {
+            prompt.push_str("\nAcceptance criteria:\n");
+            for ac in &intent.acceptance_criteria {
+                prompt.push_str(&format!("- {ac}\n"));
+            }
+        }
+        if !intent.invariants.is_empty() {
+            prompt.push_str("\nInvariants (must hold):\n");
+            for inv in &intent.invariants {
+                prompt.push_str(&format!("- {inv}\n"));
+            }
+        }
+        if !intent.non_goals.is_empty() {
+            prompt.push_str("\nNon-goals (do NOT do these):\n");
+            for ng in &intent.non_goals {
+                prompt.push_str(&format!("- {ng}\n"));
+            }
+        }
+    } else {
+        prompt.push_str(&format!(
+            "(Spark {spark_id} details not in cache — run `ryve-cli spark show {spark_id}` to load them.)\n"
+        ));
+    }
+
+    prompt.push_str(
+        "\nBegin the work now. Do not wait for further instructions. \
+         When complete, verify against `.ryve/checklists/DONE.md`, close the spark, and exit.\n",
+    );
+
+    prompt
 }
 
 /// Open a native directory picker dialog.

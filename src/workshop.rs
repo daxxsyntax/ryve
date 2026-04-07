@@ -23,6 +23,15 @@ use crate::screen::file_viewer::FileViewerState;
 
 const BOTTOM_PIN_NEWLINES: usize = 200;
 
+
+/// State for a pending agent spawn waiting for spark selection.
+pub struct PendingAgentSpawn {
+    pub agent: CodingAgent,
+    pub is_custom: bool,
+    pub custom_def: Option<AgentDef>,
+    pub full_auto: bool,
+}
+
 pub struct Workshop {
     pub id: Uuid,
     pub directory: PathBuf,
@@ -49,9 +58,13 @@ pub struct Workshop {
     pub background_picker: PickerState,
     /// Inline spark create form state.
     pub spark_create_form: crate::screen::sparks::CreateForm,
+    /// Currently selected spark ID (for detail view).
+    pub selected_spark: Option<String>,
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
+    /// Pending agent spawn -- shows spark picker before creating terminal.
+    pub pending_agent_spawn: Option<PendingAgentSpawn>,
 }
 
 impl Workshop {
@@ -74,7 +87,9 @@ impl Workshop {
             background_handle: None,
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
+            selected_spark: None,
             bg_is_dark: None,
+            pending_agent_spawn: None,
         }
     }
 

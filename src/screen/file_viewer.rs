@@ -6,6 +6,9 @@
 //! Uses viewport-based rendering: only visible lines (plus a small overscan)
 //! are materialised as iced widgets. Off-screen content is represented by
 //! fixed-height spacers so the scrollbar stays accurate.
+//!
+//! Supports line-level text selection: click a line to select it, shift-click
+//! to extend the selection, Cmd+C to copy selected lines.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +16,7 @@ use std::sync::LazyLock;
 
 use data::git::LineChange;
 use data::sparks::types::SparkFileLink;
-use iced::widget::{Space, container, row, scrollable, text};
+use iced::widget::{Space, container, mouse_area, row, scrollable, text};
 use iced::{Color, Element, Font, Length, Theme};
 use syntect::highlighting::{self, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -24,6 +27,14 @@ use crate::style::Palette;
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+
+/// Background color for selected lines — semi-transparent blue.
+const SELECTION_BG: Color = Color {
+    r: 0.20,
+    g: 0.45,
+    b: 0.80,
+    a: 0.28,
+};
 
 // ── Messages ──────────────────────────────────────────
 
@@ -39,8 +50,14 @@ pub enum Message {
     },
     /// Navigate to a linked spark.
     GoToSpark(String),
-    /// Viewport changed — carries scroll‑y offset and viewport height.
+    /// Viewport changed — carries scroll-y offset and viewport height.
     Scrolled { offset_y: f32, viewport_height: f32 },
+    /// User clicked a line (0-indexed). Sets selection anchor or extends if shift held.
+    ClickLine(usize),
+    /// Copy selected lines to clipboard (Cmd+C).
+    CopySelection,
+    /// Clear the current selection (Escape or click with no shift on already-selected).
+    ClearSelection,
 }
 
 // ── State ─────────────────────────────────────────────
@@ -58,6 +75,10 @@ pub struct FileViewerState {
     pub scroll_offset: f32,
     /// Last-known viewport height in pixels (updated on every scroll event).
     pub viewport_height: f32,
+    /// Selection anchor line (0-indexed). Set on first click.
+    pub selection_anchor: Option<usize>,
+    /// Selection end line (0-indexed). Set on shift-click or same as anchor.
+    pub selection_end: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +104,8 @@ impl FileViewerState {
             spark_links: Vec::new(),
             scroll_offset: 0.0,
             viewport_height: 900.0, // reasonable default until first scroll event
+            selection_anchor: None,
+            selection_end: None,
         }
     }
 
@@ -111,6 +134,45 @@ impl FileViewerState {
     /// Whether this viewer has content loaded.
     pub fn is_loaded(&self) -> bool {
         !self.lines.is_empty()
+    }
+
+    /// Returns the selected line range as (start, end) inclusive, 0-indexed.
+    /// Returns `None` if no selection is active.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        match (self.selection_anchor, self.selection_end) {
+            (Some(a), Some(b)) => Some((a.min(b), a.max(b))),
+            (Some(a), None) => Some((a, a)),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the given 0-indexed line is within the current selection.
+    pub fn is_line_selected(&self, idx: usize) -> bool {
+        self.selection_range()
+            .is_some_and(|(start, end)| idx >= start && idx <= end)
+    }
+
+    /// Extract the text of the selected lines, joined by newlines.
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let lines: Vec<&str> = self
+            .content
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| *i >= start && *i <= end)
+            .map(|(_, line)| line)
+            .collect();
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+
+    /// Clear the current selection.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+        self.selection_end = None;
     }
 
     /// Get spark links that apply to a specific line.
@@ -253,7 +315,13 @@ pub fn view<'a>(state: &'a FileViewerState, pal: &Palette, has_bg: bool) -> Elem
         let code_element = render_highlighted_line(line);
 
         // ── Assemble the line row ──
-        let line_bg = line_background_color(state.line_changes.get(&line_num), has_bg);
+        // Selection highlight takes priority over git diff background.
+        let is_selected = state.is_line_selected(idx);
+        let line_bg = if is_selected {
+            Some(SELECTION_BG)
+        } else {
+            line_background_color(state.line_changes.get(&line_num), has_bg)
+        };
 
         let line_row = row![
             gutter_element,
@@ -275,7 +343,13 @@ pub fn view<'a>(state: &'a FileViewerState, pal: &Palette, has_bg: bool) -> Elem
                 ..Default::default()
             });
 
-        rows.push(styled_row.into());
+        // Wrap in mouse_area for line selection via click.
+        // Shift state is tracked globally; main.rs decides whether to
+        // set anchor or extend the selection range.
+        let clickable_row = mouse_area(styled_row)
+            .on_press(Message::ClickLine(idx));
+
+        rows.push(clickable_row.into());
     }
 
     // Bottom spacer
@@ -303,9 +377,9 @@ pub fn view<'a>(state: &'a FileViewerState, pal: &Palette, has_bg: bool) -> Elem
 /// Render the git gutter indicator for a line.
 fn gutter_indicator(change: Option<&LineChange>) -> Element<'_, Message> {
     let (symbol, color) = match change {
-        Some(LineChange::Added) => ("\u{2502}", Color::from_rgb(0.3, 0.85, 0.4)), // │ green
-        Some(LineChange::Modified) => ("\u{2502}", Color::from_rgb(0.9, 0.8, 0.3)), // │ yellow
-        Some(LineChange::Deleted) => ("\u{25BC}", Color::from_rgb(0.9, 0.35, 0.35)), // ▼ red
+        Some(LineChange::Added) => ("\u{2502}", Color::from_rgb(0.3, 0.85, 0.4)), // green
+        Some(LineChange::Modified) => ("\u{2502}", Color::from_rgb(0.9, 0.8, 0.3)), // yellow
+        Some(LineChange::Deleted) => ("\u{25BC}", Color::from_rgb(0.9, 0.35, 0.35)), // red
         None => (" ", Color::TRANSPARENT),
     };
 

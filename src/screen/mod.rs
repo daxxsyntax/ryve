@@ -6,5 +6,7 @@ pub mod background_picker;
 pub mod bench;
 pub mod file_explorer;
 pub mod file_viewer;
+pub mod spark_detail;
+pub mod spark_picker;
 pub mod sparks;
 pub mod status_bar;

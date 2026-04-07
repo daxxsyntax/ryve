@@ -64,12 +64,21 @@ impl RyveDir {
         self.root.join("WORKSHOP.md")
     }
 
+    pub fn checklists_dir(&self) -> PathBuf {
+        self.root.join("checklists")
+    }
+
+    pub fn done_md_path(&self) -> PathBuf {
+        self.checklists_dir().join("DONE.md")
+    }
+
     /// Create the `.ryve/` directory structure if it doesn't exist.
     pub async fn ensure_exists(&self) -> Result<(), std::io::Error> {
         tokio::fs::create_dir_all(&self.root).await?;
         tokio::fs::create_dir_all(self.agents_dir()).await?;
         tokio::fs::create_dir_all(self.context_dir()).await?;
         tokio::fs::create_dir_all(self.backgrounds_dir()).await?;
+        tokio::fs::create_dir_all(self.checklists_dir()).await?;
         Ok(())
     }
 }
@@ -342,5 +351,40 @@ pub async fn init_ryve_dir(ryve_dir: &RyveDir) -> Result<(), std::io::Error> {
         .await?;
     }
 
+    // Write default DONE.md checklist if missing
+    if !ryve_dir.done_md_path().exists() {
+        tokio::fs::write(
+            ryve_dir.done_md_path(),
+            DEFAULT_DONE_MD,
+        )
+        .await?;
+    }
+
     Ok(())
 }
+
+const DEFAULT_DONE_MD: &str = r#"# DONE Checklist
+
+A spark is only "done" when ALL of the following are true. Verify each item
+before closing the spark with `ryve-cli spark close <id>`.
+
+## Code
+- [ ] All acceptance criteria from the spark intent are satisfied
+- [ ] Code compiles cleanly (no new warnings introduced)
+- [ ] No `todo!()`, `unimplemented!()`, or stub functions left behind
+- [ ] No debug prints, `dbg!`, or commented-out code
+
+## Tests
+- [ ] New behavior has at least one test (unit or integration)
+- [ ] All existing tests still pass
+- [ ] Edge cases identified in the spark are covered
+
+## Workgraph hygiene
+- [ ] Commit messages reference the spark id: `[sp-xxxx]`
+- [ ] Any new bugs/tasks discovered were created as new sparks
+- [ ] All required contracts on the spark pass (`ryve-cli contract list <id>`)
+- [ ] Architectural constraints respected (`ryve-cli constraint list`)
+
+## Done
+- [ ] Spark closed: `ryve-cli spark close <id> completed`
+"#;
