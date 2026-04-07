@@ -74,6 +74,7 @@ fn main() -> iced::Result {
     };
 
     // Window settings — transparent title bar on macOS
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut window = iced::window::Settings {
         size: iced::Size::new(1400.0, 900.0),
         transparent: true,
