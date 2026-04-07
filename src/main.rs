@@ -13,7 +13,7 @@ mod workshop;
 
 use std::path::PathBuf;
 
-use data::sparks::types::{Contract, PersistedAgentSession, Spark};
+use data::sparks::types::{Contract, Ember, HandAssignment, PersistedAgentSession, Spark};
 use iced::widget::{Space, button, column, container, row, stack, text};
 use iced::{Color, Element, Length, Point, Size, Subscription, Task, Theme};
 use iced::{event, keyboard, mouse, window};
@@ -149,6 +149,12 @@ enum Message {
     SparksLoaded(Uuid, Vec<Spark>),
     /// Failing/pending required contract count loaded from DB
     FailingContractsLoaded(Uuid, usize),
+    /// Failing/pending required contract list loaded from DB (for Home overview)
+    FailingContractsListLoaded(Uuid, Vec<Contract>),
+    /// Active hand assignments loaded from DB (for Home overview)
+    HandAssignmentsLoaded(Uuid, Vec<HandAssignment>),
+    /// Active embers loaded from DB (for Home overview)
+    EmbersLoaded(Uuid, Vec<Ember>),
     /// Contracts for the currently selected spark loaded from DB.
     ContractsLoaded(Uuid, String, Vec<Contract>),
     /// A contract check command finished — store the resolved status,
@@ -175,6 +181,7 @@ enum Message {
     Agents(screen::agents::Message),
     Bench(screen::bench::Message),
     Sparks(screen::sparks::Message),
+    Home(screen::home::Message),
     SparkDetail(screen::spark_detail::Message),
     SparkPicker(screen::spark_picker::Message),
     HeadPicker(screen::head_picker::Message),
@@ -275,6 +282,14 @@ impl std::fmt::Debug for Message {
             Self::Agents(m) => write!(f, "Agents({m:?})"),
             Self::Bench(m) => write!(f, "Bench({m:?})"),
             Self::Sparks(m) => write!(f, "Sparks({m:?})"),
+            Self::Home(m) => write!(f, "Home({m:?})"),
+            Self::FailingContractsListLoaded(id, c) => {
+                write!(f, "FailingContractsListLoaded({id}, {} contracts)", c.len())
+            }
+            Self::HandAssignmentsLoaded(id, a) => {
+                write!(f, "HandAssignmentsLoaded({id}, {} assignments)", a.len())
+            }
+            Self::EmbersLoaded(id, e) => write!(f, "EmbersLoaded({id}, {} embers)", e.len()),
             Self::SparkDetail(m) => write!(f, "SparkDetail({m:?})"),
             Self::SparkPicker(m) => write!(f, "SparkPicker({m:?})"),
             Self::HeadPicker(m) => write!(f, "HeadPicker({m:?})"),
@@ -585,16 +600,32 @@ impl App {
                     ws.sparks = sparks;
 
                     // Refresh failing contract count alongside sparks so the
-                    // status bar warning indicator stays in sync.
-                    let contracts_task = if let Some(ref pool) = ws.sparks_db {
-                        let pool = pool.clone();
+                    // status bar warning indicator stays in sync. We also
+                    // refresh the Home dashboard sources (failing contract
+                    // list, active hand assignments, active embers) here so
+                    // the dashboard tracks the same poll cadence as the
+                    // workgraph panel — there is no separate Home poll.
+                    let mut overview_tasks: Vec<Task<Message>> = Vec::new();
+                    if let Some(ref pool) = ws.sparks_db {
                         let ws_id = ws.workshop_id();
-                        Task::perform(load_failing_contract_count(pool, ws_id), move |n| {
-                            Message::FailingContractsLoaded(id, n)
-                        })
-                    } else {
-                        Task::none()
-                    };
+                        overview_tasks.push(Task::perform(
+                            load_failing_contract_count(pool.clone(), ws_id.clone()),
+                            move |n| Message::FailingContractsLoaded(id, n),
+                        ));
+                        overview_tasks.push(Task::perform(
+                            load_failing_contract_list(pool.clone(), ws_id.clone()),
+                            move |list| Message::FailingContractsListLoaded(id, list),
+                        ));
+                        overview_tasks.push(Task::perform(
+                            load_hand_assignments(pool.clone(), ws_id.clone()),
+                            move |list| Message::HandAssignmentsLoaded(id, list),
+                        ));
+                        overview_tasks.push(Task::perform(
+                            load_embers(pool.clone(), ws_id),
+                            move |list| Message::EmbersLoaded(id, list),
+                        ));
+                    }
+                    let contracts_task = Task::batch(overview_tasks);
 
                     // Sync .ryve/WORKSHOP.md and pointers (including into worktrees)
                     if !ws.config.agents.disable_sync {
@@ -620,6 +651,25 @@ impl App {
                 }
                 Task::none()
             }
+            Message::FailingContractsListLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.failing_contracts_list = list;
+                }
+                Task::none()
+            }
+            Message::HandAssignmentsLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.hand_assignments = list;
+                }
+                Task::none()
+            }
+            Message::EmbersLoaded(id, list) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    ws.embers = list;
+                }
+                Task::none()
+            }
+            Message::Home(home_msg) => self.handle_home_message(home_msg),
             Message::ContractsLoaded(id, spark_id, contracts) => {
                 if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
                     // Only apply if this spark is still selected — avoids
@@ -1922,6 +1972,40 @@ impl App {
         }
     }
 
+    /// Route Home dashboard interactions: clicking a spark surfaces it in
+    /// the workgraph panel; clicking a Hand focuses its bench tab if it's
+    /// still alive. No DB writes — the Home view is read-only.
+    fn handle_home_message(&mut self, msg: screen::home::Message) -> Task<Message> {
+        let Some(idx) = self.active_workshop else {
+            return Task::none();
+        };
+        let ws = &mut self.workshops[idx];
+        match msg {
+            screen::home::Message::SelectSpark(id) => {
+                ws.selected_spark = Some(id.clone());
+                if let Some(ref pool) = ws.sparks_db {
+                    let pool = pool.clone();
+                    let ws_id = ws.id;
+                    return Task::perform(load_contracts(pool, id.clone()), move |list| {
+                        Message::ContractsLoaded(ws_id, id.clone(), list)
+                    });
+                }
+                Task::none()
+            }
+            screen::home::Message::FocusHand(session_id) => {
+                let tab_id = ws
+                    .agent_sessions
+                    .iter()
+                    .find(|s| s.id == session_id)
+                    .and_then(|s| s.tab_id);
+                if let Some(tab_id) = tab_id {
+                    ws.bench.active_tab = Some(tab_id);
+                }
+                Task::none()
+            }
+        }
+    }
+
     fn handle_bench_message(&mut self, msg: screen::bench::Message) -> Task<Message> {
         // Terminal events can come from any workshop, so we need to
         // find the right one by terminal ID for terminal events.
@@ -2058,6 +2142,14 @@ impl App {
             }
             screen::bench::Message::ToggleDropdown => {
                 self.workshops[idx].bench.dropdown_open = !self.workshops[idx].bench.dropdown_open;
+            }
+            screen::bench::Message::OpenHome => {
+                self.workshops[idx].bench.dropdown_open = false;
+                let next_id = &mut self.next_terminal_id;
+                self.workshops[idx].open_home_tab(next_id);
+                // No persistence: Home is a singleton dashboard rebuilt
+                // from in-memory data on demand.
+                return Task::none();
             }
             screen::bench::Message::NewTerminal => {
                 let next_id = &mut self.next_terminal_id;
@@ -3061,7 +3153,26 @@ impl App {
         let tab_bar = ws.bench.view_tab_bar(pal).map(Message::Bench);
 
         let content: Element<'a, Message> = if let Some(active_id) = ws.bench.active_tab {
-            if let Some(term) = ws.terminals.get(&active_id) {
+            let active_kind = ws
+                .bench
+                .tabs
+                .iter()
+                .find(|t| t.id == active_id)
+                .map(|t| &t.kind);
+            if matches!(active_kind, Some(screen::bench::TabKind::Home)) {
+                screen::home::view(
+                    screen::home::HomeData {
+                        sparks: &ws.sparks,
+                        agent_sessions: &ws.agent_sessions,
+                        assignments: &ws.hand_assignments,
+                        failing_contracts: &ws.failing_contracts_list,
+                        embers: &ws.embers,
+                    },
+                    pal,
+                    has_bg,
+                )
+                .map(Message::Home)
+            } else if let Some(term) = ws.terminals.get(&active_id) {
                 iced_term::TerminalView::show_with_transparent_bg(term, has_bg)
                     .map(|e| Message::Bench(screen::bench::Message::TerminalEvent(e)))
                     .into()
@@ -3222,6 +3333,55 @@ async fn load_failing_contract_count(pool: sqlx::SqlitePool, workshop_id: String
         .await
         .map(|v| v.len())
         .unwrap_or(0)
+}
+
+/// Load the full list of failing/pending required contracts for the Home
+/// overview. Errors are swallowed since this is a non-critical display value.
+async fn load_failing_contract_list(
+    pool: sqlx::SqlitePool,
+    workshop_id: String,
+) -> Vec<Contract> {
+    data::sparks::contract_repo::list_failing(&pool, &workshop_id)
+        .await
+        .unwrap_or_default()
+}
+
+/// Load all active hand assignments for the workshop, used by the Home
+/// overview to join sparks ↔ Hands. Filters down to status='active' on
+/// the SQL side already.
+async fn load_hand_assignments(
+    pool: sqlx::SqlitePool,
+    workshop_id: String,
+) -> Vec<HandAssignment> {
+    // assignment_repo::list_active is workshop-agnostic — filter to this
+    // workshop's sparks here so the Home view doesn't bleed across workshops
+    // sharing the same database file.
+    let all = data::sparks::assignment_repo::list_active(&pool)
+        .await
+        .unwrap_or_default();
+    let workshop_spark_ids: std::collections::HashSet<String> =
+        data::sparks::spark_repo::list(
+            &pool,
+            data::sparks::types::SparkFilter {
+                workshop_id: Some(workshop_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    all.into_iter()
+        .filter(|a| workshop_spark_ids.contains(&a.spark_id))
+        .collect()
+}
+
+/// Load active embers for the Home overview.
+async fn load_embers(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<Ember> {
+    data::sparks::ember_repo::list_active(&pool, &workshop_id)
+        .await
+        .unwrap_or_default()
 }
 
 /// Load all sparks for a workshop from the database.
