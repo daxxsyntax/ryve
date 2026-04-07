@@ -264,7 +264,10 @@ enum Message {
     /// already gone from the DB by the time this lands; we drop it locally
     /// too so the UI reflects the dismiss immediately rather than waiting
     /// for the next 3-second poll. Spark sp-ux0008.
-    EmberDismissed { workshop_id: Uuid, ember_id: String },
+    EmberDismissed {
+        workshop_id: Uuid,
+        ember_id: String,
+    },
 }
 
 impl std::fmt::Debug for Message {
@@ -723,10 +726,8 @@ impl App {
                         if !ws.prev_failing_contract_ids.contains(&c.id) {
                             let pool = pool.clone();
                             let ws_id_str = ws_id_str.clone();
-                            let content = format!(
-                                "Contract failed on {}: {}",
-                                c.spark_id, c.description
-                            );
+                            let content =
+                                format!("Contract failed on {}: {}", c.spark_id, c.description);
                             ember_tasks.push(Task::perform(
                                 create_ember_fire_and_forget(
                                     pool,
@@ -765,8 +766,7 @@ impl App {
                         if !current_active_ids.contains(prev_id) {
                             let pool = pool.clone();
                             let ws_id_str = ws_id_str.clone();
-                            let content =
-                                format!("Hand finished (assignment #{prev_id})");
+                            let content = format!("Hand finished (assignment #{prev_id})");
                             ember_tasks.push(Task::perform(
                                 create_ember_fire_and_forget(
                                     pool,
@@ -3483,11 +3483,12 @@ impl App {
         // Hand-to-Hand signals are visible without blocking the workgraph
         // panel. When there are no active embers the bar is skipped so it
         // costs zero vertical space. Spark sp-ux0008.
-        let ember_bar = screen::ember_bar::view(&ws.embers, &pal)
-            .map(|e| e.map(Message::EmberBar));
+        let ember_bar = screen::ember_bar::view(&ws.embers, &pal).map(|e| e.map(Message::EmberBar));
 
         let workshop_content: Element<'a, Message> = match ember_bar {
-            Some(bar) => column![bar, main_row, status_bar,].height(Length::Fill).into(),
+            Some(bar) => column![bar, main_row, status_bar,]
+                .height(Length::Fill)
+                .into(),
             None => column![main_row, status_bar,].height(Length::Fill).into(),
         };
 
@@ -3885,10 +3886,10 @@ async fn load_sparks(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<Spark> 
             child_to_parent.entry(child).or_insert(parent);
         }
         for s in sparks.iter_mut() {
-            if s.parent_id.is_none() {
-                if let Some(pid) = child_to_parent.get(&s.id) {
-                    s.parent_id = Some(pid.clone());
-                }
+            if s.parent_id.is_none()
+                && let Some(pid) = child_to_parent.get(&s.id)
+            {
+                s.parent_id = Some(pid.clone());
             }
         }
     }

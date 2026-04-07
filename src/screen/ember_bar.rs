@@ -95,12 +95,7 @@ pub fn view<'a>(embers: &'a [Ember], pal: &Palette) -> Option<Element<'a, Messag
         stack = stack.push(ember_card(e, &pal));
     }
 
-    Some(
-        container(stack)
-            .padding([6, 10])
-            .width(Length::Fill)
-            .into(),
-    )
+    Some(container(stack).padding([6, 10]).width(Length::Fill).into())
 }
 
 fn ember_card<'a>(e: &'a Ember, pal: &Palette) -> Element<'a, Message> {
@@ -129,14 +124,10 @@ fn ember_card<'a>(e: &'a Ember, pal: &Palette) -> Element<'a, Message> {
         .clone()
         .unwrap_or_else(|| "system".to_string());
 
-    let dismiss = button(
-        text("\u{00D7}")
-            .size(FONT_LABEL)
-            .color(pal.text_secondary),
-    )
-    .style(button::text)
-    .padding([0, 4])
-    .on_press(Message::Dismiss(e.id.clone()));
+    let dismiss = button(text("\u{00D7}").size(FONT_LABEL).color(pal.text_secondary))
+        .style(button::text)
+        .padding([0, 4])
+        .on_press(Message::Dismiss(e.id.clone()));
 
     let header = row![
         badge,
