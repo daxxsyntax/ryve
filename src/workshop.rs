@@ -22,7 +22,7 @@ use crate::screen::file_explorer::FileExplorerState;
 use crate::screen::file_viewer::FileViewerState;
 use crate::screen::log_tail::LogTailState;
 
-const BOTTOM_PIN_NEWLINES: usize = 200;
+const BOTTOM_PIN_NEWLINES: usize = 20;
 
 /// State for a pending agent spawn waiting for spark selection.
 ///
@@ -929,5 +929,25 @@ mod tests {
         assert_eq!(ws.agent_sessions[0].tab_id, None);
         assert!(!ws.agent_sessions[0].active);
         assert!(!ws.agent_sessions[0].stale);
+    }
+
+    #[test]
+    fn bottom_pin_newlines_is_modest() {
+        // Spark sp-ux0027: 200 newlines polluted scrollback. Keep this small
+        // (<= 30) so scroll-up history isn't drowned in blank lines.
+        assert!(BOTTOM_PIN_NEWLINES <= 30);
+        assert!(BOTTOM_PIN_NEWLINES >= 10);
+    }
+
+    #[test]
+    fn wrap_command_with_bottom_pin_uses_constant() {
+        let (shell, args) = wrap_command_with_bottom_pin("echo", &["hi".to_string()]);
+        assert_eq!(shell, "/bin/sh");
+        assert_eq!(args[0], "-lc");
+        assert!(
+            args[1].contains(&format!("-lt {BOTTOM_PIN_NEWLINES}")),
+            "wrapped command should embed BOTTOM_PIN_NEWLINES loop bound: {}",
+            args[1]
+        );
     }
 }
