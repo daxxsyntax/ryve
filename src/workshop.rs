@@ -137,6 +137,15 @@ pub struct Workshop {
     /// only fires once per workshop session, not on every SparksPoll tick
     /// that happens to refresh `agent_sessions`.
     pub tabs_restored: bool,
+    /// Effective terminal font size, in points. Mirrors `Config::terminal_font_size`
+    /// (with the default applied) so spawn_terminal can read it without
+    /// holding a reference to the global config. Updated by main.rs whenever
+    /// the user changes the size via Cmd+scroll or the Settings modal.
+    /// Spark sp-ux0014.
+    pub terminal_font_size: f32,
+    /// Effective terminal font family. `None` falls back to `Font::MONOSPACE`.
+    /// Spark sp-ux0014.
+    pub terminal_font_family: Option<String>,
 }
 
 impl Workshop {
@@ -184,6 +193,26 @@ impl Workshop {
             pending_head_spawn: None,
             last_worktree_warning: None,
             tabs_restored: false,
+            terminal_font_size: data::config::DEFAULT_TERMINAL_FONT_SIZE,
+            terminal_font_family: None,
+        }
+    }
+
+    /// Build the iced_term font settings used when spawning a new terminal
+    /// or coding-agent pane. Reads the workshop's currently-effective
+    /// terminal font size and family. Spark sp-ux0014.
+    pub fn terminal_font_settings(&self) -> iced_term::settings::FontSettings {
+        let font_type = match &self.terminal_font_family {
+            Some(name) => iced::Font {
+                family: iced::font::Family::Name(Box::leak(name.clone().into_boxed_str())),
+                ..iced::Font::MONOSPACE
+            },
+            None => iced::Font::MONOSPACE,
+        };
+        iced_term::settings::FontSettings {
+            size: self.terminal_font_size,
+            font_type,
+            ..iced_term::settings::FontSettings::default()
         }
     }
 
@@ -427,8 +456,10 @@ impl Workshop {
             self.directory.clone()
         };
 
-        let mut settings = iced_term::settings::Settings::default();
-        settings.font.size = 14.0;
+        let mut settings = iced_term::settings::Settings {
+            font: self.terminal_font_settings(),
+            ..iced_term::settings::Settings::default()
+        };
         settings.theme.color_pallete.background = app_background_color();
         settings.backend.working_directory = Some(working_dir);
 
@@ -521,8 +552,10 @@ impl Workshop {
             }
         };
 
-        let mut settings = iced_term::settings::Settings::default();
-        settings.font.size = 14.0;
+        let mut settings = iced_term::settings::Settings {
+            font: self.terminal_font_settings(),
+            ..iced_term::settings::Settings::default()
+        };
         settings.theme.color_pallete.background = app_background_color();
         settings.backend.working_directory = Some(working_dir);
         (settings.backend.program, settings.backend.args) =
@@ -869,6 +902,40 @@ mod tests {
     use super::*;
     use crate::coding_agents::{CodingAgent, ResumeStrategy};
     use crate::screen::agents::AgentSession;
+
+    #[test]
+    fn terminal_font_settings_uses_workshop_size() {
+        // Spark sp-ux0014: spawn_terminal must read the workshop's
+        // configured font size instead of a hardcoded 14.0.
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        ws.terminal_font_size = 22.0;
+        let font = ws.terminal_font_settings();
+        assert_eq!(font.size, 22.0);
+    }
+
+    #[test]
+    fn terminal_font_settings_defaults_to_14() {
+        // Spark sp-ux0014: a workshop with no override still gets 14pt.
+        let ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        assert_eq!(
+            ws.terminal_font_size,
+            data::config::DEFAULT_TERMINAL_FONT_SIZE
+        );
+        assert_eq!(ws.terminal_font_settings().size, 14.0);
+    }
+
+    #[test]
+    fn terminal_font_settings_applies_family_override() {
+        // Spark sp-ux0014: a configured family must propagate into the
+        // FontSettings handed to iced_term.
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        ws.terminal_font_family = Some("JetBrains Mono".to_string());
+        let font = ws.terminal_font_settings();
+        match font.font_type.family {
+            iced::font::Family::Name(name) => assert_eq!(name, "JetBrains Mono"),
+            other => panic!("expected named family, got {other:?}"),
+        }
+    }
 
     #[test]
     fn workshop_id_derives_from_directory_name() {
