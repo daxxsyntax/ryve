@@ -14,13 +14,13 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::coding_agents::CodingAgent;
-use crate::style::{Appearance, Palette};
 use crate::screen::agents::AgentSession;
 use crate::screen::background_picker::PickerState;
 use crate::screen::bench::{BenchState, TabKind};
 use crate::screen::file_explorer::FileExplorerState;
 use crate::screen::file_viewer::FileViewerState;
 use crate::screen::log_tail::LogTailState;
+use crate::style::{Appearance, Palette};
 
 const BOTTOM_PIN_NEWLINES: usize = 20;
 
@@ -116,11 +116,6 @@ pub struct Workshop {
     /// Includes bonds in both directions so the detail view can render
     /// "Blocks" and "Blocked by" lists.
     pub selected_spark_bonds: Vec<Bond>,
-    /// Cached delegation trace (Atlas → Head → Hand) for the currently
-    /// selected spark. Recomputed alongside `selected_spark_bonds` so the
-    /// detail view can borrow it without re-deriving on every render.
-    /// See ryve-8fadd6ab.
-    pub selected_spark_delegation: crate::screen::delegation_trace::DelegationTrace,
     /// Set of spark IDs that have at least one open blocking bond pointing
     /// at them. Recomputed alongside `sparks` so the panel can show a
     /// blocked indicator without re-querying per row.
@@ -197,7 +192,6 @@ impl Workshop {
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
             selected_spark_bonds: Vec::new(),
-            selected_spark_delegation: Default::default(),
             blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
             bg_is_dark: None,

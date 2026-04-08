@@ -40,10 +40,19 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Agent roles in the Ryve delegation hierarchy.
+/// Role variant carried inside a delegation contract.
+///
+/// This is intentionally distinct from [`data::sparks::types::AgentRole`]:
+/// the canonical hierarchy enum (Director / Head / Hand) describes *who*
+/// an agent is in the workshop, while `ContractRole` is the *role on a
+/// specific delegation hop* and additionally needs `Merger`, which the
+/// canonical enum deliberately omits (Mergers are spawned as a
+/// specialised Hand — see the `from_str("merger") == None` invariant in
+/// `data::sparks::types`). Keeping the two types separate makes the
+/// distinction explicit at every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentRole {
+pub enum ContractRole {
     /// The user-facing primary agent. Currently Atlas. There is at most one
     /// active Director per workshop.
     Director,
@@ -58,13 +67,13 @@ pub enum AgentRole {
     Merger,
 }
 
-impl AgentRole {
+impl ContractRole {
     pub fn as_str(self) -> &'static str {
         match self {
-            AgentRole::Director => "director",
-            AgentRole::Head => "head",
-            AgentRole::Hand => "hand",
-            AgentRole::Merger => "merger",
+            ContractRole::Director => "director",
+            ContractRole::Head => "head",
+            ContractRole::Hand => "hand",
+            ContractRole::Merger => "merger",
         }
     }
 }
@@ -164,21 +173,18 @@ pub struct HeadAssignment {
     /// Coding agent CLI to invoke (`claude`, `codex`, `aider`, `opencode`).
     pub agent_command: String,
     /// Role on the Crew. Distinguishes ordinary Hands from the Merger.
-    pub role: AgentRole,
+    pub role: ContractRole,
     /// Brief id the assignment derives from, propagated for traceability.
     pub origin_brief_id: Option<String>,
 }
 
 impl HeadAssignment {
-    pub fn new(
-        spark_id: impl Into<String>,
-        agent_command: impl Into<String>,
-    ) -> Self {
+    pub fn new(spark_id: impl Into<String>, agent_command: impl Into<String>) -> Self {
         Self {
             spark_id: spark_id.into(),
             crew_id: None,
             agent_command: agent_command.into(),
-            role: AgentRole::Hand,
+            role: ContractRole::Hand,
             origin_brief_id: None,
         }
     }
@@ -368,7 +374,7 @@ mod tests {
     fn head_assignment_round_trips_through_json() {
         let mut assignment = HeadAssignment::new("sp-task-1", "claude");
         assignment.crew_id = Some("cr-1".to_string());
-        assignment.role = AgentRole::Hand;
+        assignment.role = ContractRole::Hand;
         assignment.origin_brief_id = Some("br-1".to_string());
 
         let wire = delegate_to_hand(&assignment).expect("encode");
@@ -394,12 +400,7 @@ mod tests {
 
     #[test]
     fn head_synthesis_round_trips_through_json() {
-        let inner = HandReturn::new(
-            "sp-task-1",
-            "ses-1",
-            DelegationOutcome::Completed,
-            "done",
-        );
+        let inner = HandReturn::new("sp-task-1", "ses-1", DelegationOutcome::Completed, "done");
         let mut syn = HeadSynthesis::new(
             "br-1",
             "cr-1",
@@ -468,10 +469,10 @@ mod tests {
 
     #[test]
     fn agent_role_string_form_is_stable() {
-        assert_eq!(AgentRole::Director.as_str(), "director");
-        assert_eq!(AgentRole::Head.as_str(), "head");
-        assert_eq!(AgentRole::Hand.as_str(), "hand");
-        assert_eq!(AgentRole::Merger.as_str(), "merger");
+        assert_eq!(ContractRole::Director.as_str(), "director");
+        assert_eq!(ContractRole::Head.as_str(), "head");
+        assert_eq!(ContractRole::Hand.as_str(), "hand");
+        assert_eq!(ContractRole::Merger.as_str(), "merger");
     }
 
     #[test]

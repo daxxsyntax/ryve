@@ -877,9 +877,7 @@ impl AgentRole {
     pub fn can_delegate_to(&self, other: AgentRole) -> bool {
         matches!(
             (self, other),
-            (Self::Director, Self::Head)
-                | (Self::Director, Self::Hand)
-                | (Self::Head, Self::Hand)
+            (Self::Director, Self::Head) | (Self::Director, Self::Hand) | (Self::Head, Self::Hand)
         )
     }
 }

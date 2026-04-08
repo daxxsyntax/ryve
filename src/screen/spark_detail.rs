@@ -120,7 +120,7 @@ pub fn view<'a>(
     contracts: &'a [Contract],
     bonds: &'a [Bond],
     all_sparks: &'a [Spark],
-    delegation: &'a DelegationTrace,
+    delegation: &DelegationTrace,
     create_form: &'a ContractCreateForm,
     pal: &Palette,
     has_bg: bool,

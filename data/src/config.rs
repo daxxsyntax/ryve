@@ -309,7 +309,10 @@ mod tests {
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(serialized.contains("delegation_visibility = \"full_trace\""));
         let restored: Config = toml::from_str(&serialized).expect("deserialize");
-        assert_eq!(restored.delegation_visibility, DelegationVisibility::FullTrace);
+        assert_eq!(
+            restored.delegation_visibility,
+            DelegationVisibility::FullTrace
+        );
     }
 
     #[test]

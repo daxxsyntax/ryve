@@ -137,8 +137,7 @@ impl BenchState {
 
     /// Whether the active tab currently has the search overlay open.
     pub fn active_terminal_search(&self) -> Option<&TerminalSearchState> {
-        self.active_tab
-            .and_then(|id| self.terminal_search.get(&id))
+        self.active_tab.and_then(|id| self.terminal_search.get(&id))
     }
 
     /// Create a tab with an externally-assigned ID.
@@ -237,10 +236,7 @@ impl BenchState {
     /// Returns None when search is closed for the active tab. The
     /// overlay is meant to be stacked on top of the terminal view by
     /// the caller in `view_bench`.
-    pub fn view_terminal_search<'a>(
-        &'a self,
-        pal: &Palette,
-    ) -> Option<Element<'a, Message>> {
+    pub fn view_terminal_search<'a>(&'a self, pal: &Palette) -> Option<Element<'a, Message>> {
         let state = self.active_terminal_search()?;
         let pal = *pal;
 
@@ -469,13 +465,9 @@ impl BenchState {
             return None;
         }
         Some(
-            mouse_area(
-                Space::new()
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .on_press(Message::CloseDropdown)
-            .into(),
+            mouse_area(Space::new().width(Length::Fill).height(Length::Fill))
+                .on_press(Message::CloseDropdown)
+                .into(),
         )
     }
 }

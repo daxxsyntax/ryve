@@ -5,10 +5,12 @@
 //! to a given spark being worked on.
 //!
 //! Atlas is the conceptual Director: Ryve's primary user-facing agent
-//! (sp ryve-5472d4c6). It does not yet have its own session row, so the
-//! trace always renders Atlas as the root and threads from there into
-//! whichever Head spawned the Hand currently assigned to the spark, and
-//! the Hands themselves.
+//! (sp ryve-5472d4c6). The trace always renders Atlas as the fixed root
+//! and threads from there into whichever Head spawned the Hand currently
+//! assigned to the spark, and the Hands themselves. Atlas may also have
+//! a persisted `agent_sessions` row (`session_label = "atlas"`), but the
+//! trace does not depend on that row — Atlas is rendered structurally as
+//! the Director regardless.
 //!
 //! This module is split into a pure-data builder (`build_trace`) and a
 //! view (`view`). Keeping the build step pure lets us unit-test the
@@ -31,7 +33,7 @@ use crate::style::{FONT_BODY, FONT_LABEL, FONT_SMALL, Palette};
 pub struct DelegationTrace {
     /// Head node, if any. Renders between Atlas and Hand.
     pub head: Option<HeadTraceNode>,
-    /// Hands assigned to this spark, in `assignments` order.
+    /// Hands assigned to this spark, sorted by assignment `id` order.
     pub hands: Vec<HandTraceNode>,
 }
 
@@ -214,7 +216,7 @@ where
 
 /// Render the trace as an Atlas → Head → Hand chain. Always rendered, even
 /// when no Hand is assigned, so the Director hierarchy is always visible.
-pub fn view<'a>(trace: &'a DelegationTrace, pal: &Palette) -> Element<'a, Message> {
+pub fn view(trace: &DelegationTrace, pal: &Palette) -> Element<'static, Message> {
     let pal = *pal;
 
     let header = text("Delegation Trace")
@@ -300,19 +302,16 @@ fn node_card(
     let role_pill = container(text(role_label).size(FONT_SMALL).color(accent)).padding([1, 6]);
     let title_text = text(title).size(FONT_BODY).color(pal.text_primary);
 
-    let mut col = column![row![
-        role_pill,
-        title_text,
-        Space::new().width(Length::Fill),
+    let mut col = column![
+        row![role_pill, title_text, Space::new().width(Length::Fill),]
+            .spacing(6)
+            .align_y(iced::Alignment::Center)
     ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center)]
     .spacing(2);
 
     if let Some(sub) = subtitle {
-        col = col.push(
-            container(text(sub).size(FONT_SMALL).color(pal.text_tertiary)).padding([0, 6]),
-        );
+        col = col
+            .push(container(text(sub).size(FONT_SMALL).color(pal.text_tertiary)).padding([0, 6]));
     }
 
     container(col)
@@ -491,7 +490,9 @@ mod tests {
         let assignments = vec![make_assignment(1, "hand-1", "sp-x")];
 
         let trace = build_trace("sp-x", &assignments, &sessions, &crews, &[], &[]);
-        let head = trace.head.expect("head should resolve via parent_session_id");
+        let head = trace
+            .head
+            .expect("head should resolve via parent_session_id");
         assert_eq!(head.session_id, "head-1");
     }
 

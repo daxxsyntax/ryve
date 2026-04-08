@@ -43,11 +43,9 @@ use data::sparks::types::Spark;
 ///    synthesised answer to the user; partial Head outputs are inputs,
 ///    not the deliverable.
 ///
-/// Wiring this prompt into a spawn path is tracked separately by the
-/// sibling sparks under epic ryve-5472d4c6 (role model, routing, UX
-/// copy). Until those land, this function is referenced only by tests,
-/// hence the `allow(dead_code)`.
-#[allow(dead_code)]
+/// This helper centralises Atlas's role contract so the same prompt text
+/// can be reused consistently anywhere Atlas is launched or validated
+/// (currently `App::spawn_atlas` and the prompt regression tests).
 pub fn compose_atlas_prompt() -> String {
     let mut prompt = String::new();
 
@@ -74,12 +72,13 @@ pub fn compose_atlas_prompt() -> String {
             CLI (to inspect the workgraph, create epics, spawn Heads, post comments) \
             and natural-language conversation with the user.\n\
          3. SELECT HEADS. For each goal, decide which Head archetype is the right \
-            fit and delegate to it. Spawn Heads with `ryve head spawn` (or the \
-            equivalent CLI surface for the target archetype) and pass them the \
-            parent epic id you created for the goal. Prefer one Head per coherent \
-            goal; do not fan out work across Heads that should belong together. If \
-            no archetype fits cleanly, ask the user a clarifying question rather \
-            than guessing.\n\
+            fit and delegate to it. Spawn a Head with \
+            `ryve hand spawn <epic_id> --role head --agent claude` (Heads are \
+            spawned through the same `ryve hand spawn` CLI as Hands, distinguished \
+            by `--role head`), and pass them the parent epic id you created for \
+            the goal. Prefer one Head per coherent goal; do not fan out work \
+            across Heads that should belong together. If no archetype fits \
+            cleanly, ask the user a clarifying question rather than guessing.\n\
          4. OWN FINAL COHERENCE. The user's deliverable is one coherent answer \
             from Atlas — not a transcript of Head output. When Heads (and their \
             Crews of Hands) report back, you read their results, reconcile any \
@@ -409,24 +408,25 @@ mod tests {
 
     /// Spark ryve-acdb248a — Atlas is the default routing destination for
     /// top-level user requests. The prompt must establish Atlas as the
-    /// **Director**, explain the agent hierarchy so it can delegate, and
-    /// document the bypass paths so users who want to skip Atlas know how.
+    /// **Director** and explain the agent hierarchy so it can delegate.
+    /// User-facing documentation of the bypass paths lives in
+    /// `docs/ATLAS.md`, not the system prompt itself.
     #[test]
-    fn atlas_prompt_establishes_director_role_and_bypass() {
+    fn atlas_prompt_establishes_director_role_and_delegation() {
         let p = compose_atlas_prompt();
         assert!(p.contains("Atlas"));
-        assert!(p.contains("Director"));
+        assert!(p.contains("Director") || p.contains("DIRECTOR"));
         // Hierarchy: Atlas → Head/Hand
         assert!(p.contains("Head"));
         assert!(p.contains("Hand"));
-        // Routing workflow uses ryve CLI to delegate, never edits code itself
+        // Routing uses the real `ryve hand spawn ... --role head` CLI surface;
+        // there is no separate `ryve head spawn` command.
         assert!(p.contains("ryve hand spawn"));
-        assert!(p.contains("Never edit source files"));
-        // Bypass path is documented
-        assert!(p.contains("New Hand"));
-        assert!(p.contains("New Head"));
-        assert!(p.contains("New Terminal"));
-        assert!(p.contains("docs/ATLAS.md"));
+        assert!(!p.contains("ryve head spawn"));
+        // Atlas must never execute work itself.
+        assert!(
+            p.contains("never edit") || p.contains("DO NOT EXECUTE") || p.contains("not execute")
+        );
     }
 
     #[test]

@@ -7,11 +7,9 @@
 use iced::widget::{Space, button, container, row, text};
 use iced::{Element, Length, Theme};
 
-use crate::style::{self, FONT_ICON, FONT_LABEL, Palette};
+use data::sparks::types::ATLAS_NAME;
 
-/// Display name of Ryve's primary user-facing agent. Surfaced in the status
-/// bar so the agent hierarchy is visible from every screen.
-pub const ATLAS_NAME: &str = "Atlas";
+use crate::style::{self, FONT_ICON, FONT_LABEL, Palette};
 
 /// Role annotation rendered next to [`ATLAS_NAME`] in the status bar.
 pub const ATLAS_ROLE_ANNOTATION: &str = "(Director)";

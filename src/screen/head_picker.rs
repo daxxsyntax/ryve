@@ -20,8 +20,7 @@ use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL, Palette
 /// Subtitle of the Head picker modal. Frames Heads as a tool Atlas (the
 /// Director) usually delegates to on the user's behalf, so the picker
 /// reinforces the Atlas → Heads → Hands hierarchy.
-pub const HEAD_PICKER_SUBTITLE: &str =
-    "Atlas, your Director, normally delegates work for you. Spawn a Head directly when you \
+pub const HEAD_PICKER_SUBTITLE: &str = "Atlas, your Director, normally delegates work for you. Spawn a Head directly when you \
      want a coding agent to decompose an epic into sparks, spawn Hands, and finally spawn a \
      Merger to integrate the result into a single PR.";
 
