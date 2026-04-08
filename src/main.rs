@@ -513,7 +513,8 @@ impl App {
                 Message::WorkshopDirPicked(path)
             }),
             Message::WorkshopDirPicked(Some(path)) => {
-                let workshop = Workshop::new(path.clone());
+                let mut workshop = Workshop::new(path.clone());
+                workshop.set_appearance(self.appearance);
                 let ws_id = workshop.id;
                 self.workshops.push(workshop);
                 let idx = self.workshops.len() - 1;
