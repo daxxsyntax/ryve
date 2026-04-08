@@ -3210,6 +3210,7 @@ impl App {
         match msg {
             screen::background_picker::Message::Close => {
                 ws.background_picker.open = false;
+                ws.background_picker.clear_preview();
                 Task::none()
             }
             screen::background_picker::Message::PickLocalFile => {
@@ -3327,6 +3328,32 @@ impl App {
                     },
                     |_| Message::BackgroundConfigSaved,
                 )
+            }
+
+            // ── Dim opacity ──────────────────────────────────
+            screen::background_picker::Message::DimOpacityChanged(value) => {
+                ws.config.background.dim_opacity = value.clamp(0.0, 1.0);
+                Task::none()
+            }
+            screen::background_picker::Message::DimOpacityCommitted => {
+                let ryve_dir = ws.ryve_dir.clone();
+                let config = ws.config.clone();
+                Task::perform(
+                    async move {
+                        data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
+                    },
+                    |_| Message::BackgroundConfigSaved,
+                )
+            }
+
+            // ── Preview ──────────────────────────────────────
+            screen::background_picker::Message::PreviewPhoto(id) => {
+                ws.background_picker.set_preview(&id);
+                Task::none()
+            }
+            screen::background_picker::Message::ClearPreview => {
+                ws.background_picker.clear_preview();
+                Task::none()
             }
 
             // ── Agent Settings ───────────────────────────────
@@ -3506,7 +3533,14 @@ impl App {
         {
             let mut layers: Vec<Element<'_, Message>> = Vec::new();
 
-            if let Some(ref handle) = ws.background_handle {
+            // Prefer the picker preview thumbnail when the user is hovering
+            // a candidate; otherwise show the committed background.
+            let active_bg = ws
+                .background_picker
+                .preview_handle
+                .as_ref()
+                .or(ws.background_handle.as_ref());
+            if let Some(handle) = active_bg {
                 layers.push(
                     iced::widget::image(handle.clone())
                         .width(Length::Fill)
@@ -3544,6 +3578,7 @@ impl App {
             // Settings modal overlay
             if ws.background_picker.open {
                 let has_bg = ws.config.background.image.is_some();
+                let dim_opacity = ws.config.background.dim_opacity;
                 let pal = self.appearance.palette();
                 let agents: Vec<screen::background_picker::AgentInfo> = self
                     .available_agents
@@ -3560,8 +3595,14 @@ impl App {
                     })
                     .collect();
                 layers.push(
-                    screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                        .map(Message::Background),
+                    screen::background_picker::view(
+                        &ws.background_picker,
+                        &pal,
+                        has_bg,
+                        dim_opacity,
+                        agents,
+                    )
+                    .map(Message::Background),
                 );
             }
 
@@ -3949,7 +3990,12 @@ impl App {
         // Layer background image behind content
         let mut layers: Vec<Element<'a, Message>> = Vec::new();
 
-        if let Some(ref handle) = ws.background_handle {
+        let active_bg = ws
+            .background_picker
+            .preview_handle
+            .as_ref()
+            .or(ws.background_handle.as_ref());
+        if let Some(handle) = active_bg {
             layers.push(
                 iced::widget::image(handle.clone())
                     .width(Length::Fill)
@@ -3982,6 +4028,7 @@ impl App {
         // Background picker modal overlay
         if ws.background_picker.open {
             let has_bg = ws.config.background.image.is_some();
+            let dim_opacity = ws.config.background.dim_opacity;
             let agents: Vec<_> = self
                 .available_agents
                 .iter()
@@ -3997,8 +4044,14 @@ impl App {
                 })
                 .collect();
             layers.push(
-                screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                    .map(Message::Background),
+                screen::background_picker::view(
+                    &ws.background_picker,
+                    &pal,
+                    has_bg,
+                    dim_opacity,
+                    agents,
+                )
+                .map(Message::Background),
             );
         }
 
