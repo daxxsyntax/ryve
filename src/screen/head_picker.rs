@@ -203,8 +203,16 @@ fn epic_row<'a>(
     on_press: Message,
 ) -> Element<'a, Message> {
     let pal = *pal;
-    let title_color = if selected { pal.window_bg } else { pal.text_primary };
-    let prio_color = if selected { pal.window_bg } else { pal.text_tertiary };
+    let title_color = if selected {
+        pal.window_bg
+    } else {
+        pal.text_primary
+    };
+    let prio_color = if selected {
+        pal.window_bg
+    } else {
+        pal.text_tertiary
+    };
 
     let mut row_content = row![].spacing(8).align_y(iced::Alignment::Center);
     if let Some(p) = priority_label {

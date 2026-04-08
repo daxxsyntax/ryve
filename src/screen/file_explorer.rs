@@ -255,9 +255,16 @@ fn collect_nodes<'a>(
     let is_expanded = state.expanded.contains(&node.path);
     let is_selected = state.selected.as_ref() == Some(&node.path);
 
-    // Determine git status color for this entry
+    // Determine git status for this entry. The aggregation is non-trivial
+    // for directories (it walks every entry in `git_statuses`), so we
+    // compute it ONCE here and derive both the foreground color and the
+    // letter badge from the same value.
     let rel_path = node.path.strip_prefix(root).unwrap_or(&node.path);
-    let git_color = file_git_color(rel_path, &node.kind, &state.git_statuses, pal);
+    let git_status = file_git_status(rel_path, &node.kind, &state.git_statuses);
+    let git_color = match git_status {
+        Some(status) => status_color(status),
+        None => pal.text_primary,
+    };
 
     let icon_handle = match node.kind {
         NodeKind::Directory => icons::folder_icon(&node.name, is_expanded),
@@ -276,6 +283,16 @@ fn collect_nodes<'a>(
     ]
     .spacing(4)
     .align_y(iced::Alignment::Center);
+
+    // Accessible text badge for git status (colorblind-friendly alongside the color).
+    if let Some(status) = git_status {
+        label = label.push(
+            text(status_letter(status).to_string())
+                .size(FONT_LABEL)
+                .font(iced::Font::MONOSPACE)
+                .color(status_color(status)),
+        );
+    }
 
     // Show +N / -N badges when there are changes
     if diff.additions > 0 {
@@ -319,7 +336,7 @@ fn collect_nodes<'a>(
         items.push(item.into());
     } else {
         let btn = button(label)
-            .style(button::text)
+            .style(style::row_button(*pal))
             .width(Length::Fill)
             .padding([2, 4])
             .on_press(msg);
@@ -336,28 +353,29 @@ fn collect_nodes<'a>(
 
 // ── Git status colors ─────────────────────────────────
 
-/// Determine the display color for a file/directory based on git status.
-/// Directories inherit the "most important" status of their children.
-fn file_git_color(
+/// Resolve the effective git status for a file or directory.
+/// For directories, returns the "most important" status of any descendant.
+fn file_git_status(
     rel_path: &Path,
     kind: &NodeKind,
     statuses: &HashMap<PathBuf, FileStatus>,
-    pal: &Palette,
-) -> Color {
+) -> Option<FileStatus> {
     if *kind == NodeKind::File {
-        if let Some(status) = statuses.get(rel_path) {
-            return status_color(*status);
-        }
-        return pal.text_primary;
+        return statuses.get(rel_path).copied();
     }
 
-    // Directory: check if any child file has a git status
-    let dir_prefix = rel_path.to_string_lossy();
+    // Directory: check if any child file (a strict descendant) has a git
+    // status. We use `Path::starts_with`, which compares whole path
+    // components, so a directory `src` does NOT match a sibling like
+    // `src2/foo.rs` — a bug the previous string-prefix check had.
     let mut most_important: Option<FileStatus> = None;
 
     for (path, status) in statuses {
-        let path_str = path.to_string_lossy();
-        if path_str.starts_with(dir_prefix.as_ref()) && path_str.len() > dir_prefix.len() {
+        if path == rel_path {
+            // The directory entry itself; skip — we only want descendants.
+            continue;
+        }
+        if path.starts_with(rel_path) {
             most_important = Some(match most_important {
                 None => *status,
                 Some(prev) => higher_priority_status(prev, *status),
@@ -365,10 +383,7 @@ fn file_git_color(
         }
     }
 
-    match most_important {
-        Some(status) => status_color(status),
-        None => pal.text_primary,
-    }
+    most_important
 }
 
 /// Get aggregated diff stats for a file or directory.
@@ -381,12 +396,17 @@ fn file_diff_stat(
         return diff_stats.get(rel_path).copied().unwrap_or_default();
     }
 
-    // Directory: aggregate all children's stats
-    let dir_prefix = rel_path.to_string_lossy();
+    // Directory: aggregate all *strict descendants*. Use `Path::starts_with`
+    // (whole-component compare) so a directory `src` does NOT pull in
+    // siblings like `src2/foo.rs` — same correctness fix as `file_git_status`
+    // above. PR #5 Copilot review flagged the underlying antipattern; this
+    // function had the same shape. Spark ryve-20e0fa52.
     let mut total = DiffStat::default();
     for (path, stat) in diff_stats {
-        let path_str = path.to_string_lossy();
-        if path_str.starts_with(dir_prefix.as_ref()) && path_str.len() > dir_prefix.len() {
+        if path == rel_path {
+            continue;
+        }
+        if path.starts_with(rel_path) {
             total.additions += stat.additions;
             total.deletions += stat.deletions;
         }
@@ -407,6 +427,21 @@ fn status_color(status: FileStatus) -> Color {
     }
 }
 
+/// Short accessible letter label for a git status, rendered alongside the
+/// status color so colorblind users can still distinguish states.
+fn status_letter(status: FileStatus) -> char {
+    match status {
+        FileStatus::Modified => 'M',
+        FileStatus::Added => 'A',
+        FileStatus::Deleted => 'D',
+        FileStatus::Renamed => 'R',
+        FileStatus::Copied => 'C',
+        FileStatus::Untracked => '?',
+        FileStatus::Ignored => 'I',
+        FileStatus::Conflicted => 'U',
+    }
+}
+
 fn higher_priority_status(a: FileStatus, b: FileStatus) -> FileStatus {
     fn rank(s: FileStatus) -> u8 {
         match s {
@@ -421,4 +456,106 @@ fn higher_priority_status(a: FileStatus, b: FileStatus) -> FileStatus {
         }
     }
     if rank(b) > rank(a) { b } else { a }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_letter_covers_all_variants() {
+        assert_eq!(status_letter(FileStatus::Modified), 'M');
+        assert_eq!(status_letter(FileStatus::Added), 'A');
+        assert_eq!(status_letter(FileStatus::Deleted), 'D');
+        assert_eq!(status_letter(FileStatus::Renamed), 'R');
+        assert_eq!(status_letter(FileStatus::Copied), 'C');
+        assert_eq!(status_letter(FileStatus::Untracked), '?');
+        assert_eq!(status_letter(FileStatus::Conflicted), 'U');
+        assert_eq!(status_letter(FileStatus::Ignored), 'I');
+    }
+
+    #[test]
+    fn file_git_status_returns_direct_file_status() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src/main.rs"), FileStatus::Modified);
+
+        let got = file_git_status(Path::new("src/main.rs"), &NodeKind::File, &statuses);
+        assert_eq!(got, Some(FileStatus::Modified));
+
+        let none = file_git_status(Path::new("src/other.rs"), &NodeKind::File, &statuses);
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn file_git_status_aggregates_directory_children() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src/a.rs"), FileStatus::Modified);
+        statuses.insert(PathBuf::from("src/b.rs"), FileStatus::Conflicted);
+        statuses.insert(PathBuf::from("src/c.rs"), FileStatus::Untracked);
+
+        // Directory should take the highest-priority child status (Conflicted).
+        let got = file_git_status(Path::new("src"), &NodeKind::Directory, &statuses);
+        assert_eq!(got, Some(FileStatus::Conflicted));
+    }
+
+    #[test]
+    fn file_git_status_empty_directory_is_none() {
+        let statuses: HashMap<PathBuf, FileStatus> = HashMap::new();
+        let got = file_git_status(Path::new("src"), &NodeKind::Directory, &statuses);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn file_git_status_directory_does_not_match_sibling_with_same_prefix() {
+        // Regression for the PR #5 Copilot review (spark ryve-20e0fa52):
+        // a string-prefix check would have made directory `src` light up
+        // because of changes inside `src2/`. With `Path::starts_with` the
+        // boundary is component-aware and `src` must report `None`.
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src2/foo.rs"), FileStatus::Modified);
+        statuses.insert(PathBuf::from("src22/bar.rs"), FileStatus::Modified);
+
+        let got = file_git_status(Path::new("src"), &NodeKind::Directory, &statuses);
+        assert_eq!(
+            got, None,
+            "directory `src` must not absorb siblings `src2/`"
+        );
+
+        // The actual `src2` directory should still report Modified.
+        let got = file_git_status(Path::new("src2"), &NodeKind::Directory, &statuses);
+        assert_eq!(got, Some(FileStatus::Modified));
+    }
+
+    #[test]
+    fn file_diff_stat_directory_does_not_match_sibling_with_same_prefix() {
+        // Same regression, applied to the diff_stat aggregation. Spark
+        // ryve-20e0fa52: `file_diff_stat` previously used
+        // `to_string_lossy().starts_with()` and would have folded changes
+        // from `src2/foo.rs` into directory `src`'s totals.
+        let mut diff_stats = HashMap::new();
+        diff_stats.insert(
+            PathBuf::from("src2/foo.rs"),
+            DiffStat {
+                additions: 7,
+                deletions: 3,
+            },
+        );
+        diff_stats.insert(
+            PathBuf::from("src/lib.rs"),
+            DiffStat {
+                additions: 2,
+                deletions: 1,
+            },
+        );
+
+        // `src` must only see its own descendants.
+        let got = file_diff_stat(Path::new("src"), &NodeKind::Directory, &diff_stats);
+        assert_eq!(got.additions, 2);
+        assert_eq!(got.deletions, 1);
+
+        // `src2` must only see its own descendants.
+        let got = file_diff_stat(Path::new("src2"), &NodeKind::Directory, &diff_stats);
+        assert_eq!(got.additions, 7);
+        assert_eq!(got.deletions, 3);
+    }
 }

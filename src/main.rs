@@ -12,7 +12,7 @@ mod widget;
 mod workshop;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use coding_agents::CodingAgent;
 use data::sparks::types::{
@@ -264,7 +264,10 @@ enum Message {
     /// already gone from the DB by the time this lands; we drop it locally
     /// too so the UI reflects the dismiss immediately rather than waiting
     /// for the next 3-second poll. Spark sp-ux0008.
-    EmberDismissed { workshop_id: Uuid, ember_id: String },
+    EmberDismissed {
+        workshop_id: Uuid,
+        ember_id: String,
+    },
 }
 
 impl std::fmt::Debug for Message {
@@ -723,10 +726,8 @@ impl App {
                         if !ws.prev_failing_contract_ids.contains(&c.id) {
                             let pool = pool.clone();
                             let ws_id_str = ws_id_str.clone();
-                            let content = format!(
-                                "Contract failed on {}: {}",
-                                c.spark_id, c.description
-                            );
+                            let content =
+                                format!("Contract failed on {}: {}", c.spark_id, c.description);
                             ember_tasks.push(Task::perform(
                                 create_ember_fire_and_forget(
                                     pool,
@@ -765,8 +766,7 @@ impl App {
                         if !current_active_ids.contains(prev_id) {
                             let pool = pool.clone();
                             let ws_id_str = ws_id_str.clone();
-                            let content =
-                                format!("Hand finished (assignment #{prev_id})");
+                            let content = format!("Hand finished (assignment #{prev_id})");
                             ember_tasks.push(Task::perform(
                                 create_ember_fire_and_forget(
                                     pool,
@@ -1153,7 +1153,102 @@ impl App {
                             if let Some(active_id) = ws.bench.active_tab
                                 && let Some(viewer) = ws.file_viewers.get_mut(&active_id)
                             {
-                                viewer.clear_selection();
+                                // Escape closes search first if it's open;
+                                // otherwise it clears the line selection.
+                                if viewer.search_open {
+                                    viewer.close_search();
+                                } else {
+                                    viewer.clear_selection();
+                                }
+                            }
+                        }
+                    }
+                    file_viewer::Message::OpenSearch => {
+                        if let Some(ws_idx) = self.active_workshop
+                            && let Some(active_id) = self.workshops[ws_idx].bench.active_tab
+                            && let Some(viewer) =
+                                self.workshops[ws_idx].file_viewers.get_mut(&active_id)
+                        {
+                            viewer.open_search();
+                            return iced::widget::operation::focus(iced::widget::Id::new(
+                                file_viewer::SEARCH_INPUT_ID,
+                            ));
+                        }
+                    }
+                    file_viewer::Message::CloseSearch => {
+                        if let Some(ws_idx) = self.active_workshop
+                            && let Some(active_id) = self.workshops[ws_idx].bench.active_tab
+                            && let Some(viewer) =
+                                self.workshops[ws_idx].file_viewers.get_mut(&active_id)
+                        {
+                            viewer.close_search();
+                        }
+                    }
+                    file_viewer::Message::SearchQueryChanged(q) => {
+                        if let Some(ws_idx) = self.active_workshop
+                            && let Some(active_id) = self.workshops[ws_idx].bench.active_tab
+                            && let Some(viewer) =
+                                self.workshops[ws_idx].file_viewers.get_mut(&active_id)
+                        {
+                            viewer.set_search_query(q);
+                            if let Some(target) = viewer.scroll_offset_for_current_match() {
+                                return iced::widget::operation::scroll_to(
+                                    iced::widget::Id::new(file_viewer::SCROLLABLE_ID),
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: target },
+                                );
+                            }
+                        }
+                    }
+                    file_viewer::Message::SearchNext => {
+                        if let Some(ws_idx) = self.active_workshop
+                            && let Some(active_id) = self.workshops[ws_idx].bench.active_tab
+                            && let Some(viewer) =
+                                self.workshops[ws_idx].file_viewers.get_mut(&active_id)
+                        {
+                            viewer.next_match();
+                            if let Some(target) = viewer.scroll_offset_for_current_match() {
+                                return iced::widget::operation::scroll_to(
+                                    iced::widget::Id::new(file_viewer::SCROLLABLE_ID),
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: target },
+                                );
+                            }
+                        }
+                    }
+                    file_viewer::Message::SearchPrev => {
+                        if let Some(ws_idx) = self.active_workshop
+                            && let Some(active_id) = self.workshops[ws_idx].bench.active_tab
+                            && let Some(viewer) =
+                                self.workshops[ws_idx].file_viewers.get_mut(&active_id)
+                        {
+                            viewer.prev_match();
+                            if let Some(target) = viewer.scroll_offset_for_current_match() {
+                                return iced::widget::operation::scroll_to(
+                                    iced::widget::Id::new(file_viewer::SCROLLABLE_ID),
+                                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: target },
+                                );
+                            }
+                        }
+                    }
+                    file_viewer::Message::NavigateToDir(target) => {
+                        // Reveal the target directory in the file explorer:
+                        // expand every ancestor between the workshop root
+                        // and the target (inclusive) and select the target.
+                        // Clicking the workshop-root segment just clears
+                        // the selection — there's nothing to expand above it.
+                        if let Some(ws_idx) = self.active_workshop {
+                            let ws = &mut self.workshops[ws_idx];
+                            if target == ws.directory {
+                                ws.file_explorer.selected = None;
+                            } else if target.starts_with(&ws.directory) {
+                                let mut cur: Option<&Path> = Some(target.as_path());
+                                while let Some(p) = cur {
+                                    if p == ws.directory.as_path() {
+                                        break;
+                                    }
+                                    ws.file_explorer.expanded.insert(p.to_path_buf());
+                                    cur = p.parent();
+                                }
+                                ws.file_explorer.selected = Some(target);
                             }
                         }
                     }
@@ -3019,6 +3114,9 @@ impl App {
                     if modifiers.command() && c.as_str() == "c" {
                         return Message::FileViewer(file_viewer::Message::CopySelection);
                     }
+                    if modifiers.command() && c.as_str() == "f" {
+                        return Message::FileViewer(file_viewer::Message::OpenSearch);
+                    }
                 }
                 keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
@@ -3385,11 +3483,12 @@ impl App {
         // Hand-to-Hand signals are visible without blocking the workgraph
         // panel. When there are no active embers the bar is skipped so it
         // costs zero vertical space. Spark sp-ux0008.
-        let ember_bar = screen::ember_bar::view(&ws.embers, &pal)
-            .map(|e| e.map(Message::EmberBar));
+        let ember_bar = screen::ember_bar::view(&ws.embers, &pal).map(|e| e.map(Message::EmberBar));
 
         let workshop_content: Element<'a, Message> = match ember_bar {
-            Some(bar) => column![bar, main_row, status_bar,].height(Length::Fill).into(),
+            Some(bar) => column![bar, main_row, status_bar,]
+                .height(Length::Fill)
+                .into(),
             None => column![main_row, status_bar,].height(Length::Fill).into(),
         };
 
@@ -3514,7 +3613,7 @@ impl App {
                 iced_term::TerminalView::show_with_transparent_bg(term, has_bg)
                     .map(|e| Message::Bench(screen::bench::Message::TerminalEvent(e)))
             } else if let Some(viewer) = ws.file_viewers.get(&active_id) {
-                file_viewer::view(viewer, pal, has_bg).map(Message::FileViewer)
+                file_viewer::view(viewer, &ws.directory, pal, has_bg).map(Message::FileViewer)
             } else if let Some(tail) = ws.log_tails.get(&active_id) {
                 log_tail::view(tail, pal).map(Message::LogTail)
             } else {
@@ -3787,10 +3886,10 @@ async fn load_sparks(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<Spark> 
             child_to_parent.entry(child).or_insert(parent);
         }
         for s in sparks.iter_mut() {
-            if s.parent_id.is_none() {
-                if let Some(pid) = child_to_parent.get(&s.id) {
-                    s.parent_id = Some(pid.clone());
-                }
+            if s.parent_id.is_none()
+                && let Some(pid) = child_to_parent.get(&s.id)
+            {
+                s.parent_id = Some(pid.clone());
             }
         }
     }

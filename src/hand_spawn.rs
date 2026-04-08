@@ -413,12 +413,11 @@ mod tests {
         // process actually executed and received argv.
         let deadline = Instant::now() + Duration::from_secs(5);
         let recorded = loop {
-            if out_path.exists() {
-                if let Ok(s) = std::fs::read_to_string(&out_path) {
-                    if !s.is_empty() {
-                        break s;
-                    }
-                }
+            if out_path.exists()
+                && let Ok(s) = std::fs::read_to_string(&out_path)
+                && !s.is_empty()
+            {
+                break s;
             }
             if Instant::now() >= deadline {
                 panic!(

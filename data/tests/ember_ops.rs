@@ -103,7 +103,9 @@ async fn test_delete_ember(pool: sqlx::SqlitePool) {
     assert!(after.is_empty());
 
     // Deleting a non-existent id is a no-op and must not error.
-    let noop = ember_repo::delete(&pool, "em-does-not-exist").await.unwrap();
+    let noop = ember_repo::delete(&pool, "em-does-not-exist")
+        .await
+        .unwrap();
     assert_eq!(noop, 0);
 }
 
