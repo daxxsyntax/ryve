@@ -18,6 +18,12 @@ use tokio::sync::Mutex;
 #[derive(Debug, Clone)]
 pub enum Event {
     BackendCall(u64, backend::Command),
+    /// User requested a font-size change for this terminal (e.g. via
+    /// Cmd+scroll). The host application is expected to translate this
+    /// into a `Command::ChangeFont` and broadcast it to whichever
+    /// terminals should respond. `delta` is in points (positive = grow,
+    /// negative = shrink).
+    FontSizeDelta(u64, f32),
 }
 
 #[derive(Debug, Clone)]

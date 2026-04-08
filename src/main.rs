@@ -515,6 +515,11 @@ impl App {
             Message::WorkshopDirPicked(Some(path)) => {
                 let mut workshop = Workshop::new(path.clone());
                 workshop.set_appearance(self.appearance);
+                // Inherit the user's currently-effective terminal font
+                // settings so the very first terminal in the new workshop
+                // already respects the global preference. Spark sp-ux0014.
+                workshop.terminal_font_size = self.global_config.effective_terminal_font_size();
+                workshop.terminal_font_family = self.global_config.terminal_font_family.clone();
                 let ws_id = workshop.id;
                 self.workshops.push(workshop);
                 let idx = self.workshops.len() - 1;
@@ -2576,7 +2581,77 @@ impl App {
         }
     }
 
+    /// Apply a terminal-font-size delta from a Cmd+scroll gesture, clamped
+    /// to the configured min/max. Updates the global config, mirrors the
+    /// new value onto every workshop, and broadcasts a `ChangeFont` command
+    /// to every live terminal so the resize is immediate. Spark sp-ux0014.
+    fn apply_terminal_font_delta(&mut self, delta: f32) -> Task<Message> {
+        let current = self.global_config.effective_terminal_font_size();
+        let next = (current + delta).clamp(
+            data::config::MIN_TERMINAL_FONT_SIZE,
+            data::config::MAX_TERMINAL_FONT_SIZE,
+        );
+        if (next - current).abs() < f32::EPSILON {
+            return Task::none();
+        }
+        self.set_terminal_font(Some(next), self.global_config.terminal_font_family.clone())
+    }
+
+    /// Update the terminal font (size and/or family) globally. Mirrors the
+    /// new values to every workshop, broadcasts `ChangeFont` to every live
+    /// terminal, and persists the global config to disk. Spark sp-ux0014.
+    fn set_terminal_font(&mut self, size: Option<f32>, family: Option<String>) -> Task<Message> {
+        if let Some(s) = size {
+            self.global_config.terminal_font_size = Some(s);
+        }
+        self.global_config.terminal_font_family = family;
+        let effective_size = self.global_config.effective_terminal_font_size();
+        let effective_family = self.global_config.terminal_font_family.clone();
+
+        // Build the FontSettings once and clone into each terminal handle.
+        let font_type = match &effective_family {
+            Some(name) => iced::Font {
+                family: iced::font::Family::Name(Box::leak(name.clone().into_boxed_str())),
+                ..iced::Font::MONOSPACE
+            },
+            None => iced::Font::MONOSPACE,
+        };
+        let font = iced_term::settings::FontSettings {
+            size: effective_size,
+            font_type,
+            ..iced_term::settings::FontSettings::default()
+        };
+
+        for ws in self.workshops.iter_mut() {
+            ws.terminal_font_size = effective_size;
+            ws.terminal_font_family = effective_family.clone();
+            for term in ws.terminals.values_mut() {
+                let _ = term.handle(iced_term::Command::ChangeFont(font.clone()));
+            }
+        }
+
+        let config = self.global_config.clone();
+        Task::perform(
+            async move {
+                if let Err(e) = config.save() {
+                    log::warn!("Failed to persist terminal font settings: {e}");
+                }
+            },
+            |_| Message::BackgroundConfigSaved,
+        )
+    }
+
     fn handle_bench_message(&mut self, msg: screen::bench::Message) -> Task<Message> {
+        // Cmd+scroll bubbles up as a FontSizeDelta event from iced_term.
+        // Persist the new size to the global config and broadcast it to
+        // every live terminal so the resize is uniform across panes.
+        // Spark sp-ux0014.
+        if let screen::bench::Message::TerminalEvent(iced_term::Event::FontSizeDelta(_id, delta)) =
+            msg
+        {
+            return self.apply_terminal_font_delta(delta);
+        }
+
         // Terminal events can come from any workshop, so we need to
         // find the right one by terminal ID for terminal events.
         if let screen::bench::Message::TerminalEvent(iced_term::Event::BackendCall(id, ref cmd)) =
@@ -3113,6 +3188,29 @@ impl App {
         &mut self,
         msg: screen::background_picker::Message,
     ) -> Task<Message> {
+        // Terminal font controls don't touch any per-workshop picker state,
+        // and they need `&mut self` to broadcast across all workshops, so
+        // handle them up front before borrowing the active workshop.
+        // Spark sp-ux0014.
+        match &msg {
+            screen::background_picker::Message::StepTerminalFontSize(delta) => {
+                return self.apply_terminal_font_delta(*delta);
+            }
+            screen::background_picker::Message::SetTerminalFontFamily(name) => {
+                let trimmed = name.trim();
+                let family = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+                return self.set_terminal_font(None, family);
+            }
+            screen::background_picker::Message::ClearTerminalFontFamily => {
+                return self.set_terminal_font(None, None);
+            }
+            _ => {}
+        }
+
         let Some(idx) = self.active_workshop else {
             return Task::none();
         };
@@ -3251,6 +3349,12 @@ impl App {
                     |_| Message::BackgroundConfigSaved,
                 )
             }
+            // Terminal font arms are handled up-front (above) before the
+            // workshop borrow; these arms exist only to keep the match
+            // exhaustive. Spark sp-ux0014.
+            screen::background_picker::Message::StepTerminalFontSize(_)
+            | screen::background_picker::Message::SetTerminalFontFamily(_)
+            | screen::background_picker::Message::ClearTerminalFontFamily => Task::none(),
             screen::background_picker::Message::ToggleFullAuto(cmd) => {
                 let entry = self
                     .global_config
@@ -3414,9 +3518,19 @@ impl App {
                         is_default: self.global_config.default_agent.as_ref() == Some(&a.command),
                     })
                     .collect();
+                let terminal_font = screen::background_picker::TerminalFontInfo {
+                    size: self.global_config.effective_terminal_font_size(),
+                    family: self.global_config.terminal_font_family.clone(),
+                };
                 layers.push(
-                    screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                        .map(Message::Background),
+                    screen::background_picker::view(
+                        &ws.background_picker,
+                        &pal,
+                        has_bg,
+                        agents,
+                        terminal_font,
+                    )
+                    .map(Message::Background),
                 );
             }
 
@@ -3724,9 +3838,19 @@ impl App {
                     is_default: self.global_config.default_agent.as_ref() == Some(&a.command),
                 })
                 .collect();
+            let terminal_font = screen::background_picker::TerminalFontInfo {
+                size: self.global_config.effective_terminal_font_size(),
+                family: self.global_config.terminal_font_family.clone(),
+            };
             layers.push(
-                screen::background_picker::view(&ws.background_picker, &pal, has_bg, agents)
-                    .map(Message::Background),
+                screen::background_picker::view(
+                    &ws.background_picker,
+                    &pal,
+                    has_bg,
+                    agents,
+                    terminal_font,
+                )
+                .map(Message::Background),
             );
         }
 
