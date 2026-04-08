@@ -126,6 +126,9 @@ struct App {
     toasts: Vec<Toast>,
     /// Monotonic counter for toast ids.
     next_toast_id: u64,
+    /// If set, a "close workshop" confirmation dialog is open for the
+    /// workshop at this index. Spark sp-ux0021.
+    pending_close_workshop: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -133,6 +136,10 @@ enum Message {
     /// Workshop-level tab bar
     SelectWorkshop(usize),
     CloseWorkshop(usize),
+    /// User clicked "Close anyway" in the confirmation dialog. Spark sp-ux0021.
+    ConfirmCloseWorkshop(usize),
+    /// User dismissed the close-workshop confirmation dialog. Spark sp-ux0021.
+    CancelCloseWorkshop,
     NewWorkshopDialog,
     WorkshopDirPicked(Option<PathBuf>),
     /// `workshop::init_workshop` failed (bad db, unreadable config, etc.).
@@ -281,6 +288,8 @@ impl std::fmt::Debug for Message {
         match self {
             Self::SelectWorkshop(i) => write!(f, "SelectWorkshop({i})"),
             Self::CloseWorkshop(i) => write!(f, "CloseWorkshop({i})"),
+            Self::ConfirmCloseWorkshop(i) => write!(f, "ConfirmCloseWorkshop({i})"),
+            Self::CancelCloseWorkshop => write!(f, "CancelCloseWorkshop"),
             Self::NewWorkshopDialog => write!(f, "NewWorkshopDialog"),
             Self::WorkshopDirPicked(p) => write!(f, "WorkshopDirPicked({p:?})"),
             Self::WorkshopInitFailed { id, error } => {
@@ -387,6 +396,7 @@ impl App {
             window_size: Size::new(1400.0, 900.0),
             toasts: Vec::new(),
             next_toast_id: 1,
+            pending_close_workshop: None,
         };
 
         // Surface an upgrade toast for any detected CLI whose version is
@@ -413,6 +423,25 @@ impl App {
 
     fn active_workshop(&self) -> Option<&Workshop> {
         self.active_workshop.and_then(|i| self.workshops.get(i))
+    }
+
+    /// Tear down the workshop at `idx` and fix up `active_workshop` so the
+    /// tab bar still points at a valid index. Spark sp-ux0021: extracted so
+    /// the no-confirm fast path and the confirmed-close path stay in sync.
+    fn do_close_workshop(&mut self, idx: usize) {
+        if idx >= self.workshops.len() {
+            return;
+        }
+        self.workshops.remove(idx);
+        if self.workshops.is_empty() {
+            self.active_workshop = None;
+        } else if let Some(active) = self.active_workshop {
+            if active > idx {
+                self.active_workshop = Some(active - 1);
+            } else if active == idx {
+                self.active_workshop = Some(idx.min(self.workshops.len() - 1));
+            }
+        }
     }
 
     /// Push a new toast onto the stack and return a `Task` that will
@@ -491,23 +520,27 @@ impl App {
                 Task::none()
             }
             Message::CloseWorkshop(idx) => {
-                if idx < self.workshops.len() {
-                    self.workshops.remove(idx);
-                    // Adjust active index
-                    if self.workshops.is_empty() {
-                        self.active_workshop = None;
-                    } else if let Some(active) = self.active_workshop {
-                        if active > idx {
-                            self.active_workshop = Some(active - 1);
-                        } else if active == idx {
-                            self.active_workshop = if self.workshops.is_empty() {
-                                None
-                            } else {
-                                Some(idx.min(self.workshops.len() - 1))
-                            };
-                        }
+                // Spark sp-ux0021: if any Hands are still active, prompt the
+                // user before tearing down the workshop instead of killing
+                // their terminals/agents instantly.
+                if let Some(ws) = self.workshops.get(idx) {
+                    let active_hands =
+                        ws.agent_sessions.iter().filter(|s| s.active).count();
+                    if active_hands > 0 {
+                        self.pending_close_workshop = Some(idx);
+                        return Task::none();
                     }
                 }
+                self.do_close_workshop(idx);
+                Task::none()
+            }
+            Message::ConfirmCloseWorkshop(idx) => {
+                self.pending_close_workshop = None;
+                self.do_close_workshop(idx);
+                Task::none()
+            }
+            Message::CancelCloseWorkshop => {
+                self.pending_close_workshop = None;
                 Task::none()
             }
             Message::NewWorkshopDialog => Task::perform(pick_workshop_directory(), |path| {
@@ -3361,6 +3394,37 @@ impl App {
             .unwrap_or_else(|| self.appearance.palette());
         let toast_overlay = toast::view(&self.toasts, &toast_pal).map(|e| e.map(Message::Toast));
 
+        // Spark sp-ux0021: confirmation dialog when closing a workshop
+        // with active Hands. Built once here and layered onto whichever
+        // render path runs below.
+        let close_dialog: Option<Element<'_, Message>> =
+            self.pending_close_workshop.and_then(|idx| {
+                let target = self.workshops.get(idx)?;
+                let active_hands =
+                    target.agent_sessions.iter().filter(|s| s.active).count();
+                let pal = match target.bg_is_dark {
+                    Some(true) => style::Palette::dark(),
+                    Some(false) => style::Palette::light(),
+                    None => self.appearance.palette(),
+                };
+                Some(
+                    screen::close_workshop_dialog::view(
+                        idx,
+                        target.name(),
+                        active_hands,
+                        &pal,
+                    )
+                    .map(|m| match m {
+                        screen::close_workshop_dialog::Message::Confirm(i) => {
+                            Message::ConfirmCloseWorkshop(i)
+                        }
+                        screen::close_workshop_dialog::Message::Cancel => {
+                            Message::CancelCloseWorkshop
+                        }
+                    }),
+                )
+            });
+
         // Layer background image behind everything (including tab bar)
         if let Some(ws) = ws
             && (ws.background_handle.is_some() || ws.background_picker.open)
@@ -3420,7 +3484,19 @@ impl App {
                 );
             }
 
+            if let Some(dialog) = close_dialog {
+                layers.push(dialog);
+            }
+
             let stacked: Element<'_, Message> = stack(layers)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+            return overlay_with_toasts(stacked, toast_overlay);
+        }
+
+        if let Some(dialog) = close_dialog {
+            let stacked: Element<'_, Message> = stack(vec![main_content, dialog])
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
