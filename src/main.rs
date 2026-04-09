@@ -14,6 +14,8 @@ mod icons;
 mod process_snapshot;
 mod release_artifact;
 mod screen;
+#[allow(dead_code)]
+mod sparks_filter;
 mod style;
 mod widget;
 mod workshop;
@@ -1051,6 +1053,14 @@ impl App {
                     // choices. Stale IDs are pruned once sparks finish
                     // loading (see SparksLoaded below). Spark ryve-926870a9.
                     ws.collapsed_epics = ui_state.collapsed_epics.clone();
+                    // Rehydrate the persisted sparks-panel filter so the
+                    // user returns to the same view. Spark ryve-27e33825.
+                    ws.sparks_filter = crate::screen::sparks::SparksFilter::from_persisted(
+                        &ui_state.sparks_filter,
+                    );
+                    ws.sort_mode = crate::screen::sparks::SortMode::from_persist_key(
+                        &ui_state.sparks_filter.sort_mode,
+                    );
                     // Hand off the warm hash cache from init_workshop so the
                     // first SparksLoaded sync tick is a no-op on disk.
                     // Spark ryve-86b0b326.
@@ -1143,6 +1153,10 @@ impl App {
                     // Replace (not append) so Refresh never duplicates
                     // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    // Re-sort according to the active sort mode.
+                    // Spark ryve-6f24ef2a.
+                    ws.sort_sparks();
+                    ws.recompute_filtered_sparks();
                     // Clear the Refresh-button indicator now that the
                     // refetch has landed. Both the explicit Refresh and
                     // the 3s poll route through this handler; clearing
@@ -1490,6 +1504,11 @@ impl App {
                             session_label: p.session_label.clone(),
                         });
                     }
+
+                    // Refresh cached agent session names for the filter bar
+                    // (spark ryve-baca34b0).
+                    ws.agent_session_names =
+                        ws.agent_sessions.iter().map(|s| s.name.clone()).collect();
 
                     // First time we see agent_sessions for this workshop:
                     // chain into load_open_tabs so the persisted snapshot
@@ -3107,6 +3126,12 @@ impl App {
                             edit.update_draft(screen::spark_detail::Field::Title, val);
                         }
                     }
+                    // Spark ryve-dba4b8c4: navigate to the agent session.
+                    screen::spark_detail::Message::FocusAgentSession(session_id) => {
+                        return self.update(Message::Agents(screen::agents::Message::SelectAgent(
+                            session_id,
+                        )));
+                    }
                     screen::spark_detail::Message::TitleSubmit
                     | screen::spark_detail::Message::TitleBlur => {
                         let Some(ws) = self.workshops.get_mut(idx) else {
@@ -3571,6 +3596,36 @@ impl App {
                             }
                         }
                     }
+                    screen::sparks::Message::ToggleStatusFilter(status) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.toggle_status(&status);
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::ToggleShowClosed => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.show_closed = !ws.sparks_filter.show_closed;
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
                     screen::sparks::Message::ToggleEpicCollapse(epic_id) => {
                         // Flip the collapse flag in memory and persist the
                         // new snapshot to `.ryve/ui_state.json` so the
@@ -3579,6 +3634,121 @@ impl App {
                         // Spark ryve-926870a9.
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.toggle_epic_collapse(&epic_id);
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    // ── Filter bar (spark ryve-baca34b0) ───────
+                    screen::sparks::Message::FilterToggleType(ty) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.toggle_type(ty);
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::FilterTogglePriority(p) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.toggle_priority(p);
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::FilterSetAssignee(a) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.set_assignee(a);
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::SetSortMode(mode) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_mode = mode;
+                            ws.sort_dropdown_open = false;
+                            ws.sort_sparks();
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::ToggleSortDropdown => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_dropdown_open = !ws.sort_dropdown_open;
+                        }
+                    }
+                    screen::sparks::Message::SearchChanged(query) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search = query;
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::ClearSearch => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search.clear();
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
+                        }
+                    }
+                    screen::sparks::Message::SparksFilterChanged => {
+                        // Persist the updated filter state to
+                        // `.ryve/ui_state.json`. Fire-and-forget — a
+                        // failed write is logged but never blocks the UI.
+                        // Spark ryve-27e33825.
+                        if let Some(ws) = self.workshops.get_mut(idx) {
                             let ryve_dir = ws.ryve_dir.clone();
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
@@ -3609,6 +3779,12 @@ impl App {
                                 );
                             }
                         }
+                    }
+                    // Spark ryve-dba4b8c4: navigate to the agent session.
+                    screen::sparks::Message::FocusAgentSession(session_id) => {
+                        return self.update(Message::Agents(screen::agents::Message::SelectAgent(
+                            session_id,
+                        )));
                     }
                 }
                 Task::none()
@@ -6128,6 +6304,7 @@ impl App {
                     &ws.spark_edit_session,
                     ws.spark_edit.as_ref(),
                     &ws.assignee_edit,
+                    &ws.agent_sessions,
                     ws.description_editor.as_ref(),
                     description_draft,
                     ws.pending_nav_prompt.as_ref(),
@@ -6140,12 +6317,18 @@ impl App {
                 screen::sparks::view(screen::sparks::ViewCtx {
                     sparks: &ws.sparks,
                     blocked_ids: &ws.blocked_spark_ids,
+                    agent_sessions: &ws.agent_sessions,
                     pal,
                     has_bg,
                     create_form: &ws.spark_create_form,
                     status_menu: &ws.spark_status_menu,
                     collapsed: &ws.collapsed_epics,
                     refreshing: ws.sparks_refreshing,
+                    filter: &ws.sparks_filter,
+                    agent_session_names: &ws.agent_session_names,
+                    filtered_sparks: &ws.filtered_sparks,
+                    sort_mode: ws.sort_mode,
+                    sort_dropdown_open: ws.sort_dropdown_open,
                 })
                 .map(Message::Sparks)
             }
@@ -6153,12 +6336,18 @@ impl App {
             screen::sparks::view(screen::sparks::ViewCtx {
                 sparks: &ws.sparks,
                 blocked_ids: &ws.blocked_spark_ids,
+                agent_sessions: &ws.agent_sessions,
                 pal,
                 has_bg,
                 create_form: &ws.spark_create_form,
                 status_menu: &ws.spark_status_menu,
                 collapsed: &ws.collapsed_epics,
                 refreshing: ws.sparks_refreshing,
+                filter: &ws.sparks_filter,
+                agent_session_names: &ws.agent_session_names,
+                filtered_sparks: &ws.filtered_sparks,
+                sort_mode: ws.sort_mode,
+                sort_dropdown_open: ws.sort_dropdown_open,
             })
             .map(Message::Sparks)
         };
