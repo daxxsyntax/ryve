@@ -7,7 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use data::agent_context::SyncCache as AgentContextSyncCache;
 use data::ryve_dir::{AgentDef, RyveDir, WorkshopConfig};
 use data::sparks::types::{Bond, Contract, Crew, CrewMember, Ember, HandAssignment, Spark};
 use sqlx::SqlitePool;
@@ -182,6 +184,10 @@ pub struct Workshop {
     /// Effective terminal font family. `None` falls back to `Font::MONOSPACE`.
     /// Spark sp-ux0014.
     pub terminal_font_family: Option<String>,
+    /// Cached hashes of files written by `data::agent_context::sync` so the
+    /// 3-second sync tick produces zero file writes when nothing has
+    /// changed. Spark ryve-86b0b326.
+    pub agent_context_sync_cache: Arc<Mutex<AgentContextSyncCache>>,
 }
 
 impl Workshop {
@@ -233,6 +239,7 @@ impl Workshop {
             appearance: Appearance::Dark,
             terminal_font_size: data::config::DEFAULT_TERMINAL_FONT_SIZE,
             terminal_font_family: None,
+            agent_context_sync_cache: Arc::new(Mutex::new(AgentContextSyncCache::new())),
         }
     }
 
@@ -899,6 +906,10 @@ pub struct WorkshopInit {
     pub config: WorkshopConfig,
     pub custom_agents: Vec<AgentDef>,
     pub agent_context: Option<String>,
+    /// Hash cache populated by the initial `agent_context::sync`. Handed
+    /// off to the `Workshop` so subsequent sync ticks share the same warm
+    /// cache and skip re-reading the just-written files. Spark ryve-86b0b326.
+    pub agent_context_sync_cache: Arc<Mutex<AgentContextSyncCache>>,
 }
 
 /// Initialize a workshop's `.ryve/` directory, DB, and load config.
@@ -931,8 +942,11 @@ pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::spa
 
     // Generate WORKSHOP.md and inject pointers into agent boot files
     // (also propagates into any existing worktrees).
+    let agent_context_sync_cache = Arc::new(Mutex::new(AgentContextSyncCache::new()));
     if !config.agents.disable_sync {
-        let _ = data::agent_context::sync(&directory, &ryve_dir, &config).await;
+        let _ =
+            data::agent_context::sync(&directory, &ryve_dir, &config, &agent_context_sync_cache)
+                .await;
     }
 
     Ok(WorkshopInit {
@@ -940,6 +954,7 @@ pub async fn init_workshop(directory: PathBuf) -> Result<WorkshopInit, data::spa
         config,
         custom_agents,
         agent_context,
+        agent_context_sync_cache,
     })
 }
 
