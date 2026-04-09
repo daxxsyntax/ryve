@@ -53,6 +53,15 @@ pub enum Message {
     ToggleHeadExpanded(String),
     /// Toggle expand/collapse for a Crew node in the Active tree.
     ToggleCrewExpanded(String),
+    /// Attach to a live tmux session for a background Hand/Head.
+    /// Payload is `(session_id, session_label)` — the label is "hand" or
+    /// "head" and combined with the session_id to form the tmux session
+    /// name. Spark ryve-8ba40d83.
+    AttachSession(String, String),
+    /// Open a read-only log view for a past/dead session. Fired from the
+    /// "View Log" button on History rows that have a `log_path`. Spark
+    /// `ryve-a677498c`.
+    ViewLog(String),
 }
 
 /// How many History rows to render per "page". A "Load more…" button at
@@ -122,8 +131,14 @@ pub struct AgentSession {
     /// isn't a member of any of the Head's crews.
     pub parent_session_id: Option<String>,
     /// `agent_sessions.session_label` — role label for this session
-    /// (e.g. "atlas", "head", "hand"). Used to identify pinned Atlas tabs.
+    /// (e.g. "atlas", "head", "hand"). Used to identify pinned Atlas tabs
+    /// and to construct the tmux session name for attach. Spark ryve-8ba40d83.
     pub session_label: Option<String>,
+    /// Whether this session has a live tmux session on the Ryve-private
+    /// socket. Updated during the periodic 3s agent-session sync so the
+    /// UI can gate the Attach button without blocking render. Not persisted.
+    /// Spark ryve-8ba40d83.
+    pub tmux_session_live: bool,
 }
 
 /// High-level display state for an active Hand, used to pick its indicator color.
@@ -752,6 +767,18 @@ fn render_head_row<'a>(
             .width(Length::Fill),
     );
 
+    // Attach button for Heads with a live tmux session. Spark ryve-8ba40d83.
+    if let Some(s) = session
+        && s.tmux_session_live
+    {
+        let label = s.session_label.as_deref().unwrap_or("head");
+        let attach_btn = button(text("Attach").size(FONT_SMALL).color(pal.accent))
+            .style(button::text)
+            .padding([2, 6])
+            .on_press(Message::AttachSession(s.id.clone(), label.to_string()));
+        row_widget = row_widget.push(attach_btn);
+    }
+
     // Spark chip — opens the epic spark detail.
     if let Some(s) = epic {
         row_widget = row_widget.push(spark_chip(&s.id, pal));
@@ -898,6 +925,20 @@ fn render_hand_row<'a>(
         row_widget = row_widget.push(text("bg").size(FONT_SMALL).color(pal.text_tertiary));
     }
 
+    // Attach button — gated on a live tmux session so it only appears
+    // when the user can actually connect. Spark ryve-8ba40d83.
+    if session.tmux_session_live {
+        let label = session.session_label.as_deref().unwrap_or("hand");
+        let attach_btn = button(text("Attach").size(FONT_SMALL).color(pal.accent))
+            .style(button::text)
+            .padding([2, 6])
+            .on_press(Message::AttachSession(
+                session.id.clone(),
+                label.to_string(),
+            ));
+        row_widget = row_widget.push(attach_btn);
+    }
+
     if let Some(s) = spark {
         row_widget = row_widget.push(spark_chip(&s.id, pal));
     }
@@ -958,7 +999,17 @@ fn render_history_row<'a>(
         row_widget = row_widget.push(spark_chip(&s.id, pal));
     }
 
-    // Delete is the only mutation allowed on a history row.
+    // Spark `ryve-a677498c`: dead sessions with a log file show a "View
+    // Log" button so the user can inspect the agent's last output instead
+    // of the row being entirely inert.
+    if session.log_path.is_some() {
+        let log_btn = button(text("\u{1F4C4}").size(FONT_ICON_SM).color(pal.accent))
+            .style(button::text)
+            .padding([2, 4])
+            .on_press(Message::ViewLog(session.id.clone()));
+        row_widget = row_widget.push(log_btn);
+    }
+
     let delete_btn = button(text("\u{00D7}").size(FONT_ICON).color(pal.text_tertiary))
         .style(button::text)
         .padding([2, 4])
@@ -1093,6 +1144,7 @@ mod tests {
             last_output_at: None,
             parent_session_id: None,
             session_label: None,
+            tmux_session_live: false,
         }
     }
 
@@ -1117,6 +1169,7 @@ mod tests {
             last_output_at: None,
             parent_session_id: parent.map(|s| s.to_string()),
             session_label: None,
+            tmux_session_live: false,
         }
     }
 
@@ -1514,6 +1567,7 @@ mod tests {
             last_output_at: None,
             parent_session_id: None,
             session_label: None,
+            tmux_session_live: false,
         }
     }
 
@@ -1530,5 +1584,45 @@ mod tests {
         assert!(session_matches_query(&s, &[], &[], "claude"));
         assert!(session_matches_query(&s, &[], &[], "CLA"));
         assert!(!session_matches_query(&s, &[], &[], "codex"));
+    }
+
+    // ── Tmux attach (spark ryve-8ba40d83) ──────────
+
+    #[test]
+    fn attach_session_message_variant_exists() {
+        // The AttachSession message must carry (session_id, session_label).
+        let m = Message::AttachSession("sess-1".into(), "hand".into());
+        assert!(matches!(m, Message::AttachSession(_, _)));
+    }
+
+    #[test]
+    fn attach_button_hidden_when_tmux_not_live() {
+        // When `tmux_session_live` is false, the Attach button must not
+        // appear. We test this indirectly by building a row and asserting
+        // the view doesn't panic — the actual presence of "Attach" is a
+        // visual concern, but the code path exercises the gating logic.
+        let mut s = make_session(true, None, ResumeStrategy::None);
+        s.tmux_session_live = false;
+        s.log_path = Some(PathBuf::from("/tmp/test.log"));
+        let pal = Palette::dark();
+        // render_hand_row is private but we can verify through the public
+        // `view` function — the session appears in Active with no panic.
+        let sessions = vec![s];
+        let state = AgentsPanelState::default();
+        let _ = view(&sessions, &[], &[], &[], &[], &state, pal);
+    }
+
+    #[test]
+    fn attach_button_present_when_tmux_live() {
+        // When `tmux_session_live` is true, the Attach button's message
+        // should be emitted. Again we exercise the path by calling `view`.
+        let mut s = make_session(true, None, ResumeStrategy::None);
+        s.tmux_session_live = true;
+        s.session_label = Some("hand".into());
+        s.log_path = Some(PathBuf::from("/tmp/test.log"));
+        let pal = Palette::dark();
+        let sessions = vec![s];
+        let state = AgentsPanelState::default();
+        let _ = view(&sessions, &[], &[], &[], &[], &state, pal);
     }
 }

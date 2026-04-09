@@ -870,6 +870,11 @@ impl Workshop {
                         ("coding_agent", Some(sid))
                     }
                     TabKind::LogTail { session_id, .. } => ("log_tail", Some(session_id.clone())),
+                    // TmuxAttach tabs are transient — the tmux session
+                    // survives independently, but re-attaching on relaunch
+                    // could surprise the user, so we skip persistence.
+                    // Spark ryve-8ba40d83.
+                    TabKind::TmuxAttach { .. } => return None,
                     // Home is a singleton dashboard rebuilt from in-memory
                     // data on demand; persisting it would just create a
                     // duplicate when the user reopens it manually.
@@ -1473,7 +1478,7 @@ impl Workshop {
     }
 }
 
-fn wrap_command_with_bottom_pin(program: &str, args: &[String]) -> (String, Vec<String>) {
+pub fn wrap_command_with_bottom_pin(program: &str, args: &[String]) -> (String, Vec<String>) {
     let mut command = format!(
         "i=0; while [ \"$i\" -lt {BOTTOM_PIN_NEWLINES} ]; do printf '\\n'; i=$((i+1)); done; exec {}",
         shell_quote(program)
@@ -1612,6 +1617,20 @@ pub(crate) fn hand_env_vars(workshop_dir: &Path) -> Vec<(String, String)> {
             format!("{exe_dir_str}:{existing_path}")
         };
         vars.push(("PATH".to_string(), new_path));
+    }
+
+    // Expose the bundled tmux path and version so Hands can locate it
+    // without $PATH. Only meaningful on unix where tmux is available.
+    #[cfg(unix)]
+    if let Some(tmux) = crate::bundled_tmux::bundled_tmux_path() {
+        vars.push((
+            "RYVE_TMUX_PATH".to_string(),
+            tmux.to_string_lossy().into_owned(),
+        ));
+        vars.push((
+            "RYVE_TMUX_VERSION".to_string(),
+            crate::bundled_tmux::PINNED_TMUX_VERSION.to_string(),
+        ));
     }
 
     vars
@@ -1951,6 +1970,7 @@ mod tests {
             last_output_at: None,
             parent_session_id: None,
             session_label: None,
+            tmux_session_live: false,
         });
 
         let ended = ws.end_agent_sessions_for_tab(7);
