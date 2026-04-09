@@ -762,6 +762,48 @@ impl App {
         )
     }
 
+    /// Persist the current draft acceptance-criteria vec for `spark_id`
+    /// through `spark_repo::update`, merging the new list into the
+    /// existing metadata JSON. Returns a task that reloads sparks so the
+    /// in-memory `ws.sparks` mirror the new DB state — which in turn
+    /// triggers the reseed guard in `SparksLoaded`, preserving the
+    /// invariant that the editor vec matches persisted metadata after a
+    /// save. Spark ryve-9b98f949.
+    fn persist_acceptance_criteria(
+        &mut self,
+        ws_idx: usize,
+        spark_id: &str,
+    ) -> Task<Message> {
+        let Some(ws) = self.workshops.get(ws_idx) else {
+            return Task::none();
+        };
+        let Some(pool) = ws.sparks_db.clone() else {
+            return Task::none();
+        };
+        let Some(spark) = ws.sparks.iter().find(|s| s.id == spark_id) else {
+            return Task::none();
+        };
+        let new_metadata = screen::spark_detail::merge_acceptance_criteria_into_metadata(
+            &spark.metadata,
+            &ws.acceptance_criteria_edit.items,
+        );
+        let spark_id = spark_id.to_string();
+        let ws_id = ws.workshop_id();
+        let id = ws.id;
+        Task::perform(
+            async move {
+                let upd = data::sparks::types::UpdateSpark {
+                    metadata: Some(new_metadata),
+                    ..Default::default()
+                };
+                let _ =
+                    data::sparks::spark_repo::update(&pool, &spark_id, upd, "user").await;
+                load_sparks(pool, ws_id).await
+            },
+            move |sparks| Message::SparksLoaded(id, sparks),
+        )
+    }
+
     fn push_toast(
         &mut self,
         title: impl Into<String>,
@@ -1037,6 +1079,37 @@ impl App {
                     ws.prev_blocked_spark_ids = current_blocked;
                     ws.sparks_baseline_seen = true;
                     ws.sparks = sparks;
+
+                    // Reseed the acceptance-criteria editor from the freshly
+                    // loaded spark so the invariant "in-memory vec == persisted
+                    // metadata.intent.acceptance_criteria after a save" holds
+                    // automatically across every load path (spark ryve-9b98f949).
+                    // Only reseed when the user is not mid-edit on *different*
+                    // content — if they've added local rows that aren't yet on
+                    // disk (e.g. an empty row awaiting input), don't clobber
+                    // them; the next blur/submit will persist them.
+                    if let Some(ref selected_id) = ws.selected_spark
+                        && ws.acceptance_criteria_edit.is_for(selected_id)
+                        && let Some(spark) = ws.sparks.iter().find(|s| s.id == *selected_id)
+                    {
+                        let persisted = spark.intent().acceptance_criteria;
+                        // Treat whitespace-only draft rows as "equal" to the
+                        // persisted vec minus those drafts — i.e. don't
+                        // clobber an empty row the user just added.
+                        let draft_trimmed: Vec<String> = ws
+                            .acceptance_criteria_edit
+                            .items
+                            .iter()
+                            .filter(|s| !s.trim().is_empty())
+                            .cloned()
+                            .collect();
+                        if draft_trimmed == persisted {
+                            // No unsaved drafts — adopt the DB ordering and
+                            // clear any stale undo buffer.
+                            ws.acceptance_criteria_edit =
+                                screen::spark_detail::AcceptanceCriteriaEdit::load(spark);
+                        }
+                    }
 
                     // Refresh failing contract count + blocked-spark set +
                     // Home dashboard sources (failing contract list, active
@@ -2077,6 +2150,7 @@ impl App {
                             ws.selected_spark_contracts.clear();
                             ws.selected_spark_bonds.clear();
                             ws.contract_create_form.reset();
+                            ws.acceptance_criteria_edit = Default::default();
                         }
                     }
                     screen::spark_detail::Message::ShowCreateContract => {
@@ -2362,6 +2436,130 @@ impl App {
                             move |sparks| Message::SparksLoaded(id, sparks),
                         );
                     }
+                    screen::spark_detail::Message::AcceptanceCriterionChanged(i, val) => {
+                        // Draft-only: update the in-memory row without
+                        // touching the DB. Persistence happens on submit.
+                        if let Some(ws) = self.workshops.get_mut(idx)
+                            && let Some(slot) = ws.acceptance_criteria_edit.items.get_mut(i)
+                        {
+                            *slot = val;
+                        }
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionSubmit(i) => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            return Task::none();
+                        }
+                        // Auto-delete the row if it's blank on submit so we
+                        // never persist stray empties. If that happens, still
+                        // persist the shortened vec so the DB matches the UI.
+                        screen::spark_detail::trim_blank_on_blur(
+                            &mut ws.acceptance_criteria_edit,
+                            i,
+                        );
+                        return self.persist_acceptance_criteria(idx, &selected_id);
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionAdd => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            // Editor isn't bound to a spark yet — rebind from
+                            // current sparks before appending.
+                            ws.acceptance_criteria_edit = ws
+                                .sparks
+                                .iter()
+                                .find(|s| s.id == selected_id)
+                                .map(screen::spark_detail::AcceptanceCriteriaEdit::load)
+                                .unwrap_or_default();
+                        }
+                        let new_index = screen::spark_detail::add_criterion(
+                            &mut ws.acceptance_criteria_edit,
+                        );
+                        // Focus the freshly-added row for immediate typing.
+                        // No DB write yet — the empty row only persists once
+                        // the user types and submits (or gets auto-deleted).
+                        return iced::widget::operation::focus(
+                            screen::spark_detail::acceptance_row_id(new_index),
+                        );
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionDelete(i) => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            return Task::none();
+                        }
+                        if !screen::spark_detail::delete_criterion(
+                            &mut ws.acceptance_criteria_edit,
+                            i,
+                        ) {
+                            return Task::none();
+                        }
+                        let persist_task = self.persist_acceptance_criteria(idx, &selected_id);
+                        let toast_task = self.push_toast(
+                            "Criterion deleted",
+                            "Press the undo button in the detail view to restore.",
+                            ToastKind::Info,
+                        );
+                        return Task::batch([persist_task, toast_task]);
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionUndoDelete => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            return Task::none();
+                        }
+                        if !screen::spark_detail::undo_delete(&mut ws.acceptance_criteria_edit) {
+                            return Task::none();
+                        }
+                        return self.persist_acceptance_criteria(idx, &selected_id);
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionMoveUp(i) => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            return Task::none();
+                        }
+                        if !screen::spark_detail::move_up(&mut ws.acceptance_criteria_edit, i) {
+                            return Task::none();
+                        }
+                        return self.persist_acceptance_criteria(idx, &selected_id);
+                    }
+                    screen::spark_detail::Message::AcceptanceCriterionMoveDown(i) => {
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(selected_id) = ws.selected_spark.clone() else {
+                            return Task::none();
+                        };
+                        if !ws.acceptance_criteria_edit.is_for(&selected_id) {
+                            return Task::none();
+                        }
+                        if !screen::spark_detail::move_down(&mut ws.acceptance_criteria_edit, i) {
+                            return Task::none();
+                        }
+                        return self.persist_acceptance_criteria(idx, &selected_id);
+                    }
                     screen::spark_detail::Message::CycleStatus(spark_id, new_status) => {
                         if let Some(ws) = self.workshops.get(idx)
                             && let Some(ref pool) = ws.sparks_db
@@ -2544,6 +2742,15 @@ impl App {
                             ws.selected_spark_contracts.clear();
                             ws.selected_spark_bonds.clear();
                             ws.contract_create_form.reset();
+                            // Seed the acceptance-criteria editor from the
+                            // newly selected spark's current intent so the
+                            // draft vec starts life in sync with the DB.
+                            ws.acceptance_criteria_edit = ws
+                                .sparks
+                                .iter()
+                                .find(|s| s.id == spark_id)
+                                .map(screen::spark_detail::AcceptanceCriteriaEdit::load)
+                                .unwrap_or_default();
                             if let Some(ref pool) = ws.sparks_db {
                                 let pool_c = pool.clone();
                                 let pool_b = pool.clone();
@@ -4953,6 +5160,7 @@ impl App {
                     &ws.sparks,
                     &delegation,
                     &ws.contract_create_form,
+                    &ws.acceptance_criteria_edit,
                     &pal,
                     has_bg,
                 )

@@ -251,6 +251,11 @@ pub struct Workshop {
     /// time — see [`Workshop::change_selected_spark`]. Spark
     /// ryve-1d8c2847.
     pub spark_edit: Option<crate::screen::spark_detail::SparkEdit>,
+    /// Draft state for editing the selected spark's acceptance criteria.
+    /// Reseeded from the DB whenever the selection changes or a save
+    /// reloads sparks — that's how we keep this vec and the persisted
+    /// `metadata.intent.acceptance_criteria` in sync (spark ryve-9b98f949).
+    pub acceptance_criteria_edit: crate::screen::spark_detail::AcceptanceCriteriaEdit,
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
@@ -329,6 +334,7 @@ impl Workshop {
             blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
             spark_edit: None,
+            acceptance_criteria_edit: Default::default(),
             bg_is_dark: None,
             pending_agent_spawn: None,
             pending_head_spawn: None,
