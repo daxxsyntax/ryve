@@ -165,7 +165,9 @@ pub async fn run(args: Vec<String>) {
         "commit" | "commits" => handle_commit(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "crew" | "crews" => handle_crew(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "hand" | "hands" => handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await,
-        "head" | "heads" => handle_head(&pool, &workshop_root, &args_clean[2..], json_mode).await,
+        "head" | "heads" => {
+            handle_head(&pool, &workshop_root, &ws_id, &args_clean[2..], json_mode).await
+        }
         "worktree" | "worktrees" | "wt" => {
             handle_worktree(&pool, &workshop_root, &args_clean[2..], json_mode).await
         }
@@ -276,6 +278,11 @@ fn print_usage() {
     eprintln!("  head spawn <epic_id> --archetype <build|research|review> \\");
     eprintln!("            [--agent <name>] [--crew <id>]");
     eprintln!("                                       Spawn a Head subprocess on an epic");
+    eprintln!("  head orchestrate <parent_spark> --children <csv>");
+    eprintln!("      [--merge-spark <id>] [--crew-name <name>] [--purpose <text>]");
+    eprintln!("      [--agent <name>] [--stall-seconds N] [--poll-seconds M] [--max-cycles N]");
+    eprintln!("                                       Drive a Head→Crew loop via");
+    eprintln!("                                       the shared orchestration module");
     eprintln!("  head list                            List active Head sessions");
     eprintln!("  head archetype list                  List registered Head archetypes");
     eprintln!("  head --help                          Long-form Head documentation");
@@ -1907,269 +1914,12 @@ See also:
     );
 }
 
-fn print_head_spawn_usage() {
-    println!(
-        "ryve head spawn — launch a Head (crew orchestrator) on an epic
-
-USAGE:
-  ryve head spawn <epic_id> [OPTIONS]
-
-ARGUMENTS:
-  <epic_id>    The parent epic spark the Head will decompose. Should have
-               a populated `problem_statement` and `acceptance_criteria`
-               intent (`ryve spark show <epic_id>` to verify before
-               spawning).
-
-OPTIONS:
-  --agent <name>   Coding agent to run as the Head (claude, codex, aider,
-                   opencode, …). Defaults to the first detected agent.
-  --crew <id>      Attach the Head to an existing crew. Optional: most
-                   workflows create the crew from inside the Head itself
-                   via `ryve crew create --head-session $RYVE_SESSION_ID`.
-
-EFFECTS:
-  1. Creates a git worktree for the Head at `.ryve/worktrees/<short>/`.
-  2. Persists an `agent_sessions` row with `session_label = \"head\"`.
-  3. Persists a `hand_assignments` row claiming the epic with role Owner
-     (the Head \"owns\" the epic for the lifetime of its crew).
-  4. Writes the Head system prompt (composed via `compose_head_prompt`,
-     injecting the epic id + title) to `.ryve/prompts/hand-<id>.md`.
-  5. Launches the agent in full-auto, detached, with stdout/stderr going
-     to `.ryve/logs/hand-<id>.log`.
-
-WORKED EXAMPLE:
-  # 1. Create an epic capturing the goal:
-  ryve spark create --type epic --priority 1 \\
-      --problem 'add OAuth login to the dashboard' \\
-      --acceptance 'user can log in with Google on /login' \\
-      --acceptance 'session cookie set and verified on /dashboard' \\
-      'Add OAuth login'
-  # → prints something like `created sp-1234`.
-
-  # 2. Spawn a Head on that epic:
-  ryve head spawn sp-1234 --agent claude
-
-  # 3. Watch the Head work. It will:
-  #    - create 2–8 child sparks under sp-1234
-  #    - create a crew and spawn Hands on each child
-  #    - poll progress
-  #    - eventually spawn a Merger that opens a single PR
-  #    - post the PR URL as a comment on sp-1234
-
-  # 4. Observe:
-  ryve spark show sp-1234    # children appear bonded parent_child
-  ryve crew list             # crew appears
-  ryve hand list             # sub-Hands appear with role=owner
-  ryve head list             # the Head itself appears
-"
-    );
-}
-
-// ── Head command dispatch ─────────────────────────────
-
-/// `ryve head` — spawn and inspect Head crew orchestrators.
-///
-/// A Head is mechanically a Hand (same worktree, same session machinery),
-/// distinguished by `session_label = \"head\"` and the Head system prompt.
-/// `ryve head spawn` delegates to the same `hand_spawn::spawn_hand`
-/// helper as `ryve hand spawn`, just with `HandKind::Head`.
+/// Consolidated `ryve head` dispatcher. Combines spawn (ryve-e4cadc03),
+/// list, archetype (ryve-982bddb8), and orchestrate (ryve-85945fa3).
 async fn handle_head(
     pool: &sqlx::SqlitePool,
     workshop_root: &Path,
-    args: &[String],
-    json_mode: bool,
-) {
-    if args.is_empty() {
-        print_head_usage();
-        return;
-    }
-    if matches!(args[0].as_str(), "help" | "--help" | "-h") {
-        print_head_usage();
-        return;
-    }
-    match args[0].as_str() {
-        "spawn" => {
-            if args.len() >= 2 && matches!(args[1].as_str(), "help" | "--help" | "-h") {
-                print_head_spawn_usage();
-                return;
-            }
-            if args.len() < 2 {
-                die(
-                    "head spawn requires <epic_id> [--agent <name>] [--crew <id>]. Try `ryve head spawn --help`.",
-                );
-            }
-            let epic_id = args[1].clone();
-            let mut agent_name: Option<String> = None;
-            let mut crew_id: Option<String> = None;
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--agent" => {
-                        i += 1;
-                        if i < args.len() {
-                            agent_name = Some(args[i].clone());
-                        }
-                    }
-                    "--crew" => {
-                        i += 1;
-                        if i < args.len() {
-                            crew_id = Some(args[i].clone());
-                        }
-                    }
-                    other => die(&format!(
-                        "unknown head spawn flag '{other}'. Try `ryve head spawn --help`."
-                    )),
-                }
-                i += 1;
-            }
-
-            let agent = resolve_agent(agent_name.as_deref());
-            let parent_session_id = std::env::var("RYVE_HAND_SESSION_ID").ok();
-
-            match hand_spawn::spawn_hand(
-                workshop_root,
-                pool,
-                &agent,
-                &epic_id,
-                HandKind::Head,
-                crew_id.as_deref(),
-                parent_session_id.as_deref(),
-            )
-            .await
-            {
-                Ok(spawned) => {
-                    if json_mode {
-                        let payload = serde_json::json!({
-                            "session_id": spawned.session_id,
-                            "epic_id": spawned.spark_id,
-                            "worktree": spawned.worktree_path,
-                            "log": spawned.log_path,
-                            "pid": spawned.child_pid,
-                            "role": "head",
-                        });
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&payload).unwrap_or_default()
-                        );
-                    } else {
-                        println!(
-                            "spawned head {} on epic {} (pid {:?})",
-                            spawned.session_id, spawned.spark_id, spawned.child_pid
-                        );
-                        println!("  worktree: {}", spawned.worktree_path.display());
-                        println!("  log:      {}", spawned.log_path.display());
-                        println!(
-                            "  tip: `ryve head list` to see it, `ryve crew list` once it creates a crew"
-                        );
-                    }
-                }
-                Err(e) => die(&format!("{e}")),
-            }
-        }
-        "list" | "ls" => {
-            // A "Head" is an agent_sessions row with session_label = "head".
-            // We reuse the existing list_active helper and filter, but
-            // there is no shared helper for session_label filtering — walk
-            // active assignments and cross-reference the session label.
-            let ws_id = workshop_root
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let sessions = match agent_session_repo::list_for_workshop(pool, &ws_id).await {
-                Ok(s) => s,
-                Err(e) => die(&format!("{e}")),
-            };
-            let heads: Vec<_> = sessions
-                .iter()
-                .filter(|s| s.session_label.as_deref() == Some("head") && s.status == "active")
-                .collect();
-            if json_mode {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&heads).unwrap_or_default()
-                );
-            } else if heads.is_empty() {
-                println!("No active Head sessions.");
-            } else {
-                println!("{:<36} {:<16} STARTED", "SESSION", "AGENT");
-                let sep = "-".repeat(80);
-                println!("{sep}");
-                for h in &heads {
-                    println!("{:<36} {:<16} {}", h.id, h.agent_name, h.started_at);
-                }
-            }
-        }
-        "archetype" | "archetypes" => {
-            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
-            match sub {
-                "list" | "ls" => {
-                    let registry = crate::head_archetype::Registry::builtins();
-                    if json_mode {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(registry.all()).unwrap_or_default()
-                        );
-                    } else if registry.all().is_empty() {
-                        println!("No Head archetypes registered.");
-                    } else {
-                        println!(
-                            "{:<12} {:<18} {:<22} DESCRIPTION",
-                            "NAME", "DEFAULT AGENT", "WRITE DISCIPLINE"
-                        );
-                        let sep = "-".repeat(96);
-                        println!("{sep}");
-                        for a in registry.all() {
-                            let discipline = format!("{:?}", a.write_discipline);
-                            println!(
-                                "{:<12} {:<18} {:<22} {}",
-                                a.name, a.default_agent, discipline, a.description
-                            );
-                        }
-                    }
-                }
-                other => die(&format!("unknown head archetype subcommand '{other}'")),
-            }
-        }
-        other => die(&format!(
-            "unknown head subcommand '{other}'. Try `ryve head --help`."
-        )),
-    }
-}
-
-// ── Heads ─────────────────────────────────────────────
-
-/// Print `ryve head --help`. Listed as its own function so both the
-/// `head --help` path and the "no subcommand" error path render the same
-/// text — acceptance criterion for spark ryve-e4cadc03 ("ryve head --help
-/// lists spawn and any subcommands").
-fn print_head_usage() {
-    eprintln!("ryve head — manage Head orchestrator subprocesses\n");
-    eprintln!("USAGE: ryve head <subcommand> [args...]\n");
-    eprintln!("SUBCOMMANDS:");
-    eprintln!("  spawn <epic_id> --archetype <build|research|review> \\");
-    eprintln!("        [--agent <name>] [--crew <id>]");
-    eprintln!("        Spawn a Head subprocess on an existing epic spark.");
-    eprintln!("        Creates (or reuses) a Crew and registers the Head as");
-    eprintln!("        its head_session_id. See docs/HEAD_ARCHETYPES.md.");
-    eprintln!();
-    eprintln!("  list");
-    eprintln!("        List active Head sessions in this workshop.");
-    eprintln!();
-    eprintln!("  help, --help, -h");
-    eprintln!("        Show this help text.");
-}
-
-
-/// `ryve head spawn <epic_id> --archetype <name> [--crew <id>] [--agent <name>]`
-/// and `ryve head list`.
-///
-/// Dispatches to [`hand_spawn::spawn_head`] for the actual worktree +
-/// session + crew wiring; this handler is just argv parsing and output
-/// rendering. Spark ryve-e4cadc03.
-async fn handle_head(
-    pool: &sqlx::SqlitePool,
-    workshop_root: &Path,
+    ws_id: &str,
     args: &[String],
     json_mode: bool,
 ) {
@@ -2180,7 +1930,6 @@ async fn handle_head(
     match args[0].as_str() {
         "help" | "--help" | "-h" => {
             print_head_usage();
-            return;
         }
         "spawn" => {
             if args.len() < 2 {
@@ -2230,11 +1979,6 @@ async fn handle_head(
             };
 
             let agent = resolve_agent(agent_name.as_deref());
-
-            // Lineage: if the spawning process is itself a Hand/Head, its
-            // session id is injected via `RYVE_HAND_SESSION_ID` by the
-            // parent spawn. Atlas (running as a coding-agent subprocess
-            // under the UI) will set this too.
             let parent_session_id = std::env::var("RYVE_HAND_SESSION_ID").ok();
 
             match hand_spawn::spawn_head(
@@ -2280,12 +2024,7 @@ async fn handle_head(
             }
         }
         "list" | "ls" => {
-            let workshop_id = workshop_root
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            match agent_session_repo::list_for_workshop(pool, &workshop_id).await {
+            match agent_session_repo::list_for_workshop(pool, ws_id).await {
                 Ok(sessions) => {
                     let heads: Vec<_> = sessions
                         .into_iter()
@@ -2313,7 +2052,281 @@ async fn handle_head(
                 Err(e) => die(&format!("{e}")),
             }
         }
-        other => die(&format!("unknown head subcommand '{other}'")),
+        "archetype" | "archetypes" => {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
+            match sub {
+                "list" | "ls" => {
+                    let registry = crate::head_archetype::Registry::builtins();
+                    if json_mode {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(registry.all()).unwrap_or_default()
+                        );
+                    } else if registry.all().is_empty() {
+                        println!("No Head archetypes registered.");
+                    } else {
+                        println!(
+                            "{:<12} {:<18} {:<22} DESCRIPTION",
+                            "NAME", "DEFAULT AGENT", "WRITE DISCIPLINE"
+                        );
+                        let sep = "-".repeat(96);
+                        println!("{sep}");
+                        for a in registry.all() {
+                            let discipline = format!("{:?}", a.write_discipline);
+                            println!(
+                                "{:<12} {:<18} {:<22} {}",
+                                a.name, a.default_agent, discipline, a.description
+                            );
+                        }
+                    }
+                }
+                other => die(&format!("unknown head archetype subcommand '{other}'")),
+            }
+        }
+        "orchestrate" => {
+            handle_head_orchestrate(pool, workshop_root, ws_id, &args[1..], json_mode).await;
+        }
+        other => die(&format!(
+            "unknown head subcommand '{other}'. Try `ryve head --help`."
+        )),
+    }
+}
+
+async fn handle_head_orchestrate(
+    pool: &sqlx::SqlitePool,
+    workshop_root: &Path,
+    ws_id: &str,
+    args: &[String],
+    json_mode: bool,
+) {
+    use crate::head::orchestrator::{self, OrchestrationConfig};
+
+    if args.is_empty() {
+        die(
+            "head orchestrate requires <parent_spark_id> [--children <csv>] \
+             [--merge-spark <id>] [--crew-name <name>] [--purpose <text>] \
+             [--agent <name>] [--stall-seconds N] [--poll-seconds M] [--max-cycles N]",
+        );
+    }
+    let parent_spark_id = args[0].clone();
+
+    let mut children: Vec<String> = Vec::new();
+    let mut merge_spark: Option<String> = None;
+    let mut crew_name: Option<String> = None;
+    let mut purpose: Option<String> = None;
+    let mut agent_name: Option<String> = None;
+    let mut cfg = OrchestrationConfig::default();
+    let mut max_cycles: u32 = 120; // default ~2h at 60s poll
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--children" => {
+                i += 1;
+                if i < args.len() {
+                    children = args[i]
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            }
+            "--merge-spark" => {
+                i += 1;
+                if i < args.len() {
+                    merge_spark = Some(args[i].clone());
+                }
+            }
+            "--crew-name" => {
+                i += 1;
+                if i < args.len() {
+                    crew_name = Some(args[i].clone());
+                }
+            }
+            "--purpose" => {
+                i += 1;
+                if i < args.len() {
+                    purpose = Some(args[i].clone());
+                }
+            }
+            "--agent" => {
+                i += 1;
+                if i < args.len() {
+                    agent_name = Some(args[i].clone());
+                }
+            }
+            "--stall-seconds" => {
+                i += 1;
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<u64>()
+                {
+                    cfg.stall_after = std::time::Duration::from_secs(n);
+                }
+            }
+            "--poll-seconds" => {
+                i += 1;
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<u64>()
+                {
+                    cfg.poll_interval = std::time::Duration::from_secs(n);
+                }
+            }
+            "--max-cycles" => {
+                i += 1;
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<u32>()
+                {
+                    max_cycles = n;
+                }
+            }
+            other => die(&format!("unknown head orchestrate flag '{other}'")),
+        }
+        i += 1;
+    }
+
+    if children.is_empty() {
+        die("head orchestrate requires --children <spark_id[,spark_id...]>");
+    }
+
+    let agent = resolve_agent(agent_name.as_deref());
+    let head_session_id = std::env::var("RYVE_HAND_SESSION_ID").ok();
+    let name = crew_name.unwrap_or_else(|| format!("crew-{parent_spark_id}"));
+
+    // 1. spawn_crew
+    let mut crew = match orchestrator::spawn_crew(
+        workshop_root,
+        pool,
+        &agent,
+        ws_id,
+        &name,
+        purpose.as_deref(),
+        Some(&parent_spark_id),
+        &children,
+        head_session_id.as_deref(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => die(&format!("spawn_crew failed: {e}")),
+    };
+
+    if !json_mode {
+        println!(
+            "spawned crew {} with {} member(s)",
+            crew.crew_id,
+            crew.spark_ids.len()
+        );
+    }
+
+    // 2. poll / reassign loop
+    let mut respawn_counts: std::collections::HashMap<String, u32> = Default::default();
+    let mut cycles = 0u32;
+    let final_report = loop {
+        if let Err(e) = orchestrator::drop_closed_siblings(pool, &mut crew).await {
+            eprintln!("warn: drop_closed_siblings failed: {e}");
+        }
+        let report = match orchestrator::poll_crew(pool, &crew, &cfg).await {
+            Ok(r) => r,
+            Err(e) => die(&format!("poll_crew failed: {e}")),
+        };
+
+        if !json_mode {
+            println!(
+                "[cycle {cycles}] total={} done={} stalled={} unassigned={}",
+                report.total(),
+                report.done(),
+                report.stalled_spark_ids().len(),
+                report.unassigned_spark_ids().len()
+            );
+        }
+
+        if report.all_done() {
+            break report;
+        }
+
+        if !report.stalled_spark_ids().is_empty() || !report.unassigned_spark_ids().is_empty() {
+            match orchestrator::reassign_stalled(
+                workshop_root,
+                pool,
+                &agent,
+                &mut crew,
+                &report,
+                &cfg,
+                &mut respawn_counts,
+                head_session_id.as_deref(),
+            )
+            .await
+            {
+                Ok(r) => {
+                    if !json_mode && !r.respawned.is_empty() {
+                        println!("  reassigned {} hand(s)", r.respawned.len());
+                    }
+                    if !r.capped.is_empty() {
+                        eprintln!("  respawn cap reached for: {:?}", r.capped);
+                    }
+                }
+                Err(e) => die(&format!("reassign_stalled failed: {e}")),
+            }
+        }
+
+        cycles += 1;
+        if cycles >= max_cycles {
+            eprintln!("max-cycles ({max_cycles}) reached; exiting loop");
+            break report;
+        }
+        tokio::time::sleep(cfg.poll_interval).await;
+    };
+
+    // 3. finalize_with_merger (optional — Head may not have a merge spark yet)
+    let merger_info = if final_report.all_done() {
+        match merge_spark.as_deref() {
+            Some(msid) => match orchestrator::finalize_with_merger(
+                workshop_root,
+                pool,
+                &agent,
+                &crew,
+                msid,
+                head_session_id.as_deref(),
+            )
+            .await
+            {
+                Ok(spawned) => {
+                    if !json_mode {
+                        println!(
+                            "spawned merger session {} on merge spark {}",
+                            spawned.session_id, spawned.spark_id
+                        );
+                    }
+                    Some(spawned)
+                }
+                Err(e) => die(&format!("finalize_with_merger failed: {e}")),
+            },
+            None => {
+                eprintln!(
+                    "all sparks done but --merge-spark not provided; skipping merger spawn"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if json_mode {
+        let payload = serde_json::json!({
+            "crew_id": crew.crew_id,
+            "parent_spark_id": crew.parent_spark_id,
+            "spark_ids": crew.spark_ids,
+            "owners": crew.owners,
+            "cycles": cycles,
+            "all_done": final_report.all_done(),
+            "total": final_report.total(),
+            "done": final_report.done(),
+            "merger_session_id": merger_info.as_ref().map(|m| m.session_id.clone()),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
     }
 }
 
