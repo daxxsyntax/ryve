@@ -1330,10 +1330,14 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
             if args.len() < 3 {
                 die("assign claim requires <session_id> <spark_id>");
             }
+            let sid = &args[1];
+            let short_id = &sid[..8.min(sid.len())];
             let new = NewHandAssignment {
-                session_id: args[1].clone(),
+                session_id: sid.clone(),
                 spark_id: args[2].clone(),
                 role: AssignmentRole::Owner,
+                source_branch: Some(format!("hand/{short_id}")),
+                target_branch: Some("main".to_string()),
             };
             match assignment_repo::assign(pool, new).await {
                 Ok(a) => println!("{} claimed by {} ({})", a.spark_id, a.session_id, a.role),

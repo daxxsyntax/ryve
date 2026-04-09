@@ -674,7 +674,7 @@ pub enum ConstraintSeverity {
     Info,
 }
 
-// ── Hand Assignment ──────────────────────────────────
+// ── Assignment ───────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -733,12 +733,16 @@ impl AssignmentRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct HandAssignment {
+pub struct Assignment {
     pub id: i64,
     pub session_id: String,
     pub spark_id: String,
     pub status: String,
     pub role: String,
+    pub phase: String,
+    pub event_version: i64,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
     pub assigned_at: String,
     pub last_heartbeat_at: Option<String>,
     pub lease_expires_at: Option<String>,
@@ -747,11 +751,19 @@ pub struct HandAssignment {
     pub handoff_reason: Option<String>,
 }
 
-pub struct NewHandAssignment {
+/// Backward-compatible alias for code that still references HandAssignment.
+pub type HandAssignment = Assignment;
+
+pub struct NewAssignment {
     pub session_id: String,
     pub spark_id: String,
     pub role: AssignmentRole,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
 }
+
+/// Backward-compatible alias for code that still references NewHandAssignment.
+pub type NewHandAssignment = NewAssignment;
 
 // ── Crew ──────────────────────────────────────────────
 
