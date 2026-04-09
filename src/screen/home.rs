@@ -416,6 +416,8 @@ mod tests {
             log_path: None,
             last_output_at: None,
             parent_session_id: None,
+            session_label: None,
+            tmux_session_live: false,
         }
     }
 

@@ -323,6 +323,39 @@ fn which_tmux() -> Option<PathBuf> {
         })
 }
 
+// ── Convenience free functions ────────────────────────────
+//
+// These wrap `TmuxClient` so callers in the UI layer do not need to
+// construct a client each time.
+
+/// Derive the tmux session name from a label and session id.
+pub fn session_name_for(label: &str, session_id: &str) -> String {
+    format!("{label}-{session_id}")
+}
+
+/// Check whether a tmux session exists on the Ryve-private socket.
+pub fn has_session(workshop_dir: &Path, session_name: &str) -> bool {
+    let Some(bin) = resolve_tmux_bin() else {
+        return false;
+    };
+    let client = TmuxClient::new(bin, &workshop_dir.join(".ryve"));
+    client.has_session(session_name).unwrap_or(false)
+}
+
+/// Build a command that attaches to the named tmux session.
+/// Returns `(program, args)` suitable for spawning.
+pub fn attach_command(workshop_dir: &Path, session_name: &str) -> (String, Vec<String>) {
+    let bin = resolve_tmux_bin().unwrap_or_else(|| PathBuf::from("tmux"));
+    let client = TmuxClient::new(bin, &workshop_dir.join(".ryve"));
+    let cmd = client.attach_command(session_name);
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    (program, args)
+}
+
 // ── Tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
