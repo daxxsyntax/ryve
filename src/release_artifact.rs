@@ -182,6 +182,14 @@ fn validate_version(version: &str) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// Public wrapper around [`host_target_triple`] for use by the CLI close
+/// flow, which needs the triple to compute the anticipated artifact path
+/// before the build runs.
+pub async fn host_target_triple_for_cli() -> Result<String, BuildError> {
+    host_target_triple().await
+}
+
+
 /// Query `rustc -vV` for the host target triple. We shell out (rather than
 /// hard-coding from `std::env::consts`) because the rustc triple is what
 /// cargo actually uses under `target/release`, and the release naming

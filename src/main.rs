@@ -9,7 +9,6 @@ mod font_intern;
 mod hand_spawn;
 mod icons;
 mod process_snapshot;
-#[allow(dead_code)] // consumed by the Release Manager close flow (future spark)
 mod release_artifact;
 mod screen;
 mod style;

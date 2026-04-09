@@ -17,7 +17,8 @@ use data::ryve_dir::RyveDir;
 use data::sparks::types::*;
 use data::sparks::{
     agent_session_repo, assignment_repo, bond_repo, comment_repo, commit_link_repo,
-    constraint_helpers, contract_repo, crew_repo, ember_repo, event_repo, spark_repo, stamp_repo,
+    constraint_helpers, contract_repo, crew_repo, ember_repo, event_repo, release_repo, spark_repo,
+    stamp_repo,
 };
 
 use crate::coding_agents::{self, CodingAgent};
@@ -53,6 +54,8 @@ pub const CLI_COMMANDS: &[&str] = &[
     "crews",
     "hand",
     "hands",
+    "release",
+    "releases",
     "worktree",
     "worktrees",
     "wt",
@@ -162,6 +165,9 @@ pub async fn run(args: Vec<String>) {
         "commit" | "commits" => handle_commit(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "crew" | "crews" => handle_crew(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "hand" | "hands" => handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await,
+        "release" | "releases" => {
+            handle_release(&pool, &workshop_root, &args_clean[2..], json_mode).await
+        }
         "worktree" | "worktrees" | "wt" => {
             handle_worktree(&pool, &workshop_root, &args_clean[2..], json_mode).await
         }
@@ -268,6 +274,14 @@ fn print_usage() {
     eprintln!("  hand spawn <spark_id> [--agent <name>] [--role owner|merger] [--crew <id>]");
     eprintln!("                                       Spawn a Hand subprocess on a spark");
     eprintln!("  hand list                            List active hand assignments");
+    eprintln!();
+    eprintln!("  release create <major|minor|patch>   Create a new release");
+    eprintln!("  release list                         List releases");
+    eprintln!("  release show <id>                    Show release details + member epics");
+    eprintln!("  release add-epic <id> <epic_id>      Add an epic to a release");
+    eprintln!("  release remove-epic <id> <epic_id>   Remove an epic from a release");
+    eprintln!("  release status <id> <status>         Transition release status");
+    eprintln!("  release close <id>                   Close a release (verify, tag, build, record)");
     eprintln!();
     eprintln!(
         "  worktree prune [--yes]               Prune stale hand worktrees (dry-run by default)"
@@ -2036,6 +2050,361 @@ fn print_prune_report_json(candidates: &[PruneCandidate], summary: &PruneSummary
         "{}",
         serde_json::to_string_pretty(&payload).unwrap_or_default()
     );
+}
+
+// ── Release ─────────────────────────────────────────
+
+async fn handle_release(
+    pool: &sqlx::SqlitePool,
+    workshop_root: &Path,
+    args: &[String],
+    json_mode: bool,
+) {
+    if args.is_empty() {
+        die("release subcommand required (create, list, show, add-epic, remove-epic, status, close)");
+    }
+    match args[0].as_str() {
+        "create" => {
+            if args.len() < 2 {
+                die("release create requires <major|minor|patch>");
+            }
+            let bump = match args[1].as_str() {
+                "major" => data::release_version::Bump::Major,
+                "minor" => data::release_version::Bump::Minor,
+                "patch" => data::release_version::Bump::Patch,
+                other => die(&format!(
+                    "invalid bump kind '{other}': expected major, minor, or patch"
+                )),
+            };
+
+            // Find the most recent closed release version to bump from.
+            let closed = release_repo::list(pool, Some(vec![ReleaseStatus::Closed]))
+                .await
+                .unwrap_or_default();
+            let prev = closed.first().and_then(|r| data::release_version::parse(&r.version).ok());
+            let version = match data::release_version::next(prev, bump) {
+                Ok(v) => data::release_version::format(v),
+                Err(e) => die(&format!("version computation failed: {e}")),
+            };
+
+            let branch_name = data::release_branch::release_branch_name(&version);
+            let new = NewRelease {
+                version,
+                branch_name: Some(branch_name),
+                problem: None,
+                acceptance: Vec::new(),
+                notes: None,
+            };
+            match release_repo::create(pool, new).await {
+                Ok(r) => {
+                    if json_mode {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                    } else {
+                        println!("created {} — v{} ({})", r.id, r.version, r.status);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "list" | "ls" => match release_repo::list(pool, None).await {
+            Ok(releases) => {
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&releases).unwrap_or_default()
+                    );
+                } else if releases.is_empty() {
+                    println!("No releases.");
+                } else {
+                    println!("{:<16} {:<12} {:<12} BRANCH", "ID", "VERSION", "STATUS");
+                    let sep = "-".repeat(64);
+                    println!("{sep}");
+                    for r in &releases {
+                        let branch = r.branch_name.as_deref().unwrap_or("");
+                        println!("{:<16} {:<12} {:<12} {}", r.id, r.version, r.status, branch);
+                    }
+                }
+            }
+            Err(e) => die(&format!("{e}")),
+        },
+        "show" => {
+            if args.len() < 2 {
+                die("release show requires <id>");
+            }
+            let release = match release_repo::get(pool, &args[1]).await {
+                Ok(r) => r,
+                Err(e) => die(&format!("{e}")),
+            };
+            let epics = release_repo::list_member_epics(pool, &release.id)
+                .await
+                .unwrap_or_default();
+            if json_mode {
+                let payload = serde_json::json!({
+                    "release": release,
+                    "epics": epics,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
+            } else {
+                println!("ID:       {}", release.id);
+                println!("Version:  {}", release.version);
+                println!("Status:   {}", release.status);
+                if let Some(ref b) = release.branch_name {
+                    println!("Branch:   {b}");
+                }
+                println!("Created:  {}", release.created_at);
+                if let Some(ref t) = release.cut_at {
+                    println!("Cut at:   {t}");
+                }
+                if let Some(ref t) = release.tag {
+                    println!("Tag:      {t}");
+                }
+                if let Some(ref p) = release.artifact_path {
+                    println!("Artifact: {p}");
+                }
+                if let Some(ref p) = release.problem {
+                    println!("Problem:  {p}");
+                }
+                let acc = release.acceptance();
+                if !acc.is_empty() {
+                    println!("Acceptance:");
+                    for a in &acc {
+                        println!("  - {a}");
+                    }
+                }
+                if let Some(ref n) = release.notes {
+                    println!("Notes:    {n}");
+                }
+                if epics.is_empty() {
+                    println!("\nNo member epics.");
+                } else {
+                    println!("\nMember epics ({}):", epics.len());
+                    for eid in &epics {
+                        println!("  {eid}");
+                    }
+                }
+            }
+        }
+        "add-epic" => {
+            if args.len() < 3 {
+                die("release add-epic requires <release_id> <epic_id>");
+            }
+            match release_repo::add_epic(pool, &args[1], &args[2]).await {
+                Ok(()) => {
+                    if json_mode {
+                        let payload = serde_json::json!({
+                            "release_id": args[1],
+                            "epic_id": args[2],
+                            "action": "added",
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload).unwrap_or_default()
+                        );
+                    } else {
+                        println!("{} added to release {}", args[2], args[1]);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "remove-epic" => {
+            if args.len() < 3 {
+                die("release remove-epic requires <release_id> <epic_id>");
+            }
+            match release_repo::remove_epic(pool, &args[1], &args[2]).await {
+                Ok(()) => {
+                    if json_mode {
+                        let payload = serde_json::json!({
+                            "release_id": args[1],
+                            "epic_id": args[2],
+                            "action": "removed",
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload).unwrap_or_default()
+                        );
+                    } else {
+                        println!("{} removed from release {}", args[2], args[1]);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "status" => {
+            if args.len() < 3 {
+                die("release status requires <id> <new_status>");
+            }
+            let status = match ReleaseStatus::from_str(&args[2]) {
+                Some(s) => s,
+                None => die(&format!(
+                    "invalid release status '{}': expected planning, in_progress, ready, cut, closed, or abandoned",
+                    args[2]
+                )),
+            };
+            match release_repo::set_status(pool, &args[1], status).await {
+                Ok(r) => {
+                    if json_mode {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                    } else {
+                        println!("{} -> {}", r.id, r.status);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "close" => {
+            if args.len() < 2 {
+                die("release close requires <id>");
+            }
+            release_close(pool, workshop_root, &args[1], json_mode).await;
+        }
+        other => die(&format!(
+            "unknown release subcommand '{other}': expected create, list, show, add-epic, remove-epic, status, or close"
+        )),
+    }
+}
+
+/// Orchestrate the full release-close ceremony:
+///   1. Verify all member epics are closed
+///   2. Tag the release branch
+///   3. Build the artifact
+///   4. Record the artifact path on the release row
+///   5. Transition to closed
+///
+/// On intermediate failure, rollback is best-effort: we do NOT leave a
+/// half-closed release in the DB. The release stays in its current status and
+/// the caller gets a non-zero exit code.
+async fn release_close(
+    pool: &sqlx::SqlitePool,
+    workshop_root: &Path,
+    release_id: &str,
+    json_mode: bool,
+) {
+    // 0. Fetch the release.
+    let release = match release_repo::get(pool, release_id).await {
+        Ok(r) => r,
+        Err(e) => die(&format!("{e}")),
+    };
+
+    // 1. Verify all member epics are closed.
+    let epics = release_repo::list_member_epics(pool, release_id)
+        .await
+        .unwrap_or_default();
+    let mut unclosed: Vec<String> = Vec::new();
+    for eid in &epics {
+        match spark_repo::get(pool, eid).await {
+            Ok(spark) => {
+                if spark.status != "closed" {
+                    unclosed.push(format!("{} (status: {})", spark.id, spark.status));
+                }
+            }
+            Err(e) => die(&format!("failed to fetch epic {eid}: {e}")),
+        }
+    }
+    if !unclosed.is_empty() {
+        die(&format!(
+            "cannot close release: {} unclosed epic(s): {}",
+            unclosed.len(),
+            unclosed.join(", ")
+        ));
+    }
+
+    // 2. Tag the release branch.
+    let rb = data::release_branch::open(workshop_root);
+    let tag_name = format!("v{}", release.version);
+    // We need an artifact path for the tag message — use the deterministic
+    // path even though the artifact doesn't exist yet. The tag message is
+    // informational and the path will be correct once step 3 completes.
+    let target_triple = match crate::release_artifact::host_target_triple_for_cli().await {
+        Ok(t) => t,
+        Err(e) => die(&format!("failed to determine host target triple: {e}")),
+    };
+    let anticipated_artifact = crate::release_artifact::artifact_path_for(
+        workshop_root,
+        &release.version,
+        &target_triple,
+    );
+    if let Err(e) = rb.tag_release(&release.version, &anticipated_artifact).await {
+        die(&format!("failed to tag release: {e}"));
+    }
+
+    // 3. Build the artifact.
+    let artifact_path =
+        match crate::release_artifact::build_release_artifact(workshop_root, &release.version)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                // Rollback: delete the tag we just created.
+                let _ = tokio::process::Command::new("git")
+                    .args(["tag", "-d", &tag_name])
+                    .current_dir(workshop_root)
+                    .output()
+                    .await;
+                die(&format!("artifact build failed (tag rolled back): {e}"));
+            }
+        };
+
+    // 4. Record metadata on the release row.
+    if let Err(e) = release_repo::record_close_metadata(
+        pool,
+        release_id,
+        &tag_name,
+        &artifact_path.to_string_lossy(),
+    )
+    .await
+    {
+        // Rollback: delete tag, remove artifact.
+        let _ = tokio::process::Command::new("git")
+            .args(["tag", "-d", &tag_name])
+            .current_dir(workshop_root)
+            .output()
+            .await;
+        let _ = tokio::fs::remove_file(&artifact_path).await;
+        die(&format!(
+            "failed to record close metadata (tag + artifact rolled back): {e}"
+        ));
+    }
+
+    // 5. Transition to closed.
+    match release_repo::set_status(pool, release_id, ReleaseStatus::Closed).await {
+        Ok(r) => {
+            if json_mode {
+                let payload = serde_json::json!({
+                    "release": r,
+                    "tag": tag_name,
+                    "artifact_path": artifact_path.to_string_lossy(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
+            } else {
+                println!("release {} closed", r.id);
+                println!("  tag:      {tag_name}");
+                println!("  artifact: {}", artifact_path.display());
+            }
+        }
+        Err(e) => {
+            // Rollback: clear metadata, delete tag, remove artifact.
+            let _ = sqlx::query("UPDATE releases SET tag = NULL, artifact_path = NULL WHERE id = ?")
+                .bind(release_id)
+                .execute(pool)
+                .await;
+            let _ = tokio::process::Command::new("git")
+                .args(["tag", "-d", &tag_name])
+                .current_dir(workshop_root)
+                .output()
+                .await;
+            let _ = tokio::fs::remove_file(&artifact_path).await;
+            die(&format!(
+                "failed to transition to closed (tag + artifact + metadata rolled back): {e}"
+            ));
+        }
+    }
 }
 
 fn plural(n: usize) -> &'static str {

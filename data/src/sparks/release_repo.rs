@@ -232,6 +232,24 @@ pub async fn list_member_epics(
     Ok(rows.into_iter().map(|(s,)| s).collect())
 }
 
+/// Record the tag name and artifact path on a release. Used by the close flow
+/// after tagging + building so the release row carries pointers to both.
+pub async fn record_close_metadata(
+    pool: &SqlitePool,
+    release_id: &str,
+    tag: &str,
+    artifact_path: &str,
+) -> Result<(), SparksError> {
+    sqlx::query("UPDATE releases SET tag = ?, artifact_path = ? WHERE id = ?")
+        .bind(tag)
+        .bind(artifact_path)
+        .bind(release_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+
 /// Translate a raw sqlx error into a typed epic-conflict error when the
 /// message matches one of our triggers' ABORT strings.
 fn map_epic_conflict(err: sqlx::Error, spark_id: &str) -> SparksError {
