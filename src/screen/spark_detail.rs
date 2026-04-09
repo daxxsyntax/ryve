@@ -8,6 +8,7 @@ use iced::widget::{Space, button, column, container, row, scrollable, text, text
 use iced::{Element, Length, Theme};
 
 use crate::screen::delegation_trace::DelegationTrace;
+use crate::screen::intent_list_editor::{self, IntentListDrafts};
 use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_LABEL, FONT_SMALL, Palette};
 
 // ── Form state ───────────────────────────────────────
@@ -111,6 +112,10 @@ pub enum Message {
         spark_id: String,
         contract_id: i64,
     },
+    /// Row-list editor message for one of the three intent lists
+    /// (acceptance criteria, invariants, non-goals). See
+    /// `intent_list_editor` — all three lists are backed by one widget.
+    IntentList(intent_list_editor::Message),
 }
 
 // ── View ─────────────────────────────────────────────
@@ -123,6 +128,7 @@ pub fn view<'a>(
     all_sparks: &'a [Spark],
     delegation: &DelegationTrace,
     create_form: &'a ContractCreateForm,
+    intent_drafts: &'a IntentListDrafts,
     pal: &Palette,
     has_bg: bool,
 ) -> Element<'a, Message> {
@@ -235,48 +241,36 @@ pub fn view<'a>(
         );
     }
 
-    if !intent.invariants.is_empty() {
-        let mut items =
-            column![text("Invariants").size(FONT_LABEL).color(pal.text_tertiary),].spacing(2);
-        for inv in intent.invariants {
-            items = items.push(
-                text(format!("\u{2022} {inv}"))
-                    .size(FONT_BODY)
-                    .color(pal.text_primary),
-            );
-        }
-        body = body.push(items);
-    }
-
-    if !intent.non_goals.is_empty() {
-        let mut items =
-            column![text("Non-Goals").size(FONT_LABEL).color(pal.text_tertiary),].spacing(2);
-        for ng in intent.non_goals {
-            items = items.push(
-                text(format!("\u{2022} {ng}"))
-                    .size(FONT_BODY)
-                    .color(pal.text_primary),
-            );
-        }
-        body = body.push(items);
-    }
-
-    if !intent.acceptance_criteria.is_empty() {
-        let mut items = column![
-            text("Acceptance Criteria")
-                .size(FONT_LABEL)
-                .color(pal.text_tertiary),
-        ]
-        .spacing(2);
-        for ac in intent.acceptance_criteria {
-            items = items.push(
-                text(format!("\u{2022} {ac}"))
-                    .size(FONT_BODY)
-                    .color(pal.text_primary),
-            );
-        }
-        body = body.push(items);
-    }
+    // Three editable intent lists — all render through the shared
+    // row-list widget in `intent_list_editor`. The drafts are kept on
+    // the Workshop and seeded whenever `selected_spark` changes, so by
+    // the time we render we can borrow directly from them. Order matches
+    // the previous read-only layout: invariants, non-goals, acceptance
+    // criteria at the bottom (closest to "done").
+    body = body.push(
+        intent_list_editor::view(
+            intent_list_editor::ListKind::Invariants,
+            intent_drafts.invariants.as_slice(),
+            &pal,
+        )
+        .map(Message::IntentList),
+    );
+    body = body.push(
+        intent_list_editor::view(
+            intent_list_editor::ListKind::NonGoals,
+            intent_drafts.non_goals.as_slice(),
+            &pal,
+        )
+        .map(Message::IntentList),
+    );
+    body = body.push(
+        intent_list_editor::view(
+            intent_list_editor::ListKind::Acceptance,
+            intent_drafts.acceptance.as_slice(),
+            &pal,
+        )
+        .map(Message::IntentList),
+    );
 
     // ── Delegation trace section ─────────────────────
     // Surface the Atlas → Head → Hand chain so users can see who is

@@ -154,6 +154,13 @@ pub struct Workshop {
     pub blocked_spark_ids: HashSet<String>,
     /// Inline contract-create form for the spark detail view.
     pub contract_create_form: crate::screen::spark_detail::ContractCreateForm,
+    /// In-flight drafts for the three editable intent lists on the
+    /// selected spark (acceptance criteria, invariants, non-goals).
+    /// Populated from `Spark::intent()` when a spark is selected and
+    /// committed back via `update_spark` on structural changes. See
+    /// spark ryve-212c63aa.
+    pub intent_list_drafts: crate::screen::intent_list_editor::IntentListDrafts,
+
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
@@ -231,6 +238,7 @@ impl Workshop {
             selected_spark_bonds: Vec::new(),
             blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
+            intent_list_drafts: Default::default(),
             bg_is_dark: None,
             pending_agent_spawn: None,
             pending_head_spawn: None,
@@ -241,6 +249,36 @@ impl Workshop {
             terminal_font_family: None,
             agent_context_sync_cache: Arc::new(Mutex::new(AgentContextSyncCache::new())),
         }
+    }
+
+    /// Rehydrate the intent-list drafts from the currently-selected spark.
+    /// Called on selection change so the editor starts from the latest
+    /// persisted state. If no spark is selected, the drafts are cleared.
+    /// Spark ryve-212c63aa.
+    pub fn reseed_intent_drafts(&mut self) {
+        let Some(ref sid) = self.selected_spark else {
+            self.intent_list_drafts.clear();
+            return;
+        };
+        if let Some(sp) = self.sparks.iter().find(|s| &s.id == sid) {
+            self.intent_list_drafts.seed_from(sp);
+        } else {
+            self.intent_list_drafts.clear();
+        }
+    }
+
+    /// Rehydrate drafts only when the selection has *changed* relative
+    /// to what's currently in the draft buffer. Called on the periodic
+    /// spark poll so an in-flight keystroke isn't clobbered every 3
+    /// seconds — the drafts only reset when the user actually picks a
+    /// different spark. Spark ryve-212c63aa.
+    pub fn reseed_intent_drafts_if_selection_changed(&mut self) {
+        let selected = self.selected_spark.as_deref();
+        let draft_id = self.intent_list_drafts.spark_id.as_deref();
+        if selected == draft_id {
+            return;
+        }
+        self.reseed_intent_drafts();
     }
 
     /// Build the iced_term font settings used when spawning a new terminal
