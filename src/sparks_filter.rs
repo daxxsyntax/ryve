@@ -31,6 +31,26 @@ pub enum SortMode {
     TypeFirst,
 }
 
+impl SortMode {
+    /// Human-readable label shown on the dropdown button.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            SortMode::Default => "Default",
+            SortMode::PriorityOnly => "Priority only",
+            SortMode::RecentlyUpdated => "Recently updated",
+            SortMode::TypeFirst => "By type",
+        }
+    }
+
+    /// All modes in display order.
+    pub const ALL: &[SortMode] = &[
+        SortMode::Default,
+        SortMode::PriorityOnly,
+        SortMode::RecentlyUpdated,
+        SortMode::TypeFirst,
+    ];
+}
+
 // ── SparksFilter ──────────────────────────────────────
 
 /// Complete filter + sort state for the sparks panel.
@@ -73,7 +93,7 @@ pub fn apply_filter<'a>(filter: &SparksFilter, sparks: &'a [Spark]) -> Vec<&'a S
         .iter()
         .filter(|s| {
             // show_closed gate
-            if !filter.show_closed && s.status == "closed" {
+            if !filter.show_closed && (s.status == "closed" || s.status == "completed") {
                 return false;
             }
 
@@ -117,29 +137,67 @@ pub fn apply_filter<'a>(filter: &SparksFilter, sparks: &'a [Spark]) -> Vec<&'a S
     out
 }
 
+const SPARK_TYPE_ORDER: &[&str] = &[
+    "epic",
+    "bug",
+    "feature",
+    "task",
+    "spike",
+    "chore",
+    "milestone",
+];
+
+const STATUS_ORDER: &[&str] = &[
+    "in_progress",
+    "blocked",
+    "open",
+    "deferred",
+    "completed",
+    "closed",
+];
+
+fn type_rank(ty: &str) -> usize {
+    SPARK_TYPE_ORDER
+        .iter()
+        .position(|t| *t == ty)
+        .unwrap_or(SPARK_TYPE_ORDER.len())
+}
+
+fn status_rank(status: &str) -> usize {
+    STATUS_ORDER
+        .iter()
+        .position(|s| *s == status)
+        .unwrap_or(STATUS_ORDER.len())
+}
+
 fn sort_sparks(sparks: &mut [&Spark], mode: SortMode) {
     match mode {
         SortMode::Default => {
             sparks.sort_by(|a, b| {
                 a.priority
                     .cmp(&b.priority)
-                    .then_with(|| a.spark_type.cmp(&b.spark_type))
-                    .then_with(|| a.status.cmp(&b.status))
+                    .then_with(|| type_rank(&a.spark_type).cmp(&type_rank(&b.spark_type)))
+                    .then_with(|| status_rank(&a.status).cmp(&status_rank(&b.status)))
+                    .then_with(|| a.id.cmp(&b.id))
             });
         }
         SortMode::PriorityOnly => {
-            sparks.sort_by(|a, b| a.priority.cmp(&b.priority));
+            sparks.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         }
         SortMode::RecentlyUpdated => {
-            // updated_at is an ISO-8601 string; lexicographic descending
-            // gives most-recent first.
-            sparks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            sparks.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
         }
         SortMode::TypeFirst => {
             sparks.sort_by(|a, b| {
-                a.spark_type
-                    .cmp(&b.spark_type)
+                type_rank(&a.spark_type)
+                    .cmp(&type_rank(&b.spark_type))
                     .then_with(|| a.priority.cmp(&b.priority))
+                    .then_with(|| status_rank(&a.status).cmp(&status_rank(&b.status)))
+                    .then_with(|| a.id.cmp(&b.id))
             });
         }
     }

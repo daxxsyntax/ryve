@@ -1127,6 +1127,9 @@ impl App {
                     // Replace (not append) so Refresh never duplicates
                     // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    // Re-sort according to the active sort mode.
+                    // Spark ryve-6f24ef2a.
+                    ws.sort_sparks();
                     ws.recompute_filtered_sparks();
                     // Clear the Refresh-button indicator now that the
                     // refetch has landed. Both the explicit Refresh and
@@ -3568,6 +3571,18 @@ impl App {
                             ws.recompute_filtered_sparks();
                         }
                     }
+                    screen::sparks::Message::SetSortMode(mode) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_mode = mode;
+                            ws.sort_dropdown_open = false;
+                            ws.sort_sparks();
+                        }
+                    }
+                    screen::sparks::Message::ToggleSortDropdown => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_dropdown_open = !ws.sort_dropdown_open;
+                        }
+                    }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_status_menu.dismiss();
@@ -5998,6 +6013,8 @@ impl App {
                     filter: &ws.sparks_filter,
                     agent_session_names: &ws.agent_session_names,
                     filtered_sparks: &ws.filtered_sparks,
+                    sort_mode: ws.sort_mode,
+                    sort_dropdown_open: ws.sort_dropdown_open,
                 })
                 .map(Message::Sparks)
             }
@@ -6014,6 +6031,8 @@ impl App {
                 filter: &ws.sparks_filter,
                 agent_session_names: &ws.agent_session_names,
                 filtered_sparks: &ws.filtered_sparks,
+                sort_mode: ws.sort_mode,
+                sort_dropdown_open: ws.sort_dropdown_open,
             })
             .map(Message::Sparks)
         };

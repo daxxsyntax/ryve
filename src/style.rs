@@ -719,7 +719,14 @@ mod tests {
             assert_eq!(status_color("in_progress", &pal), pal.accent);
             assert_eq!(status_color("blocked", &pal), pal.danger);
             assert_eq!(status_color("deferred", &pal), pal.text_tertiary);
-            assert_eq!(status_color("closed", &pal), pal.success);
+            assert_eq!(status_color("completed", &pal), pal.success);
+            assert_eq!(
+                status_color("closed", &pal),
+                Color {
+                    a: 0.55,
+                    ..pal.success
+                }
+            );
             assert_eq!(
                 status_color("unknown_status", &pal),
                 pal.text_secondary,

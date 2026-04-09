@@ -24,8 +24,8 @@ pub const FILTER_STATUSES: &[(&str, &str)] = &[
     ("completed", "Completed"),
 ];
 
-/// Filter state for the sparks panel. The `status` set holds statuses
-/// the user has explicitly selected; an empty set means "show all".
+/// Filter + sort state for the sparks panel. Empty filter sets mean
+/// "no constraint on that dimension", not "match nothing".
 /// `show_closed` is a separate toggle because closed sparks are hidden
 /// by default regardless of the status filter.
 ///
@@ -35,9 +35,27 @@ pub const FILTER_STATUSES: &[(&str, &str)] = &[
 pub struct SparksFilter {
     pub status: HashSet<String>,
     pub show_closed: bool,
+    /// Selected spark types (multi-select). Empty == show all.
+    pub spark_types: HashSet<String>,
+    /// Selected priorities (multi-select). Empty == show all.
+    pub priorities: HashSet<i32>,
+    /// Selected assignee. `None` == show all.
+    pub assignee: Option<String>,
+    /// Free-text search over title + description.
+    pub search: String,
 }
 
 impl SparksFilter {
+    /// Return `true` when no filter axis is active — every spark passes.
+    pub fn is_empty(&self) -> bool {
+        self.status.is_empty()
+            && self.spark_types.is_empty()
+            && self.priorities.is_empty()
+            && self.assignee.is_none()
+            && self.search.is_empty()
+            && !self.show_closed
+    }
+
     /// Toggle a status in the filter. Returns `true` if the status is now
     /// selected.
     pub fn toggle_status(&mut self, status: &str) -> bool {
@@ -64,6 +82,49 @@ impl SparksFilter {
             return true;
         }
         self.status.contains(spark_status)
+    }
+
+    /// Whether a spark passes all active filter dimensions.
+    pub fn matches_spark(&self, spark: &Spark) -> bool {
+        if !self.matches(&spark.status) {
+            return false;
+        }
+        if !self.spark_types.is_empty() && !self.spark_types.contains(&spark.spark_type) {
+            return false;
+        }
+        if !self.priorities.is_empty() && !self.priorities.contains(&spark.priority) {
+            return false;
+        }
+        if let Some(ref assignee) = self.assignee {
+            if spark.assignee.as_deref() != Some(assignee.as_str()) {
+                return false;
+            }
+        }
+        if !self.search.is_empty() {
+            let search_lower = self.search.to_lowercase();
+            let in_title = spark.title.to_lowercase().contains(&search_lower);
+            let in_desc = spark.description.to_lowercase().contains(&search_lower);
+            if !in_title && !in_desc {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn toggle_type(&mut self, ty: String) {
+        if !self.spark_types.remove(&ty) {
+            self.spark_types.insert(ty);
+        }
+    }
+
+    pub fn toggle_priority(&mut self, p: i32) {
+        if !self.priorities.remove(&p) {
+            self.priorities.insert(p);
+        }
+    }
+
+    pub fn set_assignee(&mut self, assignee: Option<String>) {
+        self.assignee = assignee;
     }
 }
 
@@ -158,59 +219,8 @@ pub fn resolve_default_parent_epic(sparks: &[Spark], focused_id: Option<&str>) -
     None
 }
 
-// ── Panel filter state ──────────────────────────────
-
-/// Client-side filter state for the sparks panel. Selections narrow the
-/// displayed sparks without touching the DB query — filtering happens in
-/// `apply_filter` before the view builds its epic groups.
-#[derive(Debug, Clone, Default)]
-pub struct SparksFilter {
-    /// Selected spark types (multi-select). Empty == show all.
-    pub spark_types: HashSet<String>,
-    /// Selected priorities (multi-select). Empty == show all.
-    pub priorities: HashSet<i32>,
-    /// Selected assignee. `None` == show all.
-    pub assignee: Option<String>,
-}
-
-impl SparksFilter {
-    /// Return `true` when no filter axis is active — every spark passes.
-    pub fn is_empty(&self) -> bool {
-        self.spark_types.is_empty() && self.priorities.is_empty() && self.assignee.is_none()
-    }
-
-    /// Test whether a single spark passes all active filters.
-    pub fn matches(&self, spark: &Spark) -> bool {
-        if !self.spark_types.is_empty() && !self.spark_types.contains(&spark.spark_type) {
-            return false;
-        }
-        if !self.priorities.is_empty() && !self.priorities.contains(&spark.priority) {
-            return false;
-        }
-        if let Some(ref assignee) = self.assignee {
-            if spark.assignee.as_deref() != Some(assignee.as_str()) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn toggle_type(&mut self, ty: String) {
-        if !self.spark_types.remove(&ty) {
-            self.spark_types.insert(ty);
-        }
-    }
-
-    pub fn toggle_priority(&mut self, p: i32) {
-        if !self.priorities.remove(&p) {
-            self.priorities.insert(p);
-        }
-    }
-
-    pub fn set_assignee(&mut self, assignee: Option<String>) {
-        self.assignee = assignee;
-    }
-}
+// Re-export SortMode from the sparks_filter module to avoid duplication.
+pub use crate::sparks_filter::SortMode;
 
 /// Collect distinct assignees from sparks and agent session names, sorted
 /// alphabetically. Deduplicates across both sources per the invariant.
@@ -240,7 +250,6 @@ pub fn collect_assignees(sparks: &[Spark], agent_session_names: &[String]) -> Ve
 /// Canonical ordering of `spark_type` values for the default sort. Any
 /// value not in this list sorts after every listed type but stably
 /// relative to other unknown types (via the string tiebreaker).
-#[allow(dead_code)]
 const SPARK_TYPE_ORDER: &[&str] = &[
     "epic",
     "bug",
@@ -253,7 +262,6 @@ const SPARK_TYPE_ORDER: &[&str] = &[
 
 /// Canonical ordering of `status` values for the default sort. Same
 /// "unknown sinks to the end" rule as [`SPARK_TYPE_ORDER`].
-#[allow(dead_code)]
 const STATUS_ORDER: &[&str] = &[
     "in_progress",
     "blocked",
@@ -263,7 +271,6 @@ const STATUS_ORDER: &[&str] = &[
     "closed",
 ];
 
-#[allow(dead_code)]
 fn spark_type_rank(ty: &str) -> usize {
     SPARK_TYPE_ORDER
         .iter()
@@ -271,7 +278,6 @@ fn spark_type_rank(ty: &str) -> usize {
         .unwrap_or(SPARK_TYPE_ORDER.len())
 }
 
-#[allow(dead_code)]
 fn status_rank(status: &str) -> usize {
     STATUS_ORDER
         .iter()
@@ -426,6 +432,10 @@ pub enum Message {
     ToggleStatusFilter(String),
     /// Toggle visibility of closed sparks.
     ToggleShowClosed,
+    /// Change the active sort mode.
+    SetSortMode(SortMode),
+    /// Toggle the sort mode dropdown open/closed.
+    ToggleSortDropdown,
     /// Toggle the collapsed/expanded state of an epic group in the
     /// workgraph panel. The workshop persists the new state to
     /// `.ryve/ui_state.json` so the decision survives restart.
@@ -474,6 +484,8 @@ pub struct ViewCtx<'a> {
     /// should be the same slice as `sparks`. Kept separate so the
     /// filter bar can still derive assignee lists from the full set.
     pub filtered_sparks: &'a [Spark],
+    pub sort_mode: SortMode,
+    pub sort_dropdown_open: bool,
 }
 
 /// Map a spark status to its canonical palette color.
@@ -502,6 +514,8 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         filter,
         agent_session_names,
         filtered_sparks,
+        sort_mode,
+        sort_dropdown_open,
     } = ctx;
 
     // Refresh button: dim the glyph and swap it for an ellipsis while a
@@ -516,6 +530,14 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     let header = row![
         text("Workgraph").size(FONT_HEADER).color(pal.text_primary),
         Space::new().width(Length::Fill),
+        button(
+            text(sort_mode.display_name())
+                .size(FONT_LABEL)
+                .color(pal.text_secondary),
+        )
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::ToggleSortDropdown),
         button(text("Releases").size(FONT_LABEL).color(pal.text_secondary))
             .style(button::text)
             .padding([2, 6])
@@ -539,6 +561,11 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     let filter_bar = view_filter_bar(sparks, filter, agent_session_names, &pal);
 
     let mut list = column![].spacing(2).padding([0, 10]);
+
+    // Sort mode dropdown — shown inline below the header when toggled open.
+    if sort_dropdown_open {
+        list = list.push(view_sort_dropdown(sort_mode, pal));
+    }
 
     // Inline create form (always uses unfiltered sparks for epic picker).
     if create_form.visible {
@@ -786,6 +813,34 @@ where
         })
         .padding([2, 6])
         .on_press_with(on_press)
+        .into()
+}
+
+// ── Sort dropdown ───────────────────────────────────
+
+fn view_sort_dropdown(current: SortMode, pal: Palette) -> Element<'static, Message> {
+    let mut chips = row![].spacing(6).align_y(iced::Alignment::Center);
+    for &mode in SortMode::ALL {
+        let selected = mode == current;
+        chips = chips.push(menu_chip(mode.display_name(), selected, &pal, move || {
+            Message::SetSortMode(mode)
+        }));
+    }
+    container(chips)
+        .padding([4, 8])
+        .width(Length::Fill)
+        .style(move |_t: &Theme| iced::widget::container::Style {
+            background: Some(iced::Background::Color(iced::Color {
+                a: 0.06,
+                ..pal.text_primary
+            })),
+            border: iced::Border {
+                color: pal.border,
+                width: 1.0,
+                radius: iced::border::Radius::from(6.0),
+            },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -1260,6 +1315,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sparks_filter::{SparksFilter as FilterSparksFilter, apply_filter};
 
     fn mk_sort_spark(id: &str, priority: i32, spark_type: &str, status: &str) -> Spark {
         Spark {
@@ -1388,6 +1444,199 @@ mod tests {
             .collect();
         // Known type before unknown; within task, known status before unknown.
         assert_eq!(ids, vec!["b", "c", "a"]);
+    }
+
+    // ── Shared fixture for sort-mode tests ────────────
+
+    fn mk_filter_spark(
+        id: &str,
+        priority: i32,
+        spark_type: &str,
+        status: &str,
+        updated_at: &str,
+    ) -> Spark {
+        Spark {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            status: status.to_string(),
+            priority,
+            spark_type: spark_type.to_string(),
+            assignee: None,
+            owner: None,
+            parent_id: None,
+            workshop_id: String::new(),
+            estimated_minutes: None,
+            github_issue_number: None,
+            github_repo: None,
+            metadata: String::new(),
+            created_at: String::new(),
+            updated_at: updated_at.to_string(),
+            closed_at: None,
+            closed_reason: None,
+            due_at: None,
+            defer_until: None,
+            risk_level: None,
+            scope_boundary: None,
+        }
+    }
+
+    fn sort_fixture() -> Vec<Spark> {
+        vec![
+            mk_filter_spark("sp-a", 2, "task", "open", "2026-04-01T00:00:00Z"),
+            mk_filter_spark("sp-b", 0, "bug", "in_progress", "2026-04-05T00:00:00Z"),
+            mk_filter_spark("sp-c", 1, "epic", "blocked", "2026-04-03T00:00:00Z"),
+            mk_filter_spark("sp-d", 0, "feature", "open", "2026-04-09T00:00:00Z"),
+            mk_filter_spark("sp-e", 2, "task", "blocked", "2026-04-02T00:00:00Z"),
+            mk_filter_spark("sp-f", 1, "bug", "open", "2026-04-07T00:00:00Z"),
+        ]
+    }
+
+    fn ids_of<'a>(sparks: &'a [&'a Spark]) -> Vec<&'a str> {
+        sparks.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    #[test]
+    fn apply_filter_default_sort_matches_priority_type_status_id() {
+        let sparks = sort_fixture();
+        let filter = FilterSparksFilter {
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        // P0 bug in_progress (sp-b), P0 feature open (sp-d),
+        // P1 epic blocked (sp-c), P1 bug open (sp-f),
+        // P2 task blocked (sp-e), P2 task open (sp-a)
+        assert_eq!(
+            ids_of(&result),
+            vec!["sp-b", "sp-d", "sp-c", "sp-f", "sp-e", "sp-a"]
+        );
+    }
+
+    #[test]
+    fn apply_filter_priority_only_sort() {
+        let sparks = sort_fixture();
+        let filter = FilterSparksFilter {
+            sort_mode: SortMode::PriorityOnly,
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        // P0: sp-b, sp-d (by id); P1: sp-c, sp-f; P2: sp-a, sp-e
+        assert_eq!(
+            ids_of(&result),
+            vec!["sp-b", "sp-d", "sp-c", "sp-f", "sp-a", "sp-e"]
+        );
+    }
+
+    #[test]
+    fn apply_filter_recently_updated_sort() {
+        let sparks = sort_fixture();
+        let filter = FilterSparksFilter {
+            sort_mode: SortMode::RecentlyUpdated,
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        // Descending updated_at: sp-d (04-09), sp-f (04-07), sp-b (04-05),
+        // sp-c (04-03), sp-e (04-02), sp-a (04-01)
+        assert_eq!(
+            ids_of(&result),
+            vec!["sp-d", "sp-f", "sp-b", "sp-c", "sp-e", "sp-a"]
+        );
+    }
+
+    #[test]
+    fn apply_filter_type_first_sort() {
+        let sparks = sort_fixture();
+        let filter = FilterSparksFilter {
+            sort_mode: SortMode::TypeFirst,
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        // Type order: epic(sp-c P1), bug(sp-b P0, sp-f P1),
+        // feature(sp-d P0), task(sp-e P2 blocked, sp-a P2 open)
+        assert_eq!(
+            ids_of(&result),
+            vec!["sp-c", "sp-b", "sp-f", "sp-d", "sp-e", "sp-a"]
+        );
+    }
+
+    #[test]
+    fn apply_filter_default_hides_closed() {
+        let mut sparks = sort_fixture();
+        sparks.push(mk_filter_spark(
+            "sp-closed",
+            0,
+            "task",
+            "closed",
+            "2026-04-10T00:00:00Z",
+        ));
+        sparks.push(mk_filter_spark(
+            "sp-done",
+            0,
+            "task",
+            "completed",
+            "2026-04-10T00:00:00Z",
+        ));
+        let filter = FilterSparksFilter::default(); // show_closed = false
+        let result = apply_filter(&filter, &sparks);
+        let result_ids = ids_of(&result);
+        assert!(!result_ids.contains(&"sp-closed"));
+        assert!(!result_ids.contains(&"sp-done"));
+    }
+
+    #[test]
+    fn apply_filter_show_closed_reveals_them() {
+        let sparks = vec![
+            mk_filter_spark("sp-open", 0, "task", "open", "2026-04-01T00:00:00Z"),
+            mk_filter_spark("sp-closed", 0, "task", "closed", "2026-04-01T00:00:00Z"),
+        ];
+        let filter = FilterSparksFilter {
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn apply_filter_search_is_case_insensitive() {
+        let mut sparks = sort_fixture();
+        sparks[0].title = "Fix OAuth Bug".to_string();
+        let filter = FilterSparksFilter {
+            search: "oauth".to_string(),
+            show_closed: true,
+            ..Default::default()
+        };
+        let result = apply_filter(&filter, &sparks);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "sp-a");
+    }
+
+    #[test]
+    fn apply_filter_every_sort_mode_is_deterministic() {
+        let sparks = sort_fixture();
+        for &mode in SortMode::ALL {
+            let filter = FilterSparksFilter {
+                sort_mode: mode,
+                show_closed: true,
+                ..Default::default()
+            };
+            let result_a = apply_filter(&filter, &sparks);
+            let a = ids_of(&result_a);
+            let result_b = apply_filter(&filter, &sparks);
+            let b = ids_of(&result_b);
+            assert_eq!(a, b, "sort mode {:?} is not deterministic", mode);
+        }
+    }
+
+    #[test]
+    fn sort_mode_display_names_are_unique() {
+        let names: Vec<&str> = SortMode::ALL.iter().map(|m| m.display_name()).collect();
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(names.len(), unique.len());
     }
 
     #[test]
@@ -1670,7 +1919,7 @@ mod tests {
         let f = SparksFilter::default();
         assert!(f.is_empty());
         let spark = mk_sort_spark("sp-1", 2, "task", "open");
-        assert!(f.matches(&spark));
+        assert!(f.matches_spark(&spark));
     }
 
     #[test]
@@ -1679,8 +1928,8 @@ mod tests {
         f.toggle_type("bug".into());
         let bug = mk_sort_spark("sp-1", 2, "bug", "open");
         let task = mk_sort_spark("sp-2", 2, "task", "open");
-        assert!(f.matches(&bug));
-        assert!(!f.matches(&task));
+        assert!(f.matches_spark(&bug));
+        assert!(!f.matches_spark(&task));
     }
 
     #[test]
@@ -1691,9 +1940,9 @@ mod tests {
         let bug = mk_sort_spark("sp-1", 2, "bug", "open");
         let feature = mk_sort_spark("sp-2", 1, "feature", "open");
         let task = mk_sort_spark("sp-3", 2, "task", "open");
-        assert!(f.matches(&bug));
-        assert!(f.matches(&feature));
-        assert!(!f.matches(&task));
+        assert!(f.matches_spark(&bug));
+        assert!(f.matches_spark(&feature));
+        assert!(!f.matches_spark(&task));
     }
 
     #[test]
@@ -1713,9 +1962,9 @@ mod tests {
         let p0 = mk_sort_spark("sp-1", 0, "task", "open");
         let p1 = mk_sort_spark("sp-2", 1, "task", "open");
         let p2 = mk_sort_spark("sp-3", 2, "task", "open");
-        assert!(f.matches(&p0));
-        assert!(f.matches(&p1));
-        assert!(!f.matches(&p2));
+        assert!(f.matches_spark(&p0));
+        assert!(f.matches_spark(&p1));
+        assert!(!f.matches_spark(&p2));
     }
 
     #[test]
@@ -1725,8 +1974,8 @@ mod tests {
         let mut s1 = mk_sort_spark("sp-1", 2, "task", "open");
         s1.assignee = Some("alice".into());
         let s2 = mk_sort_spark("sp-2", 2, "task", "open");
-        assert!(f.matches(&s1));
-        assert!(!f.matches(&s2));
+        assert!(f.matches_spark(&s1));
+        assert!(!f.matches_spark(&s2));
     }
 
     #[test]
@@ -1744,11 +1993,11 @@ mod tests {
         f.toggle_type("bug".into());
         f.toggle_priority(0);
         // bug P0 → pass
-        assert!(f.matches(&mk_sort_spark("a", 0, "bug", "open")));
+        assert!(f.matches_spark(&mk_sort_spark("a", 0, "bug", "open")));
         // bug P2 → fail (priority doesn't match)
-        assert!(!f.matches(&mk_sort_spark("b", 2, "bug", "open")));
+        assert!(!f.matches_spark(&mk_sort_spark("b", 2, "bug", "open")));
         // task P0 → fail (type doesn't match)
-        assert!(!f.matches(&mk_sort_spark("c", 0, "task", "open")));
+        assert!(!f.matches_spark(&mk_sort_spark("c", 0, "task", "open")));
     }
 
     #[test]

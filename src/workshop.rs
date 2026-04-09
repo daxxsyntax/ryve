@@ -23,7 +23,6 @@ use crate::screen::bench::{BenchState, TabKind};
 use crate::screen::file_explorer::FileExplorerState;
 use crate::screen::file_viewer::FileViewerState;
 use crate::screen::log_tail::LogTailState;
-use crate::sparks_filter::SparksFilter;
 use crate::style::{Appearance, Palette};
 
 const BOTTOM_PIN_NEWLINES: usize = 20;
@@ -289,14 +288,16 @@ pub struct Workshop {
     pub spark_create_form: crate::screen::sparks::CreateForm,
     /// Inline status popover state for the workgraph panel.
     pub spark_status_menu: crate::screen::sparks::StatusMenu,
-    /// Client-side filter state for the sparks panel (spark ryve-baca34b0).
-    pub sparks_filter: crate::screen::sparks::SparksFilter,
     /// Cached agent session names for the filter bar assignee dropdown.
     /// Refreshed alongside `agent_sessions`. Spark ryve-baca34b0.
     pub agent_session_names: Vec<String>,
     /// Sparks after applying `sparks_filter`. Recomputed whenever
     /// `sparks` or `sparks_filter` changes. Spark ryve-baca34b0.
     pub filtered_sparks: Vec<Spark>,
+    /// Active sort mode for the sparks panel. Spark ryve-6f24ef2a.
+    pub sort_mode: crate::screen::sparks::SortMode,
+    /// Whether the sort mode dropdown is currently open. Spark ryve-6f24ef2a.
+    pub sort_dropdown_open: bool,
     /// Currently selected spark ID (for detail view).
     pub selected_spark: Option<String>,
     /// Cached contracts for the currently selected spark.
@@ -371,10 +372,6 @@ pub struct Workshop {
     /// the panel survives restart; stale IDs (epics deleted between runs)
     /// are pruned on load. Spark ryve-926870a9.
     pub collapsed_epics: HashSet<String>,
-    /// Filter + sort state for the sparks panel. Initialised to default
-    /// (show all non-closed sparks, sorted by priority→type→status).
-    /// Spark ryve-d6916c7e.
-    pub sparks_filter: SparksFilter,
 }
 
 impl Workshop {
@@ -415,9 +412,10 @@ impl Workshop {
             sparks_filter: Default::default(),
             spark_create_form: Default::default(),
             spark_status_menu: Default::default(),
-            sparks_filter: Default::default(),
             agent_session_names: Vec::new(),
             filtered_sparks: Vec::new(),
+            sort_mode: Default::default(),
+            sort_dropdown_open: false,
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
             selected_spark_bonds: Vec::new(),
@@ -444,7 +442,41 @@ impl Workshop {
             terminal_font_family: None,
             agent_context_sync_cache: Arc::new(Mutex::new(AgentContextSyncCache::new())),
             collapsed_epics: HashSet::new(),
-            sparks_filter: SparksFilter::default(),
+        }
+    }
+
+    // ── Sort mode (spark ryve-6f24ef2a) ─────────────────────
+
+    /// Re-sort `self.sparks` in place according to the active `sort_mode`.
+    /// Called after loading sparks from DB and after changing the sort mode.
+    pub fn sort_sparks(&mut self) {
+        use crate::screen::sparks::SortMode;
+        match self.sort_mode {
+            SortMode::Default => self.sparks.sort_by(|a, b| {
+                a.priority
+                    .cmp(&b.priority)
+                    .then_with(|| a.spark_type.cmp(&b.spark_type))
+                    .then_with(|| a.status.cmp(&b.status))
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+            SortMode::PriorityOnly => {
+                self.sparks
+                    .sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
+            }
+            SortMode::RecentlyUpdated => {
+                self.sparks.sort_by(|a, b| {
+                    b.updated_at
+                        .cmp(&a.updated_at)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            SortMode::TypeFirst => self.sparks.sort_by(|a, b| {
+                a.spark_type
+                    .cmp(&b.spark_type)
+                    .then_with(|| a.priority.cmp(&b.priority))
+                    .then_with(|| a.status.cmp(&b.status))
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
         }
     }
 
@@ -463,7 +495,7 @@ impl Workshop {
             self.filtered_sparks = self
                 .sparks
                 .iter()
-                .filter(|s| self.sparks_filter.matches(s))
+                .filter(|s| self.sparks_filter.matches_spark(s))
                 .cloned()
                 .collect();
         }
