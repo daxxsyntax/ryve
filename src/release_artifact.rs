@@ -231,8 +231,9 @@ fn platform_binary_filename(binary_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     fn fixture_cargo_project(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir.join("src")).unwrap();
