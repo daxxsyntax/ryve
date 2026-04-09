@@ -53,6 +53,8 @@ pub const CLI_COMMANDS: &[&str] = &[
     "crews",
     "hand",
     "hands",
+    "head",
+    "heads",
     "worktree",
     "worktrees",
     "wt",
@@ -162,6 +164,7 @@ pub async fn run(args: Vec<String>) {
         "commit" | "commits" => handle_commit(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "crew" | "crews" => handle_crew(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "hand" | "hands" => handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await,
+        "head" | "heads" => handle_head(&args_clean[2..], json_mode),
         "worktree" | "worktrees" | "wt" => {
             handle_worktree(&pool, &workshop_root, &args_clean[2..], json_mode).await
         }
@@ -268,6 +271,9 @@ fn print_usage() {
     eprintln!("  hand spawn <spark_id> [--agent <name>] [--role owner|merger] [--crew <id>]");
     eprintln!("                                       Spawn a Hand subprocess on a spark");
     eprintln!("  hand list                            List active hand assignments");
+    eprintln!();
+    eprintln!("  head list                            List registered Head archetypes");
+    eprintln!("  head render <archetype> --epic <id>  Dry-run: render an archetype prompt");
     eprintln!();
     eprintln!(
         "  worktree prune [--yes]               Prune stale hand worktrees (dry-run by default)"
@@ -1746,6 +1752,88 @@ async fn handle_hand(
 }
 
 // ── Worktree pruning ─────────────────────────────────
+
+// ── Head archetypes ──────────────────────────────────
+
+/// `ryve head <subcommand>` — inspect and dry-run Head archetypes.
+///
+/// Subcommands:
+/// - `list`                          — list every registered archetype.
+/// - `render <id> --epic <epic_id>`  — render the archetype's prompt
+///   template for `<epic_id>` and print it to stdout. This is the
+///   dry-run / smoke-test surface: it verifies `{{epic_id}}` substitution
+///   works against a fake epic id without actually spawning a subprocess.
+///   The unit-level equivalent lives in `head_archetypes::tests`.
+///
+/// Lives alongside the other CLI handlers even though it does not touch
+/// the workgraph database — archetypes are static, compile-time data.
+fn handle_head(args: &[String], json_mode: bool) {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
+    match sub {
+        "list" => {
+            if json_mode {
+                let rows: Vec<serde_json::Value> = crate::head_archetypes::ARCHETYPES
+                    .iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "id": a.id,
+                            "display_name": a.display_name,
+                            "description": a.description,
+                            "template_path": a.template_path,
+                        })
+                    })
+                    .collect();
+                match serde_json::to_string_pretty(&rows) {
+                    Ok(s) => println!("{s}"),
+                    Err(e) => die(&format!("failed to serialize archetypes: {e}")),
+                }
+            } else {
+                for a in crate::head_archetypes::ARCHETYPES {
+                    println!("{:<8} {}", a.id, a.display_name);
+                    println!("         {}", a.description);
+                    println!("         template: {}", a.template_path);
+                }
+            }
+        }
+        "render" => {
+            let archetype_id = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+                die("usage: ryve head render <archetype> --epic <epic_id>")
+            });
+            let mut epic_id: Option<String> = None;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--epic" => {
+                        epic_id = args.get(i + 1).cloned();
+                        i += 2;
+                    }
+                    other => {
+                        die(&format!("unknown flag for `head render`: {other}"));
+                    }
+                }
+            }
+            let epic_id = epic_id.unwrap_or_else(|| {
+                die("missing --epic <epic_id> (required for head render)")
+            });
+            let archetype = crate::head_archetypes::find(archetype_id).unwrap_or_else(|| {
+                die(&format!(
+                    "unknown archetype '{archetype_id}' — run `ryve head list`"
+                ))
+            });
+            let rendered = archetype.render(&epic_id);
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
+        }
+        other => {
+            eprintln!("error: unknown `head` subcommand '{other}'");
+            eprintln!("usage: ryve head list");
+            eprintln!("       ryve head render <archetype> --epic <epic_id>");
+            process::exit(1);
+        }
+    }
+}
 
 /// `ryve worktree prune` (alias `ryve wt prune`).
 ///
