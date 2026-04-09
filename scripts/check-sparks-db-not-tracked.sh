@@ -13,9 +13,10 @@ set -euo pipefail
 
 mode="${1:-all}"
 
-# Pattern matches sparks.db and every SQLite sidecar variant (-wal, -shm,
-# -journal, -journalNNN, plus any future extensions).
-pattern='(^|/)sparks\.db([-.][A-Za-z0-9_-]+)?$'
+# Pattern matches sparks.db and its SQLite sidecars only (-wal, -shm,
+# -journal, -journalNNN). We deliberately do NOT match `.`-separated
+# suffixes so unrelated files like sparks.db.md remain allowed.
+pattern='(^|/)sparks\.db(-[A-Za-z0-9_-]+)?$'
 
 fail=0
 
@@ -29,7 +30,9 @@ check_list() {
     matches="$(printf '%s\n' "$list" | grep -E "$pattern" || true)"
     if [[ -n "$matches" ]]; then
         echo "error: $label contains sparks.db file(s) that must never be versioned:" >&2
-        printf '  %s\n' $matches >&2
+        while IFS= read -r match; do
+            printf '  %s\n' "$match" >&2
+        done <<< "$matches"
         fail=1
     fi
 }

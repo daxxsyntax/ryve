@@ -107,7 +107,9 @@ pub async fn run(args: Vec<String>) {
     if args_clean.get(1).map(|s| s.as_str()) == Some("restore") {
         let workshop_root = match resolve_workshop_root_for_restore(&cwd) {
             Some(r) => r,
-            None => die("no .ryve/ directory found — run `ryve init` first or pass an absolute snapshot path inside a workshop"),
+            None => die(
+                "no .ryve/ directory found — run `ryve init` first or pass an absolute snapshot path inside a workshop",
+            ),
         };
         let ryve_dir = RyveDir::new(&workshop_root);
         handle_restore(&ryve_dir, &args_clean[2..]).await;
@@ -350,7 +352,10 @@ async fn handle_backup(
                             })
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    );
                 } else if snaps.is_empty() {
                     println!("No snapshots in {}", ryve_dir.backups_dir().display());
                 } else {
@@ -377,10 +382,8 @@ async fn handle_backup(
             match data::backup::apply_retention(&ryve_dir, keep).await {
                 Ok(deleted) => {
                     if json_mode {
-                        let json: Vec<_> = deleted
-                            .iter()
-                            .map(|p| p.display().to_string())
-                            .collect();
+                        let json: Vec<_> =
+                            deleted.iter().map(|p| p.display().to_string()).collect();
                         println!("{}", serde_json::to_string(&json).unwrap_or_default());
                     } else {
                         println!("pruned {} snapshot(s) (keep={keep})", deleted.len());
@@ -393,8 +396,10 @@ async fn handle_backup(
             eprintln!("backup [create|list|prune]\n");
             eprintln!("  backup create                Take a snapshot now + prune to retention");
             eprintln!("  backup list                  List all snapshots in .ryve/backups/");
-            eprintln!("  backup prune [--keep=N]      Prune old snapshots (default keep={})",
-                data::backup::DEFAULT_BACKUP_RETENTION);
+            eprintln!(
+                "  backup prune [--keep=N]      Prune old snapshots (default keep={})",
+                data::backup::DEFAULT_BACKUP_RETENTION
+            );
         }
         other => die(&format!("unknown backup subcommand '{other}'")),
     }
@@ -422,9 +427,7 @@ async fn handle_restore(ryve_dir: &RyveDir, args: &[String]) {
             println!("  from:     {}", outcome.snapshot.display());
             if let Some(prev) = outcome.previous_db_backup {
                 println!("  previous: {}", prev.display());
-                println!(
-                    "  (kept as a safety copy — delete once you've verified the restore)"
-                );
+                println!("  (kept as a safety copy — delete once you've verified the restore)");
             } else {
                 println!("  previous: <no existing sparks.db>");
             }

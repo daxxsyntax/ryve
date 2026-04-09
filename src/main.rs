@@ -373,8 +373,7 @@ enum Message {
     /// graceful workshop close. Spark ryve-7c8573c4.
     BackupTick,
     /// A backup snapshot finished. `Ok(path)` on success so the UI can
-    /// log where it landed; `Err(msg)` for failures (also logged, and
-    /// surfaced as a toast the first time they happen).
+    /// log where it landed; `Err(msg)` for failures, which are logged.
     BackupFinished(Result<PathBuf, String>),
     /// Spawn a new Hand with the default agent (Cmd+H)
     NewDefaultHand,

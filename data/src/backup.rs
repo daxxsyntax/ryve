@@ -113,9 +113,10 @@ pub fn parse_stamp(file_name: &str) -> Option<DateTime<Utc>> {
 
 /// Build the path where a snapshot taken at `ts` should live.
 pub fn snapshot_path(ryve_dir: &RyveDir, ts: DateTime<Utc>) -> PathBuf {
-    ryve_dir
-        .backups_dir()
-        .join(format!("{SNAPSHOT_PREFIX}{}.{SNAPSHOT_EXT}", format_stamp(ts)))
+    ryve_dir.backups_dir().join(format!(
+        "{SNAPSHOT_PREFIX}{}.{SNAPSHOT_EXT}",
+        format_stamp(ts)
+    ))
 }
 
 /// Take a snapshot of the live database backing `pool` and write it to
@@ -146,18 +147,60 @@ pub async fn snapshot_to(pool: &SqlitePool, dest: &Path) -> Result<(), BackupErr
 }
 
 /// Take a timestamped snapshot into `.ryve/backups/` and return the
-/// resulting file path. Uses the current UTC time as the stamp; if
-/// called twice within the same second, the second call fails because
-/// the destination already exists (the caller should not be taking
-/// multiple backups per second).
-pub async fn take_snapshot(
-    pool: &SqlitePool,
-    ryve_dir: &RyveDir,
-) -> Result<PathBuf, BackupError> {
+/// resulting file path. Uses the current UTC time as the stamp. If
+/// the base timestamped filename already exists (e.g. the periodic
+/// tick and a graceful-close snapshot land in the same second), retries
+/// with a disambiguating numeric suffix so multiple snapshots in the
+/// same second do not fail.
+pub async fn take_snapshot(pool: &SqlitePool, ryve_dir: &RyveDir) -> Result<PathBuf, BackupError> {
     let ts = Utc::now();
-    let dest = snapshot_path(ryve_dir, ts);
-    snapshot_to(pool, &dest).await?;
-    Ok(dest)
+    let base_dest = snapshot_path(ryve_dir, ts);
+
+    for suffix in 0u32..u32::MAX {
+        let dest = if suffix == 0 {
+            base_dest.clone()
+        } else {
+            let file_stem = base_dest
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| {
+                    BackupError::Other(format!(
+                        "invalid snapshot file name: {}",
+                        base_dest.display()
+                    ))
+                })?;
+            let ext = base_dest
+                .extension()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| {
+                    BackupError::Other(format!(
+                        "invalid snapshot file extension: {}",
+                        base_dest.display()
+                    ))
+                })?;
+            let file_name = format!("{file_stem}-{suffix}.{ext}");
+            base_dest.with_file_name(file_name)
+        };
+
+        if dest.exists() {
+            continue;
+        }
+
+        match snapshot_to(pool, &dest).await {
+            Ok(()) => return Ok(dest),
+            Err(BackupError::Other(msg))
+                if msg.starts_with("refusing to overwrite existing snapshot at ") =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(BackupError::Other(format!(
+        "exhausted snapshot suffixes for {}",
+        base_dest.display()
+    )))
 }
 
 /// List all snapshots in `.ryve/backups/`, sorted oldest → newest by
@@ -202,10 +245,7 @@ pub async fn list_snapshots(ryve_dir: &RyveDir) -> Result<Vec<Snapshot>, BackupE
 /// Prune all but the newest `keep` snapshots in `.ryve/backups/`.
 /// Returns the paths that were deleted so callers can log them. A
 /// `keep` of `0` deletes nothing (to prevent accidents).
-pub async fn apply_retention(
-    ryve_dir: &RyveDir,
-    keep: usize,
-) -> Result<Vec<PathBuf>, BackupError> {
+pub async fn apply_retention(ryve_dir: &RyveDir, keep: usize) -> Result<Vec<PathBuf>, BackupError> {
     if keep == 0 {
         return Ok(Vec::new());
     }
@@ -219,10 +259,7 @@ pub async fn apply_retention(
         match tokio::fs::remove_file(&snap.path).await {
             Ok(()) => deleted.push(snap.path),
             Err(e) => {
-                log::warn!(
-                    "backup: failed to prune {}: {e}",
-                    snap.path.display()
-                );
+                log::warn!("backup: failed to prune {}: {e}", snap.path.display());
             }
         }
     }
@@ -277,39 +314,41 @@ pub async fn restore_snapshot(
     let live_db = ryve_dir.sparks_db_path();
     let stamp = format_stamp(Utc::now());
 
-    // Move the existing database (and sidecars) aside. We do this
-    // instead of deleting so the user can undo a bad restore.
+    // Move the existing database aside. We do this instead of deleting
+    // so the user can undo a bad restore.
     let previous = if live_db.exists() {
         let bak = live_db.with_extension(format!("db.pre-restore-{stamp}.bak"));
         tokio::fs::rename(&live_db, &bak).await?;
-        // WAL and SHM sidecars must also be cleared — SQLite refuses
-        // to open a database whose sidecars reference a newer txn.
-        for ext in ["db-wal", "db-shm"] {
-            let side = live_db.with_extension(ext);
-            if side.exists() {
-                let side_bak =
-                    live_db.with_extension(format!("{ext}.pre-restore-{stamp}.bak"));
-                // Sidecar rename failures are non-fatal — log and
-                // continue, since the important file (the DB itself)
-                // is already moved.
-                if let Err(e) = tokio::fs::rename(&side, &side_bak).await {
-                    log::warn!(
-                        "backup: failed to move sidecar {}: {e}",
-                        side.display()
-                    );
-                }
-            }
-        }
         Some(bak)
     } else {
         None
     };
 
-    // Ensure the parent dir exists, then copy the snapshot into place.
+    // SQLite sidecars must be cleared even if the main DB file is
+    // already missing — stale WAL/SHM/journal files can block opening
+    // the restored database or apply unintended state against it. We
+    // handle these independently of whether `sparks.db` existed.
+    for ext in ["db-wal", "db-shm", "db-journal"] {
+        let side = live_db.with_extension(ext);
+        if side.exists() {
+            let side_bak = live_db.with_extension(format!("{ext}.pre-restore-{stamp}.bak"));
+            // Sidecar rename failures are non-fatal — log and continue
+            // so restore can still proceed with the snapshot copy.
+            if let Err(e) = tokio::fs::rename(&side, &side_bak).await {
+                log::warn!("backup: failed to move sidecar {}: {e}", side.display());
+            }
+        }
+    }
+
+    // Ensure the parent dir exists, then restore via a temp sibling so
+    // the final move into place is atomic. An interrupted copy leaves
+    // only the temp file behind — never a torn `sparks.db`.
     if let Some(parent) = live_db.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::copy(&snapshot_path, &live_db).await?;
+    let temp_restore = live_db.with_extension(format!("db.restore-{stamp}.tmp"));
+    tokio::fs::copy(&snapshot_path, &temp_restore).await?;
+    tokio::fs::rename(&temp_restore, &live_db).await?;
 
     Ok(RestoreOutcome {
         snapshot: snapshot_path,

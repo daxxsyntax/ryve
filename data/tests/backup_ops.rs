@@ -106,11 +106,7 @@ async fn list_snapshots_sorted_chronologically() {
 
     // Manually drop three files with known stamps so we don't have to
     // wait a real second between snapshots.
-    for stamp in [
-        "20260101T000000Z",
-        "20260401T120000Z",
-        "20260301T060000Z",
-    ] {
+    for stamp in ["20260101T000000Z", "20260401T120000Z", "20260301T060000Z"] {
         let path = ryve_dir
             .backups_dir()
             .join(format!("{SNAPSHOT_PREFIX}{stamp}.db"));
@@ -119,20 +115,14 @@ async fn list_snapshots_sorted_chronologically() {
             .expect("write");
     }
     // Plus a file that does NOT match the prefix — must be ignored.
-    tokio::fs::write(
-        ryve_dir.backups_dir().join("README.txt"),
-        b"notes",
-    )
-    .await
-    .expect("write");
+    tokio::fs::write(ryve_dir.backups_dir().join("README.txt"), b"notes")
+        .await
+        .expect("write");
 
     let snaps: Vec<Snapshot> = list_snapshots(&ryve_dir).await.expect("list");
     assert_eq!(snaps.len(), 3, "non-matching files must be ignored");
 
-    let stamps: Vec<_> = snaps
-        .iter()
-        .filter_map(|s| s.taken_at)
-        .collect();
+    let stamps: Vec<_> = snaps.iter().filter_map(|s| s.taken_at).collect();
     assert_eq!(stamps.len(), 3);
     assert!(stamps[0] < stamps[1]);
     assert!(stamps[1] < stamps[2]);
@@ -177,9 +167,9 @@ async fn apply_retention_zero_keeps_everything() {
     // keep=0 is a safety fallback — it must NOT wipe the backups dir.
     let (_tmp, _root, ryve_dir, _pool) = fresh_workshop().await;
     tokio::fs::write(
-        ryve_dir.backups_dir().join(format!(
-            "{SNAPSHOT_PREFIX}20260101T000000Z.db"
-        )),
+        ryve_dir
+            .backups_dir()
+            .join(format!("{SNAPSHOT_PREFIX}20260101T000000Z.db")),
         b"x",
     )
     .await
@@ -207,7 +197,7 @@ async fn snapshot_and_retain_prunes_after_writing() {
 
     assert!(new_snap.exists());
     assert!(!old.exists(), "old snapshot should have been pruned");
-    assert!(
+    const _: () = assert!(
         DEFAULT_BACKUP_RETENTION > 0,
         "default retention must be positive"
     );
@@ -233,9 +223,7 @@ async fn restore_snapshot_replaces_live_db_with_snapshot_contents() {
     // SQLite cannot open the same WAL from two processes.
     pool.close().await;
 
-    let outcome = restore_snapshot(&ryve_dir, &snap)
-        .await
-        .expect("restore");
+    let outcome = restore_snapshot(&ryve_dir, &snap).await.expect("restore");
     assert_eq!(outcome.restored_db, ryve_dir.sparks_db_path());
     assert!(
         outcome.previous_db_backup.is_some(),
@@ -266,6 +254,68 @@ async fn restore_snapshot_rejects_missing_file() {
     let missing = ryve_dir.backups_dir().join("does-not-exist.db");
     let err = restore_snapshot(&ryve_dir, &missing).await;
     assert!(matches!(err, Err(backup::BackupError::NotFound(_))));
+}
+
+#[tokio::test]
+async fn take_snapshot_retries_with_suffix_on_same_second_collision() {
+    // Two snapshots in the same second must both succeed. The periodic
+    // tick + graceful-close path can legitimately hit this.
+    let (_tmp, _root, ryve_dir, pool) = fresh_workshop().await;
+    seed_one_spark(&pool, "row").await;
+
+    let first = take_snapshot(&pool, &ryve_dir).await.expect("snap 1");
+
+    // Pre-create the file the second call *would* pick — forces the
+    // suffix retry path regardless of wall clock granularity.
+    let base = first.clone();
+    tokio::fs::write(&base, b"placeholder").await.ok();
+
+    let second = take_snapshot(&pool, &ryve_dir).await.expect("snap 2");
+    assert_ne!(first, second, "second snapshot must use a different path");
+    assert!(
+        second
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|n| n.contains("-1.")),
+        "expected numeric suffix in {second:?}"
+    );
+    assert!(second.exists());
+}
+
+#[tokio::test]
+async fn restore_snapshot_sweeps_sidecars_when_main_db_missing() {
+    // Simulate a corruption scenario where sparks.db has been deleted
+    // but WAL/SHM/journal sidecars still exist. Restore must move the
+    // stale sidecars aside so SQLite opens the restored DB cleanly.
+    let (_tmp, _root, ryve_dir, pool) = fresh_workshop().await;
+    seed_one_spark(&pool, "only-in-snap").await;
+    let snap = take_snapshot(&pool, &ryve_dir).await.expect("snap");
+    pool.close().await;
+
+    let live_db = ryve_dir.sparks_db_path();
+    // Remove the main DB but leave bogus sidecars in place.
+    let _ = tokio::fs::remove_file(&live_db).await;
+    for ext in ["db-wal", "db-shm", "db-journal"] {
+        let side = live_db.with_extension(ext);
+        tokio::fs::write(&side, b"stale")
+            .await
+            .expect("write sidecar");
+    }
+
+    let outcome = restore_snapshot(&ryve_dir, &snap).await.expect("restore");
+    assert!(outcome.previous_db_backup.is_none(), "main db was absent");
+    assert!(outcome.restored_db.exists());
+
+    // None of the bogus sidecars should still be at their original
+    // location — each must have been renamed to a `.bak` sibling.
+    for ext in ["db-wal", "db-shm", "db-journal"] {
+        let side = live_db.with_extension(ext);
+        assert!(
+            !side.exists(),
+            "stale sidecar {} should have been moved aside",
+            side.display()
+        );
+    }
 }
 
 #[test]

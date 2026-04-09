@@ -24,8 +24,8 @@
 //! 1. **Across processes**: SQLite's own file-level write lock, with
 //!    `busy_timeout` providing graceful back-off. This is the only mechanism
 //!    that can serialize writers that live in different OS processes.
-//! 2. **Within a process**: the pool holds a `tokio::sync::Mutex` write guard
-//!    ([`write_lock`]) that repositories can acquire before issuing a write
+//! 2. **Within a process**: repositories acquire a separate in-process write
+//!    lock (see [`WriteLock`] / [`new_write_lock`]) before issuing a write
 //!    transaction. Reads remain concurrent across the pool's connections.
 
 use std::path::Path;
@@ -33,9 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tokio::sync::Mutex;
 
 use crate::ryve_dir::RyveDir;
@@ -137,11 +135,11 @@ pub fn new_write_lock() -> WriteLock {
 /// Returns true if a sqlx error is a transient SQLite busy/locked condition
 /// that is safe to retry.
 pub fn is_busy(err: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = err {
-        if let Some(code) = db_err.code() {
-            // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED
-            return code == "5" || code == "6";
-        }
+    if let sqlx::Error::Database(db_err) = err
+        && let Some(code) = db_err.code()
+    {
+        // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED
+        return code == "5" || code == "6";
     }
     false
 }
