@@ -286,6 +286,10 @@ pub struct Workshop {
     pub spark_create_form: crate::screen::sparks::CreateForm,
     /// Inline status popover state for the workgraph panel.
     pub spark_status_menu: crate::screen::sparks::StatusMenu,
+    /// Active sort mode for the sparks panel. Spark ryve-6f24ef2a.
+    pub sort_mode: crate::screen::sparks::SortMode,
+    /// Whether the sort mode dropdown is currently open. Spark ryve-6f24ef2a.
+    pub sort_dropdown_open: bool,
     /// Currently selected spark ID (for detail view).
     pub selected_spark: Option<String>,
     /// Cached contracts for the currently selected spark.
@@ -399,6 +403,8 @@ impl Workshop {
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
             spark_status_menu: Default::default(),
+            sort_mode: Default::default(),
+            sort_dropdown_open: false,
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
             selected_spark_bonds: Vec::new(),
@@ -426,6 +432,27 @@ impl Workshop {
             agent_context_sync_cache: Arc::new(Mutex::new(AgentContextSyncCache::new())),
             collapsed_epics: HashSet::new(),
         }
+    }
+
+    // ── Sort mode (spark ryve-6f24ef2a) ─────────────────────
+
+    /// Re-sort `self.sparks` in place according to the active `sort_mode`.
+    /// Called after loading sparks from DB and after changing the sort mode.
+    pub fn sort_sparks(&mut self) {
+        use crate::screen::sparks::{SparksFilter, apply_filter};
+        let filter = SparksFilter {
+            sort_mode: self.sort_mode,
+            show_closed: true,
+            ..Default::default()
+        };
+        let sorted_refs = apply_filter(&filter, &self.sparks);
+        let sorted_ids: Vec<String> = sorted_refs.iter().map(|s| s.id.clone()).collect();
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, id) in sorted_ids.iter().enumerate() {
+            index.insert(id.as_str(), i);
+        }
+        self.sparks
+            .sort_by_key(|s| index.get(s.id.as_str()).copied().unwrap_or(usize::MAX));
     }
 
     // ── Collapsed epic state (spark ryve-926870a9) ──────────

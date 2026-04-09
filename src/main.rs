@@ -1126,6 +1126,9 @@ impl App {
                     // Replace (not append) so Refresh never duplicates
                     // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    // Re-sort according to the active sort mode.
+                    // Spark ryve-6f24ef2a.
+                    ws.sort_sparks();
                     // Clear the Refresh-button indicator now that the
                     // refetch has landed. Both the explicit Refresh and
                     // the 3s poll route through this handler; clearing
@@ -3530,6 +3533,18 @@ impl App {
                                     log::warn!("failed to save .ryve/ui_state.json: {e}");
                                 }
                             });
+                        }
+                    }
+                    screen::sparks::Message::SetSortMode(mode) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_mode = mode;
+                            ws.sort_dropdown_open = false;
+                            ws.sort_sparks();
+                        }
+                    }
+                    screen::sparks::Message::ToggleSortDropdown => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sort_dropdown_open = !ws.sort_dropdown_open;
                         }
                     }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
@@ -5959,6 +5974,8 @@ impl App {
                     status_menu: &ws.spark_status_menu,
                     collapsed: &ws.collapsed_epics,
                     refreshing: ws.sparks_refreshing,
+                    sort_mode: ws.sort_mode,
+                    sort_dropdown_open: ws.sort_dropdown_open,
                 })
                 .map(Message::Sparks)
             }
@@ -5972,6 +5989,8 @@ impl App {
                 status_menu: &ws.spark_status_menu,
                 collapsed: &ws.collapsed_epics,
                 refreshing: ws.sparks_refreshing,
+                sort_mode: ws.sort_mode,
+                sort_dropdown_open: ws.sort_dropdown_open,
             })
             .map(Message::Sparks)
         };
