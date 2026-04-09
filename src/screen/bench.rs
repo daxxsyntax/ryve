@@ -342,7 +342,9 @@ impl BenchState {
         // happens automatically (we pick the first compatible coding agent).
         // Users who want fine control bypass Atlas via New Hand / New Head /
         // New Terminal below.
-        let any_agent_available = !available_agents.is_empty();
+        let any_agent_available = available_agents
+            .iter()
+            .any(|a| !a.compatibility.is_unsupported());
 
         let atlas_button = button(text("Ask Atlas...").size(FONT_BODY).color(
             if any_agent_available {
