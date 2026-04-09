@@ -359,6 +359,11 @@ enum Message {
     /// reload — all reading liveness from this single snapshot. Spark
     /// `ryve-a5b9e4a1`.
     ProcessSnapshotReady(Arc<ProcessSnapshot>),
+    /// Inert no-op. Used by the global keyboard subscription for any key
+    /// event that does not map to a real hotkey, so unmatched keystrokes
+    /// can never accidentally re-trigger an expensive `SparksPoll`.
+    /// Spark ryve-5b9c5d93 (perf regression harness).
+    Noop,
     /// Spawn a new Hand with the default agent (Cmd+H)
     NewDefaultHand,
     HandAssignmentSaved,
@@ -506,6 +511,7 @@ impl std::fmt::Debug for Message {
             Self::AgentContextSynced => write!(f, "AgentContextSynced"),
             Self::SparksPoll => write!(f, "SparksPoll"),
             Self::ProcessSnapshotReady(_) => write!(f, "ProcessSnapshotReady"),
+            Self::Noop => write!(f, "Noop"),
             Self::NewDefaultHand => write!(f, "NewDefaultHand"),
             Self::HandAssignmentSaved => write!(f, "HandAssignmentSaved"),
             Self::ShiftStateChanged(held) => write!(f, "ShiftStateChanged({held})"),
@@ -2605,6 +2611,7 @@ impl App {
             }
             Message::BackgroundConfigSaved => Task::none(),
             Message::AgentContextSynced => Task::none(),
+            Message::Noop => Task::none(),
             Message::SparksPoll => {
                 // Opportunistically surface any worktree warnings that the
                 // synchronous spawn paths accumulated since the last tick.
@@ -4049,7 +4056,9 @@ impl App {
         // dispatch a no-op Message into update() on every keystroke. The
         // previous version fell through to SparksPoll, which rebuilt
         // sysinfo::System and ran DB queries on every keypress. See
-        // sp-27a217db / ryve-a13f9d3a.
+        // sp-27a217db / ryve-a13f9d3a. The pure classifier used by the
+        // perf harness smoke test lives in `perf_core::classify_key_event`
+        // (spark ryve-5b9c5d93) and is exercised independently.
         let hotkeys = event::listen_with(|event, _status, _id| match event {
             iced::Event::Keyboard(kb_event) => hotkey_for_keyboard_event(&kb_event),
             _ => None,
