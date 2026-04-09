@@ -38,7 +38,7 @@ use crate::agent_prompts::{
     HeadArchetype, compose_hand_prompt, compose_head_prompt, compose_merger_prompt,
 };
 use crate::coding_agents::CodingAgent;
-use crate::workshop;
+use crate::{tmux, workshop};
 
 /// What kind of Hand we are spawning. Determines which initial prompt is
 /// composed and which `AssignmentRole` is recorded.
@@ -107,8 +107,8 @@ pub enum HandSpawnError {
     Io(#[from] std::io::Error),
     #[error("merger spawn requires --crew <crew_id>")]
     MergerNeedsCrew,
-    #[error("agent command not found on PATH: {0}")]
-    AgentMissing(String),
+    #[error("tmux launch failed: {0}")]
+    TmuxLaunch(#[from] tmux::TmuxLaunchError),
 }
 
 /// Spawn a Hand programmatically. Used by `ryve hand spawn` and by tests.
@@ -240,24 +240,32 @@ pub async fn spawn_hand(
     let mut env_vars = workshop::hand_env_vars(workshop_dir);
     env_vars.push(("RYVE_HAND_SESSION_ID".to_string(), session_id.clone()));
 
-    // 8. Spawn detached.
-    let child_pid = match launch_detached(
+    // 8. Launch inside a tmux session on the workshop's private socket.
+    //    Spark [sp-0285181c]: tmux sessions survive Ryve restarts so
+    //    reconciliation can re-associate them on next boot.
+    let tmux_name = tmux::session_name(
+        Some(match kind {
+            HandKind::Owner => "hand",
+            HandKind::Head => "head",
+            HandKind::Merger => "merger",
+        }),
+        &session_id,
+    );
+
+    if let Err(err) = tmux::launch_in_tmux(
+        workshop_dir,
+        &tmux_name,
         &agent.command,
         &cmd_args,
         &worktree_path,
         &env_vars,
         &log_path,
-    ) {
-        Ok(pid) => pid,
-        Err(err) => {
-            let _ = assignment_repo::abandon(pool, &session_id, spark_id).await;
-            let _ = agent_session_repo::end_session(pool, &session_id).await;
-            return Err(err);
-        }
-    };
-
-    if let Some(pid) = child_pid {
-        let _ = agent_session_repo::set_child_pid(pool, &session_id, pid).await;
+    )
+    .await
+    {
+        let _ = assignment_repo::abandon(pool, &session_id, spark_id).await;
+        let _ = agent_session_repo::end_session(pool, &session_id).await;
+        return Err(HandSpawnError::TmuxLaunch(err));
     }
 
     Ok(SpawnedHand {
@@ -265,7 +273,7 @@ pub async fn spawn_hand(
         spark_id: spark_id.to_string(),
         worktree_path,
         log_path,
-        child_pid,
+        child_pid: None,
     })
 }
 
@@ -383,25 +391,25 @@ pub async fn spawn_head(
     let mut env_vars = workshop::hand_env_vars(workshop_dir);
     env_vars.push(("RYVE_HAND_SESSION_ID".to_string(), session_id.clone()));
 
-    // 7. Spawn detached. On failure, end the session so the row does not
-    //    linger as a phantom Head that never actually ran. The crew row
-    //    we created is kept — the caller can retry with `--crew <id>`.
-    let child_pid = match launch_detached(
+    // 7. Launch inside a tmux session. On failure, end the session so
+    //    the row does not linger as a phantom Head that never actually
+    //    ran. The crew row is kept — the caller can retry with `--crew`.
+    //    Spark [sp-0285181c].
+    let tmux_name = tmux::session_name(Some("head"), &session_id);
+
+    if let Err(err) = tmux::launch_in_tmux(
+        workshop_dir,
+        &tmux_name,
         &agent.command,
         &cmd_args,
         &worktree_path,
         &env_vars,
         &log_path,
-    ) {
-        Ok(pid) => pid,
-        Err(err) => {
-            let _ = agent_session_repo::end_session(pool, &session_id).await;
-            return Err(err);
-        }
-    };
-
-    if let Some(pid) = child_pid {
-        let _ = agent_session_repo::set_child_pid(pool, &session_id, pid).await;
+    )
+    .await
+    {
+        let _ = agent_session_repo::end_session(pool, &session_id).await;
+        return Err(HandSpawnError::TmuxLaunch(err));
     }
 
     Ok(SpawnedHead {
@@ -411,59 +419,8 @@ pub async fn spawn_head(
         archetype,
         worktree_path,
         log_path,
-        child_pid,
+        child_pid: None,
     })
-}
-
-/// Spawn a child process detached from the parent. stdout/stderr go to
-/// `log_path`; stdin is /dev/null. On Unix we call `setsid` so closing the
-/// parent terminal does not propagate SIGHUP. Returns the child PID.
-fn launch_detached(
-    command: &str,
-    args: &[String],
-    cwd: &Path,
-    env: &[(String, String)],
-    log_path: &Path,
-) -> Result<Option<u32>, HandSpawnError> {
-    use std::process::{Command, Stdio};
-
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-    let log_file_err = log_file.try_clone()?;
-
-    let mut cmd = Command::new(command);
-    cmd.args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err));
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        // setsid() disconnects the new process from the controlling terminal
-        // so closing the Head's bench tab does not kill its Hands.
-        cmd.pre_exec(|| {
-            // libc::setsid returns -1 on error.
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-
-    match cmd.spawn() {
-        Ok(child) => Ok(Some(child.id())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(HandSpawnError::AgentMissing(command.to_string()))
-        }
-        Err(e) => Err(HandSpawnError::Io(e)),
-    }
 }
 
 /// The workshop_id is the workshop directory's last component, mirroring
@@ -605,11 +562,12 @@ mod tests {
         .await
         .expect("spawn_hand should succeed against the stub agent");
 
-        assert!(spawned.child_pid.is_some(), "child pid should be reported");
+        // child_pid is None when using tmux — the tmux server owns the
+        // process. Liveness is checked via `tmux has-session` instead.
 
         // Poll for the stub's output for up to 5 seconds. The child runs
-        // detached so we cannot `wait` on it; the file appearing means the
-        // process actually executed and received argv.
+        // inside a tmux session so we cannot `wait` on it; the file
+        // appearing means the process actually executed and received argv.
         let deadline = Instant::now() + Duration::from_secs(5);
         let recorded = loop {
             if out_path.exists()
@@ -637,7 +595,8 @@ mod tests {
              recorded argv:\n{recorded}"
         );
 
-        // Cleanup — best effort, don't fail the test on filesystem hiccups.
+        // Cleanup: kill tmux server + remove temp dir.
+        tmux::kill_server(&workshop_dir).await;
         let _ = std::fs::remove_dir_all(&workshop_dir);
     }
 
@@ -697,7 +656,7 @@ mod tests {
         .await
         .expect("spawn_head should succeed against the stub agent");
 
-        assert!(spawned.child_pid.is_some(), "child pid should be reported");
+        // child_pid is None when using tmux — liveness via `tmux has-session`.
         assert_eq!(spawned.epic_id, epic.id);
 
         // 1. Session row exists with label "head".

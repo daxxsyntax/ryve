@@ -15,6 +15,7 @@ mod process_snapshot;
 mod release_artifact;
 mod screen;
 mod style;
+mod tmux;
 mod widget;
 mod workshop;
 mod worktree_cleanup;
@@ -1039,18 +1040,28 @@ impl App {
                     // Spark ryve-86b0b326.
                     ws.agent_context_sync_cache = agent_context_sync_cache;
 
-                    // Load sparks + agent sessions + scan file tree in parallel
+                    // Reconcile tmux sessions before loading agent sessions
+                    // so any stale DB rows are marked ended before the UI
+                    // ever sees them. Spark [sp-0285181c].
                     let ws_id = ws.workshop_id();
                     let dir = ws.directory.clone();
                     let pool2 = pool.clone();
                     let ws_id2 = ws_id.clone();
+                    let pool_rec = pool.clone();
+                    let ws_id_rec = ws_id.clone();
+                    let dir_rec = dir.clone();
+                    let reconcile_then_sessions = Task::perform(
+                        async move {
+                            tmux::reconcile_sessions(&dir_rec, &pool_rec, &ws_id_rec).await;
+                            load_agent_sessions(pool2, ws_id2).await
+                        },
+                        move |sessions| Message::AgentSessionsLoaded(id, sessions),
+                    );
+
+                    // Load sparks + (reconcile → agent sessions) + scan file tree in parallel
                     let sparks_task = Task::perform(load_sparks(pool, ws_id), move |sparks| {
                         Message::SparksLoaded(id, sparks)
                     });
-                    let sessions_task =
-                        Task::perform(load_agent_sessions(pool2, ws_id2), move |sessions| {
-                            Message::AgentSessionsLoaded(id, sessions)
-                        });
                     // NOTE: open_tabs is NOT loaded here. It is dispatched
                     // from the `AgentSessionsLoaded` handler so that any
                     // persisted `coding_agent` / `log_tail` tab can be
@@ -1079,7 +1090,7 @@ impl App {
                         Task::none()
                     };
 
-                    return Task::batch([sparks_task, sessions_task, scan_task, bg_task]);
+                    return Task::batch([sparks_task, reconcile_then_sessions, scan_task, bg_task]);
                 }
                 Task::none()
             }
@@ -1431,10 +1442,21 @@ impl App {
                             (Some(snap), Some(pid)) => snap.is_alive(pid),
                             _ => false,
                         };
+                        // Tmux-managed sessions (hand/head/merger) don't have
+                        // a child_pid — their liveness is determined by tmux
+                        // reconciliation which runs before this load. If the
+                        // DB row is still active after reconciliation, the
+                        // tmux session exists. Spark [sp-0285181c].
+                        let tmux_alive = !p.ended_at.is_some()
+                            && p.child_pid.is_none()
+                            && matches!(
+                                p.session_label.as_deref(),
+                                Some("hand") | Some("head") | Some("merger")
+                            );
                         let display_state = screen::agents::classify_session(
                             p.ended_at.is_some(),
                             existing_tab_id.is_some(),
-                            child_alive,
+                            child_alive || tmux_alive,
                         );
 
                         if known_ids.contains(&p.id) {
@@ -3866,17 +3888,30 @@ impl App {
                 // DB. This is what surfaces CLI-spawned Hands (`ryve hand
                 // spawn`) in the GUI Hands panel — without this poll the
                 // panel only ever sees what the UI itself launched.
+                //
+                // Each reload is preceded by a lightweight tmux reconciliation
+                // pass so that stale DB rows (whose tmux session died between
+                // polls) are marked ended before the UI sees them. This makes
+                // the Hands panel authoritative without PID-based liveness
+                // for tmux-managed sessions. Spark [sp-0285181c].
                 let session_tasks: Vec<_> = self
                     .workshops
                     .iter()
                     .filter(|ws| ws.sparks_db.is_some())
                     .map(|ws| {
                         let pool = ws.sparks_db.clone().unwrap();
+                        let pool2 = pool.clone();
                         let ws_id = ws.workshop_id();
+                        let ws_id2 = ws_id.clone();
+                        let dir = ws.directory.clone();
                         let id = ws.id;
-                        Task::perform(load_agent_sessions(pool, ws_id), move |sessions| {
-                            Message::AgentSessionsLoaded(id, sessions)
-                        })
+                        Task::perform(
+                            async move {
+                                tmux::reconcile_sessions(&dir, &pool2, &ws_id2).await;
+                                load_agent_sessions(pool, ws_id).await
+                            },
+                            move |sessions| Message::AgentSessionsLoaded(id, sessions),
+                        )
                     })
                     .collect();
                 tasks.extend(session_tasks);
