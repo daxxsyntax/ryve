@@ -44,4 +44,10 @@ pub enum SparksError {
          only epics may be top-level. Pick a parent epic or create one first."
     )]
     OrphanChildRejected { spark_type: String },
+
+    #[error("invalid semver: {0}")]
+    InvalidSemver(String),
+
+    #[error("spark {spark_id} already belongs to another open release")]
+    EpicAlreadyInOpenRelease { spark_id: String },
 }

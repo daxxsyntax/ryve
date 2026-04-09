@@ -296,8 +296,9 @@ pub async fn ensure_unsorted_epic(
 
 #[cfg(test)]
 mod orphan_rejection_tests {
-    use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
 
     async fn fresh_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

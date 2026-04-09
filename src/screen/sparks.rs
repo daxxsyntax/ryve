@@ -278,6 +278,7 @@ pub const STATUS_OPTIONS: &[(&str, &str)] = &[
 pub enum Message {
     SelectSpark(String),
     Refresh,
+    ShowReleases,
     ShowCreateForm,
     CreateFormTitleChanged(String),
     CreateFormTypeChanged(String),
@@ -356,6 +357,10 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     let header = row![
         text("Workgraph").size(FONT_HEADER).color(pal.text_primary),
         Space::new().width(Length::Fill),
+        button(text("Releases").size(FONT_LABEL).color(pal.text_secondary))
+            .style(button::text)
+            .padding([2, 6])
+            .on_press(Message::ShowReleases),
         button(text("+").size(FONT_ICON).color(pal.accent))
             .style(button::text)
             .padding([2, 6])
