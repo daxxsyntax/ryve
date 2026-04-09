@@ -1126,6 +1126,7 @@ impl App {
                     // Replace (not append) so Refresh never duplicates
                     // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    ws.recompute_filtered_sparks();
                     // Clear the Refresh-button indicator now that the
                     // refetch has landed. Both the explicit Refresh and
                     // the 3s poll route through this handler; clearing
@@ -1472,6 +1473,11 @@ impl App {
                             parent_session_id: p.parent_session_id,
                         });
                     }
+
+                    // Refresh cached agent session names for the filter bar
+                    // (spark ryve-baca34b0).
+                    ws.agent_session_names =
+                        ws.agent_sessions.iter().map(|s| s.name.clone()).collect();
 
                     // First time we see agent_sessions for this workshop:
                     // chain into load_open_tabs so the persisted snapshot
@@ -3530,6 +3536,25 @@ impl App {
                                     log::warn!("failed to save .ryve/ui_state.json: {e}");
                                 }
                             });
+                        }
+                    }
+                    // ── Filter bar (spark ryve-baca34b0) ───────
+                    screen::sparks::Message::FilterToggleType(ty) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.toggle_type(ty);
+                            ws.recompute_filtered_sparks();
+                        }
+                    }
+                    screen::sparks::Message::FilterTogglePriority(p) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.toggle_priority(p);
+                            ws.recompute_filtered_sparks();
+                        }
+                    }
+                    screen::sparks::Message::FilterSetAssignee(a) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.set_assignee(a);
+                            ws.recompute_filtered_sparks();
                         }
                     }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
@@ -5959,6 +5984,9 @@ impl App {
                     status_menu: &ws.spark_status_menu,
                     collapsed: &ws.collapsed_epics,
                     refreshing: ws.sparks_refreshing,
+                    filter: &ws.sparks_filter,
+                    agent_session_names: &ws.agent_session_names,
+                    filtered_sparks: &ws.filtered_sparks,
                 })
                 .map(Message::Sparks)
             }
@@ -5972,6 +6000,9 @@ impl App {
                 status_menu: &ws.spark_status_menu,
                 collapsed: &ws.collapsed_epics,
                 refreshing: ws.sparks_refreshing,
+                filter: &ws.sparks_filter,
+                agent_session_names: &ws.agent_session_names,
+                filtered_sparks: &ws.filtered_sparks,
             })
             .map(Message::Sparks)
         };

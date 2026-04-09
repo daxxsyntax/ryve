@@ -3,7 +3,7 @@
 
 //! Workgraph panel — displays and manages sparks for the active workshop.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use data::sparks::types::Spark;
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
@@ -102,6 +102,79 @@ pub fn resolve_default_parent_epic(sparks: &[Spark], focused_id: Option<&str>) -
         cursor = index.get(parent_id)?;
     }
     None
+}
+
+// ── Panel filter state ──────────────────────────────
+
+/// Client-side filter state for the sparks panel. Selections narrow the
+/// displayed sparks without touching the DB query — filtering happens in
+/// `apply_filter` before the view builds its epic groups.
+#[derive(Debug, Clone, Default)]
+pub struct SparksFilter {
+    /// Selected spark types (multi-select). Empty == show all.
+    pub spark_types: HashSet<String>,
+    /// Selected priorities (multi-select). Empty == show all.
+    pub priorities: HashSet<i32>,
+    /// Selected assignee. `None` == show all.
+    pub assignee: Option<String>,
+}
+
+impl SparksFilter {
+    /// Return `true` when no filter axis is active — every spark passes.
+    pub fn is_empty(&self) -> bool {
+        self.spark_types.is_empty() && self.priorities.is_empty() && self.assignee.is_none()
+    }
+
+    /// Test whether a single spark passes all active filters.
+    pub fn matches(&self, spark: &Spark) -> bool {
+        if !self.spark_types.is_empty() && !self.spark_types.contains(&spark.spark_type) {
+            return false;
+        }
+        if !self.priorities.is_empty() && !self.priorities.contains(&spark.priority) {
+            return false;
+        }
+        if let Some(ref assignee) = self.assignee {
+            if spark.assignee.as_deref() != Some(assignee.as_str()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn toggle_type(&mut self, ty: String) {
+        if !self.spark_types.remove(&ty) {
+            self.spark_types.insert(ty);
+        }
+    }
+
+    pub fn toggle_priority(&mut self, p: i32) {
+        if !self.priorities.remove(&p) {
+            self.priorities.insert(p);
+        }
+    }
+
+    pub fn set_assignee(&mut self, assignee: Option<String>) {
+        self.assignee = assignee;
+    }
+}
+
+/// Collect distinct assignees from sparks and agent session names, sorted
+/// alphabetically. Deduplicates across both sources per the invariant.
+pub fn collect_assignees(sparks: &[Spark], agent_session_names: &[String]) -> Vec<String> {
+    let mut set = BTreeSet::new();
+    for s in sparks {
+        if let Some(ref a) = s.assignee {
+            if !a.is_empty() {
+                set.insert(a.clone());
+            }
+        }
+    }
+    for name in agent_session_names {
+        if !name.is_empty() {
+            set.insert(name.clone());
+        }
+    }
+    set.into_iter().collect()
 }
 
 // ── Default sort ─────────────────────────────────────
@@ -301,6 +374,13 @@ pub enum Message {
     /// `.ryve/ui_state.json` so the decision survives restart.
     /// Sparks ryve-8be256a8 / ryve-926870a9.
     ToggleEpicCollapse(String),
+    // ── Filter bar messages (spark ryve-baca34b0) ───────
+    /// Toggle a spark type in the multi-select filter.
+    FilterToggleType(String),
+    /// Toggle a priority level in the multi-select filter.
+    FilterTogglePriority(i32),
+    /// Set the assignee filter (None = clear).
+    FilterSetAssignee(Option<String>),
 }
 
 // ── Refresh button glyph ─────────────────────────────
@@ -331,6 +411,12 @@ pub struct ViewCtx<'a> {
     pub status_menu: &'a StatusMenu,
     pub collapsed: &'a HashSet<String>,
     pub refreshing: bool,
+    pub filter: &'a SparksFilter,
+    pub agent_session_names: &'a [String],
+    /// Pre-filtered sparks for display. When no filter is active this
+    /// should be the same slice as `sparks`. Kept separate so the
+    /// filter bar can still derive assignee lists from the full set.
+    pub filtered_sparks: &'a [Spark],
 }
 
 pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
@@ -343,6 +429,9 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         status_menu,
         collapsed,
         refreshing,
+        filter,
+        agent_session_names,
+        filtered_sparks,
     } = ctx;
 
     // Refresh button: dim the glyph and swap it for an ellipsis while a
@@ -373,21 +462,25 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     .spacing(4)
     .padding([8, 10]);
 
+    // ── Filter bar (spark ryve-baca34b0) ──────────────
+    let filter_bar = view_filter_bar(sparks, filter, agent_session_names, &pal);
+
     let mut list = column![].spacing(2).padding([0, 10]);
 
-    // Inline create form
+    // Inline create form (always uses unfiltered sparks for epic picker).
     if create_form.visible {
         list = list.push(view_create_form(sparks, create_form, &pal));
     }
 
-    if sparks.is_empty() && !create_form.visible {
-        list = list.push(
-            text("No sparks yet")
-                .size(FONT_BODY)
-                .color(pal.text_tertiary),
-        );
+    if filtered_sparks.is_empty() && !create_form.visible {
+        let msg = if filter.is_empty() {
+            "No sparks yet"
+        } else {
+            "No sparks match the current filters"
+        };
+        list = list.push(text(msg).size(FONT_BODY).color(pal.text_tertiary));
     } else {
-        let groups = group_by_epic(sparks);
+        let groups = group_by_epic(filtered_sparks);
         let epic_ids: HashSet<&str> = groups.iter().map(|g| g.epic.id.as_str()).collect();
         // Top-level groups are those whose epic has no epic-group parent;
         // nested epics are rendered inline under their parent group instead.
@@ -413,7 +506,7 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         }
     }
 
-    let content = column![header, scrollable(list).height(Length::Fill)]
+    let content = column![header, filter_bar, scrollable(list).height(Length::Fill)]
         .width(Length::Fill)
         .height(Length::Fill);
 
@@ -421,6 +514,134 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme: &Theme| style::glass_panel(&pal, has_bg))
+        .into()
+}
+
+// ── Filter bar view (spark ryve-baca34b0) ───────────
+
+/// All spark types exposed in the filter bar, in display order.
+const FILTER_TYPES: &[(&str, &str)] = &[
+    ("epic", "Epic"),
+    ("bug", "Bug"),
+    ("feature", "Feature"),
+    ("task", "Task"),
+    ("spike", "Spike"),
+    ("chore", "Chore"),
+    ("milestone", "Milestone"),
+];
+
+fn view_filter_bar<'a>(
+    sparks: &[Spark],
+    filter: &SparksFilter,
+    agent_session_names: &[String],
+    pal: &Palette,
+) -> Element<'a, Message> {
+    let pal = *pal;
+
+    // ── Type pills (multi-select) ──
+    let mut type_row = row![].spacing(3).align_y(iced::Alignment::Center);
+    for (key, label) in FILTER_TYPES {
+        let selected = filter.spark_types.contains(*key);
+        let key_owned = (*key).to_string();
+        type_row = type_row.push(filter_chip(label, selected, &pal, move || {
+            Message::FilterToggleType(key_owned.clone())
+        }));
+    }
+
+    // ── Priority pills (P0–P4, multi-select) ──
+    let mut prio_row = row![].spacing(3).align_y(iced::Alignment::Center);
+    for p in 0..=4i32 {
+        let selected = filter.priorities.contains(&p);
+        prio_row = prio_row.push(filter_chip(&format!("P{p}"), selected, &pal, move || {
+            Message::FilterTogglePriority(p)
+        }));
+    }
+
+    // ── Assignee dropdown (single-select with Clear) ──
+    let assignees = collect_assignees(sparks, agent_session_names);
+    let mut assignee_row = row![].spacing(3).align_y(iced::Alignment::Center);
+    // "Clear" chip — shown only when an assignee filter is active.
+    if filter.assignee.is_some() {
+        assignee_row = assignee_row.push(filter_chip("\u{00D7} Clear", false, &pal, || {
+            Message::FilterSetAssignee(None)
+        }));
+    }
+    for name in &assignees {
+        let selected = filter.assignee.as_deref() == Some(name.as_str());
+        let name_owned = name.clone();
+        assignee_row = assignee_row.push(filter_chip(name, selected, &pal, move || {
+            Message::FilterSetAssignee(Some(name_owned.clone()))
+        }));
+    }
+
+    let type_section = row![
+        text("Type").size(FONT_LABEL).color(pal.text_tertiary),
+        scrollable(type_row).direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new(),
+        )),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let prio_section = row![
+        text("Priority").size(FONT_LABEL).color(pal.text_tertiary),
+        prio_row,
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let assignee_section: Element<Message> = if assignees.is_empty() {
+        Space::new().height(0).into()
+    } else {
+        row![
+            text("Assignee").size(FONT_LABEL).color(pal.text_tertiary),
+            scrollable(assignee_row).direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new(),
+            )),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+
+    column![type_section, prio_section, assignee_section]
+        .spacing(4)
+        .padding([2, 10])
+        .into()
+}
+
+fn filter_chip<'a, F>(
+    label: &str,
+    selected: bool,
+    pal: &Palette,
+    on_press: F,
+) -> Element<'a, Message>
+where
+    F: 'a + Fn() -> Message,
+{
+    let pal = *pal;
+    let text_color = if selected {
+        pal.window_bg
+    } else {
+        pal.text_secondary
+    };
+    button(text(label.to_string()).size(FONT_SMALL).color(text_color))
+        .style(move |_t: &Theme, _s| button::Style {
+            background: Some(iced::Background::Color(if selected {
+                pal.accent
+            } else {
+                pal.surface
+            })),
+            text_color,
+            border: iced::Border {
+                color: pal.border,
+                width: 1.0,
+                radius: iced::border::Radius::from(8.0),
+            },
+            ..button::Style::default()
+        })
+        .padding([2, 6])
+        .on_press_with(on_press)
         .into()
 }
 
@@ -1302,6 +1523,113 @@ mod tests {
         assert_ne!(idle, busy);
         assert_eq!(idle, "\u{21BB}");
         assert_eq!(busy, "\u{2026}");
+    }
+
+    // ── SparksFilter tests (spark ryve-baca34b0) ──────
+
+    #[test]
+    fn filter_empty_matches_everything() {
+        let f = SparksFilter::default();
+        assert!(f.is_empty());
+        let spark = mk_sort_spark("sp-1", 2, "task", "open");
+        assert!(f.matches(&spark));
+    }
+
+    #[test]
+    fn filter_by_type_narrows_to_selected() {
+        let mut f = SparksFilter::default();
+        f.toggle_type("bug".into());
+        let bug = mk_sort_spark("sp-1", 2, "bug", "open");
+        let task = mk_sort_spark("sp-2", 2, "task", "open");
+        assert!(f.matches(&bug));
+        assert!(!f.matches(&task));
+    }
+
+    #[test]
+    fn filter_by_type_multi_select() {
+        let mut f = SparksFilter::default();
+        f.toggle_type("bug".into());
+        f.toggle_type("feature".into());
+        let bug = mk_sort_spark("sp-1", 2, "bug", "open");
+        let feature = mk_sort_spark("sp-2", 1, "feature", "open");
+        let task = mk_sort_spark("sp-3", 2, "task", "open");
+        assert!(f.matches(&bug));
+        assert!(f.matches(&feature));
+        assert!(!f.matches(&task));
+    }
+
+    #[test]
+    fn filter_toggle_type_deselects_on_second_call() {
+        let mut f = SparksFilter::default();
+        f.toggle_type("bug".into());
+        assert!(!f.is_empty());
+        f.toggle_type("bug".into());
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn filter_by_priority_narrows_to_selected() {
+        let mut f = SparksFilter::default();
+        f.toggle_priority(0);
+        f.toggle_priority(1);
+        let p0 = mk_sort_spark("sp-1", 0, "task", "open");
+        let p1 = mk_sort_spark("sp-2", 1, "task", "open");
+        let p2 = mk_sort_spark("sp-3", 2, "task", "open");
+        assert!(f.matches(&p0));
+        assert!(f.matches(&p1));
+        assert!(!f.matches(&p2));
+    }
+
+    #[test]
+    fn filter_by_assignee() {
+        let mut f = SparksFilter::default();
+        f.set_assignee(Some("alice".into()));
+        let mut s1 = mk_sort_spark("sp-1", 2, "task", "open");
+        s1.assignee = Some("alice".into());
+        let s2 = mk_sort_spark("sp-2", 2, "task", "open");
+        assert!(f.matches(&s1));
+        assert!(!f.matches(&s2));
+    }
+
+    #[test]
+    fn filter_assignee_clear_resets() {
+        let mut f = SparksFilter::default();
+        f.set_assignee(Some("alice".into()));
+        assert!(!f.is_empty());
+        f.set_assignee(None);
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn filter_combined_type_and_priority() {
+        let mut f = SparksFilter::default();
+        f.toggle_type("bug".into());
+        f.toggle_priority(0);
+        // bug P0 → pass
+        assert!(f.matches(&mk_sort_spark("a", 0, "bug", "open")));
+        // bug P2 → fail (priority doesn't match)
+        assert!(!f.matches(&mk_sort_spark("b", 2, "bug", "open")));
+        // task P0 → fail (type doesn't match)
+        assert!(!f.matches(&mk_sort_spark("c", 0, "task", "open")));
+    }
+
+    #[test]
+    fn collect_assignees_deduplicates() {
+        let mut s1 = mk_sort_spark("sp-1", 2, "task", "open");
+        s1.assignee = Some("alice".into());
+        let mut s2 = mk_sort_spark("sp-2", 2, "task", "open");
+        s2.assignee = Some("bob".into());
+        let agents = vec!["alice".to_string(), "charlie".to_string()];
+        let result = collect_assignees(&[s1, s2], &agents);
+        assert_eq!(result, vec!["alice", "bob", "charlie"]);
+    }
+
+    #[test]
+    fn collect_assignees_skips_empty_strings() {
+        let s1 = mk_sort_spark("sp-1", 2, "task", "open");
+        let agents = vec!["".to_string(), "bob".to_string()];
+        let result = collect_assignees(&[s1], &agents);
+        assert_eq!(result, vec!["bob"]);
     }
 
     #[test]
