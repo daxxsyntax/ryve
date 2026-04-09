@@ -1589,6 +1589,7 @@ impl App {
                                 .get(&resume_agent.command)
                                 .is_some_and(|s| s.full_auto);
                             let next_id = &mut self.next_terminal_id;
+                            let is_atlas = session.name.starts_with("Atlas (");
                             let tab_id = ws.begin_hand_terminal(
                                 session.name.clone(),
                                 workshop::PendingTerminalKind::Agent(resume_agent.clone()),
@@ -1596,6 +1597,13 @@ impl App {
                                 session_id.clone(),
                                 full_auto,
                             );
+                            // Re-pin restored Atlas tabs (spark ryve-59983890).
+                            if is_atlas {
+                                if let Some(tab) = ws.bench.tabs.iter_mut().find(|t| t.id == tab_id)
+                                {
+                                    tab.pinned = true;
+                                }
+                            }
                             follow_up.push(Self::dispatch_worktree_task(
                                 ws,
                                 tab_id,
@@ -4490,6 +4498,9 @@ impl App {
             }
             screen::bench::Message::CloseTab(id) => {
                 let ws = &mut self.workshops[idx];
+                if ws.bench.is_pinned(id) {
+                    return Task::none();
+                }
                 ws.terminals.remove(&id);
                 ws.file_viewers.remove(&id);
 
@@ -5080,6 +5091,11 @@ impl App {
             session_id.clone(),
             full_auto,
         );
+        // Atlas is the singleton Director — pin the tab so it cannot be
+        // closed by the user (spark ryve-59983890).
+        if let Some(tab) = ws.bench.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.pinned = true;
+        }
         let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
 
         ws.agent_sessions.push(AgentSession {
