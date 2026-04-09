@@ -24,6 +24,8 @@ use std::process::{Output, Stdio};
 use data::sparks::types::PersistedAgentSession;
 use sqlx::SqlitePool;
 
+use crate::process_snapshot::ProcessSnapshot;
+
 // ── Errors ────────────────────────────────────────────────
 
 /// Typed errors for tmux operations.
@@ -482,6 +484,19 @@ pub fn attach_command(workshop_dir: &Path, session_name: &str) -> (String, Vec<S
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     (program, args)
+}
+
+// ── PID-based liveness detection ─────────────────────────
+
+/// Diff tracked sessions against a process snapshot and return session IDs
+/// whose process has disappeared. Each entry in `tracked` is
+/// `(session_id, child_pid)`.
+pub fn dead_sessions(tracked: &[(String, Option<i64>)], snapshot: &ProcessSnapshot) -> Vec<String> {
+    tracked
+        .iter()
+        .filter(|(_, pid)| !pid.map(|p| snapshot.is_alive(p)).unwrap_or(false))
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 // ── Tests ─────────────────────────────────────────────────
