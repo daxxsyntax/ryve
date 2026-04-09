@@ -2,6 +2,7 @@
 // Copyright 2026 Loomantix
 
 mod agent_prompts;
+mod bundled_tmux;
 mod cli;
 mod coding_agents;
 mod delegation;

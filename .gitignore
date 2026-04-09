@@ -28,6 +28,9 @@ Cargo.lock
 .ryve/sparks.db-*
 **/worktrees/
 
+# Vendored tmux build output (built locally via scripts/build-vendored-tmux.sh)
+vendor/tmux/bin/
+
 # Ryve runtime artifacts (per-Hand prompts and logs)
 .ryve/prompts/
 .ryve/logs/
