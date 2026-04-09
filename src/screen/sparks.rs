@@ -9,6 +9,7 @@ use data::sparks::types::Spark;
 use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
 
+use crate::screen::agents::AgentSession;
 use crate::style::{
     self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
 };
@@ -452,6 +453,9 @@ pub enum Message {
     SearchChanged(String),
     /// Clear the search input.
     ClearSearch,
+    /// Navigate to an agent session in the agents panel (and open its
+    /// log tab if applicable). Spark ryve-dba4b8c4.
+    FocusAgentSession(String),
 }
 
 // ── Refresh button glyph ─────────────────────────────
@@ -476,6 +480,7 @@ pub(crate) fn refresh_button_glyph(refreshing: bool) -> &'static str {
 pub struct ViewCtx<'a> {
     pub sparks: &'a [Spark],
     pub blocked_ids: &'a HashSet<String>,
+    pub agent_sessions: &'a [AgentSession],
     pub pal: Palette,
     pub has_bg: bool,
     pub create_form: &'a CreateForm,
@@ -509,6 +514,7 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     let ViewCtx {
         sparks,
         blocked_ids,
+        agent_sessions,
         pal,
         has_bg,
         create_form,
@@ -627,6 +633,7 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
                 &groups,
                 0,
                 blocked_ids,
+                agent_sessions,
                 &pal,
                 status_menu,
                 collapsed,
@@ -1058,6 +1065,7 @@ fn view_epic_group<'a>(
     all_groups: &[EpicGroup<'a>],
     depth: usize,
     blocked_ids: &HashSet<String>,
+    agent_sessions: &'a [AgentSession],
     pal: &Palette,
     status_menu: &'a StatusMenu,
     collapsed: &'a HashSet<String>,
@@ -1087,6 +1095,7 @@ fn view_epic_group<'a>(
                     all_groups,
                     depth + 1,
                     blocked_ids,
+                    agent_sessions,
                     &pal,
                     status_menu,
                     collapsed,
@@ -1098,6 +1107,7 @@ fn view_epic_group<'a>(
                 child,
                 child_blocked,
                 depth + 1,
+                agent_sessions,
                 &pal,
                 status_menu,
             ));
@@ -1174,20 +1184,25 @@ fn view_spark_row_indented<'a>(
     spark: &'a Spark,
     is_blocked: bool,
     depth: usize,
+    agent_sessions: &'a [AgentSession],
     pal: &Palette,
     status_menu: &'a StatusMenu,
 ) -> Element<'a, Message> {
     let indent = Space::new().width(Length::Fixed(16.0 * depth as f32));
-    row![indent, view_spark_row(spark, is_blocked, pal, status_menu)]
-        .spacing(0)
-        .align_y(iced::Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    row![
+        indent,
+        view_spark_row(spark, is_blocked, agent_sessions, pal, status_menu)
+    ]
+    .spacing(0)
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill)
+    .into()
 }
 
 fn view_spark_row<'a>(
     spark: &'a Spark,
     is_blocked: bool,
+    agent_sessions: &'a [AgentSession],
     pal: &Palette,
     status_menu: &'a StatusMenu,
 ) -> Element<'a, Message> {
@@ -1221,6 +1236,26 @@ fn view_spark_row<'a>(
 
     if is_blocked {
         row_inner = row_inner.push(text("\u{1F512}").size(FONT_LABEL).color(pal.text_tertiary));
+    }
+
+    // Assignee chip: clickable link when matching an agent session,
+    // dimmed plain text otherwise. Spark ryve-dba4b8c4.
+    if let Some(assignee) = spark.assignee.as_deref().filter(|s| !s.is_empty()) {
+        let assignee_el: Element<'a, Message> =
+            if let Some(session) = resolve_agent_session(assignee, agent_sessions) {
+                let session_id = session.id.clone();
+                button(text(assignee).size(FONT_LABEL).color(pal.accent))
+                    .style(button::text)
+                    .padding([0, 4])
+                    .on_press(Message::FocusAgentSession(session_id))
+                    .into()
+            } else {
+                text(assignee)
+                    .size(FONT_LABEL)
+                    .color(pal.text_tertiary)
+                    .into()
+            };
+        row_inner = row_inner.push(assignee_el);
     }
 
     let main_row = row![
@@ -1339,6 +1374,21 @@ where
         .padding([3, 8])
         .on_press_with(on_press)
         .into()
+}
+
+// ── Agent session resolution ────────────────────────
+// Spark ryve-dba4b8c4: resolve an assignee string to a live agent session.
+
+/// Look up an assignee string against live agent sessions, matching by
+/// session name or id. Returns the first match so the link-or-plain-text
+/// decision is driven by live `agent_sessions` with no stale cache.
+pub(crate) fn resolve_agent_session<'a>(
+    assignee: &str,
+    sessions: &'a [AgentSession],
+) -> Option<&'a AgentSession> {
+    sessions
+        .iter()
+        .find(|s| s.name == assignee || s.id == assignee)
 }
 
 #[cfg(test)]
@@ -2161,5 +2211,46 @@ mod tests {
             status_color("in_progress", &pal),
             status_color("blocked", &pal)
         );
+    }
+
+    fn mk_agent_session(id: &str, name: &str) -> AgentSession {
+        AgentSession {
+            id: id.to_string(),
+            name: name.to_string(),
+            agent: crate::coding_agents::CodingAgent {
+                display_name: name.to_string(),
+                command: String::new(),
+                args: vec![],
+                resume: crate::coding_agents::ResumeStrategy::None,
+                compatibility: Default::default(),
+            },
+            tab_id: None,
+            active: true,
+            stale: false,
+            resume_id: None,
+            started_at: String::new(),
+            log_path: None,
+            last_output_at: None,
+            parent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn resolve_agent_session_matches_by_name() {
+        let sessions = vec![mk_agent_session("s1", "Claude Code")];
+        assert!(resolve_agent_session("Claude Code", &sessions).is_some());
+        assert!(resolve_agent_session("unknown", &sessions).is_none());
+    }
+
+    #[test]
+    fn resolve_agent_session_matches_by_id() {
+        let sessions = vec![mk_agent_session("s1", "Claude Code")];
+        assert!(resolve_agent_session("s1", &sessions).is_some());
+    }
+
+    #[test]
+    fn resolve_agent_session_returns_none_for_empty() {
+        let sessions: Vec<AgentSession> = vec![];
+        assert!(resolve_agent_session("anything", &sessions).is_none());
     }
 }
