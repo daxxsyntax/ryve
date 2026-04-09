@@ -15,6 +15,9 @@ mod process_snapshot;
 mod release_artifact;
 mod screen;
 mod style;
+#[allow(dead_code)]
+// API surface defined by spark ryve-4bae4ff6; consumed by tests + downstream sparks
+mod tmux;
 mod widget;
 mod workshop;
 mod worktree_cleanup;
