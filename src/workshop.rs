@@ -88,6 +88,12 @@ pub struct Workshop {
     pub sparks_db: Option<SqlitePool>,
     /// Cached sparks for display (loaded from DB).
     pub sparks: Vec<Spark>,
+    /// True while an explicit Refresh-button refetch is in flight. Drives
+    /// the Workgraph panel's refresh button indicator so users get visible
+    /// feedback that their click did something. Cleared on the next
+    /// `SparksLoaded` (whether from the Refresh or the 3s poll).
+    /// Spark ryve-7805b38b.
+    pub sparks_refreshing: bool,
     /// Cached count of failing or pending required contracts (loaded from DB).
     pub failing_contracts: usize,
     /// Cached failing/pending required contracts (loaded from DB) — used by
@@ -209,6 +215,7 @@ impl Workshop {
             file_explorer: FileExplorerState::new(),
             sparks_db: None,
             sparks: Vec::new(),
+            sparks_refreshing: false,
             failing_contracts: 0,
             failing_contracts_list: Vec::new(),
             hand_assignments: Vec::new(),
@@ -999,6 +1006,15 @@ mod tests {
             iced::font::Family::Name(name) => assert_eq!(name, "JetBrains Mono"),
             other => panic!("expected named family, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn sparks_refreshing_defaults_false() {
+        // Spark ryve-7805b38b: a fresh workshop must not pretend a
+        // Refresh is already in flight, otherwise the button would
+        // ship stuck in its in-flight style.
+        let ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        assert!(!ws.sparks_refreshing);
     }
 
     #[test]

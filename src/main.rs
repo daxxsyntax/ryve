@@ -986,7 +986,14 @@ impl App {
                     }
                     ws.prev_blocked_spark_ids = current_blocked;
                     ws.sparks_baseline_seen = true;
+                    // Replace (not append) so Refresh never duplicates
+                    // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    // Clear the Refresh-button indicator now that the
+                    // refetch has landed. Both the explicit Refresh and
+                    // the 3s poll route through this handler; clearing
+                    // when the flag was already false is a no-op.
+                    ws.sparks_refreshing = false;
 
                     // Refresh failing contract count + blocked-spark set +
                     // Home dashboard sources (failing contract list, active
@@ -2338,12 +2345,19 @@ impl App {
                 };
                 match msg {
                     screen::sparks::Message::Refresh => {
-                        if let Some(ws) = self.workshops.get(idx)
+                        // Explicit user refetch: bypass `poll_in_flight` (which
+                        // only gates the 3s auto-poll) so the button always
+                        // does what it says, and flip the per-workshop
+                        // `sparks_refreshing` flag so the button renders a
+                        // visible in-flight indicator until `SparksLoaded`
+                        // comes back. Spark ryve-7805b38b.
+                        if let Some(ws) = self.workshops.get_mut(idx)
                             && let Some(ref pool) = ws.sparks_db
                         {
                             let pool = pool.clone();
                             let ws_id = ws.workshop_id();
                             let id = ws.id;
+                            ws.sparks_refreshing = true;
                             return Task::perform(load_sparks(pool, ws_id), move |sparks| {
                                 Message::SparksLoaded(id, sparks)
                             });
@@ -4692,6 +4706,7 @@ impl App {
                     &ws.spark_create_form,
                     &ws.spark_status_menu,
                     &ws.spark_collapsed_epics,
+                    ws.sparks_refreshing,
                 )
                 .map(Message::Sparks)
             }
@@ -4704,6 +4719,7 @@ impl App {
                 &ws.spark_create_form,
                 &ws.spark_status_menu,
                 &ws.spark_collapsed_epics,
+                ws.sparks_refreshing,
             )
             .map(Message::Sparks)
         };
