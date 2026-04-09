@@ -512,23 +512,23 @@ pub fn resolve_atlas_agent(
     available: &[CodingAgent],
 ) -> Option<CodingAgent> {
     // Honour explicit config first.
-    if let Some(name) = config_value {
-        if let Some(agent) = available
+    if let Some(name) = config_value
+        && let Some(agent) = available
             .iter()
             .find(|a| a.command == name || a.display_name.eq_ignore_ascii_case(name))
-        {
-            if !agent.compatibility.is_unsupported() {
-                return Some(agent.clone());
-            }
-        }
+            .filter(|a| !a.compatibility.is_unsupported())
+    {
+        return Some(agent.clone());
     }
 
     // Fallback: walk the Atlas-specific order.
     for cmd in ATLAS_FALLBACK_ORDER {
-        if let Some(agent) = available.iter().find(|a| a.command == *cmd) {
-            if !agent.compatibility.is_unsupported() {
-                return Some(agent.clone());
-            }
+        if let Some(agent) = available
+            .iter()
+            .find(|a| a.command == *cmd)
+            .filter(|a| !a.compatibility.is_unsupported())
+        {
+            return Some(agent.clone());
         }
     }
 

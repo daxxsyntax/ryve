@@ -166,6 +166,7 @@ impl BenchState {
     /// Create a pinned tab locked to index 0. Only one pinned tab
     /// (Atlas) is expected; if another already exists it is inserted
     /// immediately after the existing pinned tabs.
+    #[cfg(test)]
     pub fn create_pinned_tab(&mut self, id: u64, title: String, kind: TabKind) {
         let tab = Tab {
             id,

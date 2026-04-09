@@ -1686,10 +1686,8 @@ impl App {
                     .iter()
                     .any(|s| s.session_label.as_deref() == Some("atlas") && s.active);
                 let atlas_agent = if !has_atlas {
-                    self.available_agents
-                        .iter()
-                        .find(|a| !a.compatibility.is_unsupported())
-                        .cloned()
+                    let config_pref = self.workshops[idx].config.atlas_agent.as_deref();
+                    coding_agents::resolve_atlas_agent(config_pref, &self.available_agents)
                 } else {
                     None
                 };
