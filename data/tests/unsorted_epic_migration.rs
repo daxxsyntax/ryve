@@ -1,4 +1,4 @@
-//! Regression test for migration 011_unsorted_epic_reparent.
+//! Regression test for migration 012_unsorted_epic_reparent.
 //!
 //! Because `#[sqlx::test]` runs all migrations before the test body executes,
 //! migration 011 first runs against an empty DB (no-op). We then seed orphan
@@ -7,7 +7,7 @@
 //! idempotency — no duplicate 'Unsorted' epics, already-reparented sparks
 //! left alone.
 
-const MIGRATION_SQL: &str = include_str!("../migrations/011_unsorted_epic_reparent.sql");
+const MIGRATION_SQL: &str = include_str!("../migrations/012_unsorted_epic_reparent.sql");
 
 async fn run_migration(pool: &sqlx::SqlitePool) {
     sqlx::raw_sql(MIGRATION_SQL)
