@@ -289,6 +289,14 @@ pub struct Workshop {
     pub spark_create_form: crate::screen::sparks::CreateForm,
     /// Inline status popover state for the workgraph panel.
     pub spark_status_menu: crate::screen::sparks::StatusMenu,
+    /// Client-side filter state for the sparks panel (spark ryve-baca34b0).
+    pub sparks_filter: crate::screen::sparks::SparksFilter,
+    /// Cached agent session names for the filter bar assignee dropdown.
+    /// Refreshed alongside `agent_sessions`. Spark ryve-baca34b0.
+    pub agent_session_names: Vec<String>,
+    /// Sparks after applying `sparks_filter`. Recomputed whenever
+    /// `sparks` or `sparks_filter` changes. Spark ryve-baca34b0.
+    pub filtered_sparks: Vec<Spark>,
     /// Currently selected spark ID (for detail view).
     pub selected_spark: Option<String>,
     /// Cached contracts for the currently selected spark.
@@ -407,6 +415,9 @@ impl Workshop {
             sparks_filter: Default::default(),
             spark_create_form: Default::default(),
             spark_status_menu: Default::default(),
+            sparks_filter: Default::default(),
+            agent_session_names: Vec::new(),
+            filtered_sparks: Vec::new(),
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
             selected_spark_bonds: Vec::new(),
@@ -443,6 +454,21 @@ impl Workshop {
     /// epic is now collapsed. Callers are expected to persist the updated
     /// UI state using [`Workshop::ui_state_snapshot`], with the actual
     /// save occurring at the existing persistence call sites.
+    /// Recompute `filtered_sparks` from `sparks` and `sparks_filter`.
+    /// Must be called after any mutation to either. Spark ryve-baca34b0.
+    pub fn recompute_filtered_sparks(&mut self) {
+        if self.sparks_filter.is_empty() {
+            self.filtered_sparks = self.sparks.clone();
+        } else {
+            self.filtered_sparks = self
+                .sparks
+                .iter()
+                .filter(|s| self.sparks_filter.matches(s))
+                .cloned()
+                .collect();
+        }
+    }
+
     pub fn toggle_epic_collapse(&mut self, epic_id: &str) -> bool {
         if self.collapsed_epics.remove(epic_id) {
             false
