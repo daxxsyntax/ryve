@@ -39,6 +39,12 @@ pub enum SparksError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    #[error(
+        "non-epic spark must have a parent_id (spark_type={spark_type}); \
+         only epics may be top-level. Pick a parent epic or create one first."
+    )]
+    OrphanChildRejected { spark_type: String },
+
     #[error("invalid semver: {0}")]
     InvalidSemver(String),
 

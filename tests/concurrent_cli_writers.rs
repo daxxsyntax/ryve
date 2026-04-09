@@ -90,6 +90,36 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
     let workshop = unique_tempdir("crew");
     ryve_init(&workshop);
 
+    // Create a parent epic so child task sparks satisfy the no-orphan
+    // rule (non-epic sparks require --parent).
+    let epic_output = Command::new(ryve_bin())
+        .args([
+            "--json",
+            "spark",
+            "create",
+            "--type",
+            "epic",
+            "--priority",
+            "2",
+            "stress-test-epic",
+        ])
+        .env("RYVE_WORKSHOP_ROOT", &workshop)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn `ryve spark create` for parent epic");
+    assert!(
+        epic_output.status.success(),
+        "epic create failed: {:?}",
+        String::from_utf8_lossy(&epic_output.stderr),
+    );
+    let epic_json: serde_json::Value =
+        serde_json::from_slice(&epic_output.stdout).expect("epic create did not return JSON");
+    let parent_id = epic_json["id"]
+        .as_str()
+        .expect("epic JSON missing 'id'")
+        .to_string();
+
     // Spawn N writer processes in parallel. We use std threads to run
     // the subprocess blocking calls concurrently; the actual
     // concurrency that matters is at the OS-process level, not at the
@@ -98,6 +128,7 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
     for i in 0..N {
         let ws = workshop.clone();
         let bin = ryve_bin();
+        let parent = parent_id.clone();
         handles.push(thread::spawn(move || {
             let title = format!("crew-writer-{i}");
             let output = Command::new(bin)
@@ -108,6 +139,8 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
                     "task",
                     "--priority",
                     "2",
+                    "--parent",
+                    &parent,
                     &title,
                 ])
                 // RYVE_WORKSHOP_ROOT is honored by `cli::run` (see
@@ -167,9 +200,11 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
             .await
             .expect("count query");
         let count: i64 = row.get(0);
+        // N task sparks + 1 parent epic = N+1 total
+        let expected_count = (N + 1) as i64;
         assert_eq!(
-            count, N as i64,
-            "expected {N} rows after {N} concurrent CLI writers, got {count} — \
+            count, expected_count,
+            "expected {expected_count} rows (1 epic + {N} tasks) after concurrent CLI writers, got {count} — \
              lost writes indicate a broken busy_timeout / retry policy"
         );
 
@@ -197,6 +232,7 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
         let mut titles: Vec<String> = rows.into_iter().map(|r| r.get::<String, _>(0)).collect();
         titles.sort();
         let mut expected: Vec<String> = (0..N).map(|i| format!("crew-writer-{i}")).collect();
+        expected.push("stress-test-epic".to_string());
         expected.sort();
         assert_eq!(
             titles, expected,
@@ -216,7 +252,7 @@ fn twelve_concurrent_cli_hands_keep_sparks_db_intact() {
             .await
             .unwrap();
         let count: i64 = row.get(0);
-        assert_eq!(count, N as i64);
+        assert_eq!(count, (N + 1) as i64);
         reopened.close().await;
     });
 

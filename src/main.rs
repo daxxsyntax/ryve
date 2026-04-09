@@ -275,17 +275,26 @@ enum Message {
         error: String,
     },
 
-    /// Workshop .ryve/ initialized
+    /// Workshop .ryve/ initialized. Config + ui_state are boxed to keep
+    /// `Message` below the `large_enum_variant` clippy threshold — this
+    /// variant was already the fattest, and spark ryve-926870a9 pushed
+    /// it over the edge by adding a `UiState` field.
     WorkshopReady {
         id: Uuid,
         pool: sqlx::SqlitePool,
-        config: data::ryve_dir::WorkshopConfig,
+        config: Box<data::ryve_dir::WorkshopConfig>,
         custom_agents: Vec<data::ryve_dir::AgentDef>,
         agent_context: Option<String>,
         agent_context_sync_cache: std::sync::Arc<std::sync::Mutex<data::agent_context::SyncCache>>,
+        ui_state: Box<data::ryve_dir::UiState>,
     },
     /// Workgraph sparks loaded from DB
     SparksLoaded(Uuid, Vec<Spark>),
+    /// A new spark was just created via the inline "+" form. Carries the
+    /// new spark's id (if the write succeeded) and a fresh sparks list.
+    /// The handler applies the same bookkeeping as `SparksLoaded` and then
+    /// auto-selects the new spark so the detail panel opens for it.
+    SparkCreated(Uuid, Option<String>, Vec<Spark>),
     /// Failing/pending required contract count loaded from DB
     FailingContractsLoaded(Uuid, usize),
     /// Failing/pending required contract list loaded from DB (for Home overview)
@@ -523,6 +532,9 @@ impl std::fmt::Debug for Message {
             }
             Self::WorkshopReady { id, .. } => write!(f, "WorkshopReady({id})"),
             Self::SparksLoaded(id, s) => write!(f, "SparksLoaded({id}, {} sparks)", s.len()),
+            Self::SparkCreated(id, new_id, s) => {
+                write!(f, "SparkCreated({id}, {new_id:?}, {} sparks)", s.len())
+            }
             Self::FailingContractsLoaded(id, n) => {
                 write!(f, "FailingContractsLoaded({id}, {n})")
             }
@@ -965,10 +977,11 @@ impl App {
                     Ok(init) => Message::WorkshopReady {
                         id: ws_id,
                         pool: init.pool,
-                        config: init.config,
+                        config: Box::new(init.config),
                         custom_agents: init.custom_agents,
                         agent_context: init.agent_context,
                         agent_context_sync_cache: init.agent_context_sync_cache,
+                        ui_state: Box::new(init.ui_state),
                     },
                     Err(e) => Message::WorkshopInitFailed {
                         id: ws_id,
@@ -1005,6 +1018,7 @@ impl App {
                 custom_agents,
                 agent_context,
                 agent_context_sync_cache,
+                ui_state,
             } => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
                 let Some(idx) = ws_idx else {
@@ -1012,9 +1026,14 @@ impl App {
                 };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     ws.sparks_db = Some(pool.clone());
-                    ws.config = config;
+                    ws.config = *config;
                     ws.custom_agents = custom_agents;
                     ws.agent_context = agent_context;
+                    // Apply persisted UI state before the first render so
+                    // the sparks panel honours the user's last collapse
+                    // choices. Stale IDs are pruned once sparks finish
+                    // loading (see SparksLoaded below). Spark ryve-926870a9.
+                    ws.collapsed_epics = ui_state.collapsed_epics.clone();
                     // Hand off the warm hash cache from init_workshop so the
                     // first SparksLoaded sync tick is a no-op on disk.
                     // Spark ryve-86b0b326.
@@ -1104,7 +1123,34 @@ impl App {
                     }
                     ws.prev_blocked_spark_ids = current_blocked;
                     ws.sparks_baseline_seen = true;
+                    // Replace (not append) so Refresh never duplicates
+                    // entries. Invariant from spark ryve-7805b38b.
                     ws.sparks = sparks;
+                    // Clear the Refresh-button indicator now that the
+                    // refetch has landed. Both the explicit Refresh and
+                    // the 3s poll route through this handler; clearing
+                    // when the flag was already false is a no-op.
+                    ws.sparks_refreshing = false;
+
+                    // Silently drop any collapsed-epic IDs whose epic no
+                    // longer exists (deleted between runs, or already gone
+                    // when the stored set was first loaded). If anything
+                    // was pruned, write the cleaned snapshot back so the
+                    // on-disk file doesn't keep growing with dead IDs.
+                    // Spark ryve-926870a9.
+                    let live_epic_ids = Workshop::live_epic_ids(&ws.sparks);
+                    if ws.prune_collapsed_epics(&live_epic_ids) {
+                        let ryve_dir = ws.ryve_dir.clone();
+                        let snapshot = ws.ui_state_snapshot();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                            {
+                                log::warn!("failed to save .ryve/ui_state.json: {e}");
+                            }
+                        });
+                    }
+
                     // Only reseed the intent-list drafts if the selected
                     // spark *changed*; otherwise a mid-type keystroke
                     // would get clobbered on every 3-second poll. Spark
@@ -1115,18 +1161,11 @@ impl App {
                     // loaded spark so the invariant "in-memory vec == persisted
                     // metadata.intent.acceptance_criteria after a save" holds
                     // automatically across every load path (spark ryve-9b98f949).
-                    // Only reseed when the user is not mid-edit on *different*
-                    // content — if they've added local rows that aren't yet on
-                    // disk (e.g. an empty row awaiting input), don't clobber
-                    // them; the next blur/submit will persist them.
                     if let Some(ref selected_id) = ws.selected_spark
                         && ws.acceptance_criteria_edit.is_for(selected_id)
                         && let Some(spark) = ws.sparks.iter().find(|s| s.id == *selected_id)
                     {
                         let persisted = spark.intent().acceptance_criteria;
-                        // Treat whitespace-only draft rows as "equal" to the
-                        // persisted vec minus those drafts — i.e. don't
-                        // clobber an empty row the user just added.
                         let draft_trimmed: Vec<String> = ws
                             .acceptance_criteria_edit
                             .items
@@ -1135,8 +1174,6 @@ impl App {
                             .cloned()
                             .collect();
                         if draft_trimmed == persisted {
-                            // No unsaved drafts — adopt the DB ordering and
-                            // clear any stale undo buffer.
                             ws.acceptance_criteria_edit =
                                 screen::spark_detail::AcceptanceCriteriaEdit::load(spark);
                         }
@@ -1199,6 +1236,25 @@ impl App {
                     return Task::batch(tasks);
                 }
                 Task::none()
+            }
+            Message::SparkCreated(id, new_id, sparks) => {
+                // First, drive the normal post-load bookkeeping (blocked
+                // set, embers, baseline flags, etc.) by forwarding to the
+                // standard SparksLoaded handler. Then, if the create
+                // succeeded, select the new spark so the detail panel
+                // focuses it immediately — this is the "new spark is
+                // selected" half of the acceptance criterion. Epic
+                // grouping and collapse state are available, so the
+                // selection handler can expand the parent group for free.
+                let load_task = self.update(Message::SparksLoaded(id, sparks));
+                let select_task = if let Some(new_id) = new_id {
+                    self.update(Message::Sparks(screen::sparks::Message::SelectSpark(
+                        new_id,
+                    )))
+                } else {
+                    Task::none()
+                };
+                Task::batch([load_task, select_task])
             }
             Message::FailingContractsLoaded(id, count) => {
                 if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
@@ -3187,6 +3243,12 @@ impl App {
                         self.handle_bench_message(screen::bench::Message::CloseTerminalSearch),
                     );
                 }
+                // Spark create form dismissal: Escape cancels the inline
+                // "+" form without persisting, per spark ryve-d158cc9f
+                // acceptance criteria.
+                if self.workshops[idx].spark_create_form.visible {
+                    tasks.push(self.update(Message::Sparks(screen::sparks::Message::CancelCreate)));
+                }
                 tasks.push(self.update(Message::FileViewer(file_viewer::Message::ClearSelection)));
                 Task::batch(tasks)
             }
@@ -3197,12 +3259,19 @@ impl App {
                 };
                 match msg {
                     screen::sparks::Message::Refresh => {
-                        if let Some(ws) = self.workshops.get(idx)
+                        // Explicit user refetch: bypass `poll_in_flight` (which
+                        // only gates the 3s auto-poll) so the button always
+                        // does what it says, and flip the per-workshop
+                        // `sparks_refreshing` flag so the button renders a
+                        // visible in-flight indicator until `SparksLoaded`
+                        // comes back. Spark ryve-7805b38b.
+                        if let Some(ws) = self.workshops.get_mut(idx)
                             && let Some(ref pool) = ws.sparks_db
                         {
                             let pool = pool.clone();
                             let ws_id = ws.workshop_id();
                             let id = ws.id;
+                            ws.sparks_refreshing = true;
                             return Task::perform(load_sparks(pool, ws_id), move |sparks| {
                                 Message::SparksLoaded(id, sparks)
                             });
@@ -3283,8 +3352,18 @@ impl App {
                     }
                     screen::sparks::Message::ShowCreateForm => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.reset();
-                            ws.spark_create_form.visible = true;
+                            // Default the parent picker to the focused
+                            // spark's nearest epic ancestor (or the spark
+                            // itself, if it is an epic). If nothing is
+                            // focused the form opens with an empty parent
+                            // and the user must pick one (unless they are
+                            // creating a top-level epic).
+                            let default_parent = screen::sparks::resolve_default_parent_epic(
+                                &ws.sparks,
+                                ws.selected_spark.as_deref(),
+                            );
+                            ws.spark_create_form
+                                .open_with_default_parent(default_parent);
                         }
                     }
                     screen::sparks::Message::CreateFormTitleChanged(val) => {
@@ -3309,18 +3388,6 @@ impl App {
                             ws.spark_create_form.priority = p;
                         }
                     }
-                    screen::sparks::Message::CreateFormProblemChanged(val) => {
-                        if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.problem = val;
-                            ws.spark_create_form.error = None;
-                        }
-                    }
-                    screen::sparks::Message::CreateFormAcceptanceChanged(val) => {
-                        if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.acceptance = val;
-                            ws.spark_create_form.error = None;
-                        }
-                    }
                     screen::sparks::Message::CreateFormParentEpicChanged(val) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_create_form.parent_epic_id = val;
@@ -3341,24 +3408,9 @@ impl App {
                         }
 
                         let title = ws.spark_create_form.title.trim().to_string();
-                        let problem = ws.spark_create_form.problem.trim().to_string();
-                        let acceptance = ws.spark_create_form.acceptance.trim().to_string();
                         let spark_type_str = ws.spark_create_form.spark_type.clone();
                         let priority = ws.spark_create_form.priority;
                         let parent_id = ws.spark_create_form.parent_epic_id.clone();
-
-                        // Build the structured intent metadata block. The
-                        // CLI's `spark create` writes the same shape so the
-                        // two paths stay interchangeable.
-                        let metadata = serde_json::json!({
-                            "intent": {
-                                "problem_statement": problem,
-                                "invariants": Vec::<String>::new(),
-                                "non_goals": Vec::<String>::new(),
-                                "acceptance_criteria": vec![acceptance],
-                            }
-                        })
-                        .to_string();
 
                         let spark_type = match spark_type_str.as_str() {
                             "bug" => data::sparks::types::SparkType::Bug,
@@ -3379,6 +3431,7 @@ impl App {
                             let id = ws.id;
                             return Task::perform(
                                 async move {
+                                    let bond_parent_id = parent_id.clone();
                                     let new = data::sparks::types::NewSpark {
                                         title,
                                         description: String::new(),
@@ -3390,14 +3443,30 @@ impl App {
                                         parent_id,
                                         due_at: None,
                                         estimated_minutes: None,
-                                        metadata: Some(metadata),
+                                        metadata: None,
                                         risk_level: None,
                                         scope_boundary: None,
                                     };
-                                    let _ = data::sparks::spark_repo::create(&pool, new).await;
-                                    load_sparks(pool, ws_id).await
+                                    let new_id =
+                                        match data::sparks::spark_repo::create(&pool, new).await {
+                                            Ok(spark) => {
+                                                if let Some(ref pid) = bond_parent_id {
+                                                    let _ = data::sparks::bond_repo::create(
+                                                        &pool,
+                                                        pid,
+                                                        &spark.id,
+                                                        data::sparks::types::BondType::ParentChild,
+                                                    )
+                                                    .await;
+                                                }
+                                                Some(spark.id)
+                                            }
+                                            Err(_) => None,
+                                        };
+                                    let sparks = load_sparks(pool, ws_id).await;
+                                    (new_id, sparks)
                                 },
-                                move |sparks| Message::SparksLoaded(id, sparks),
+                                move |(new_id, sparks)| Message::SparkCreated(id, new_id, sparks),
                             );
                         }
                     }
@@ -3442,6 +3511,25 @@ impl App {
                                     move |sparks| Message::SparksLoaded(id, sparks),
                                 );
                             }
+                        }
+                    }
+                    screen::sparks::Message::ToggleEpicCollapse(epic_id) => {
+                        // Flip the collapse flag in memory and persist the
+                        // new snapshot to `.ryve/ui_state.json` so the
+                        // choice survives restart. Fire-and-forget — a
+                        // failed write is logged but never blocks the UI.
+                        // Spark ryve-926870a9.
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.toggle_epic_collapse(&epic_id);
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
@@ -5862,25 +5950,29 @@ impl App {
                 )
                 .map(Message::SparkDetail)
             } else {
-                screen::sparks::view(
-                    &ws.sparks,
-                    &ws.blocked_spark_ids,
-                    &pal,
+                screen::sparks::view(screen::sparks::ViewCtx {
+                    sparks: &ws.sparks,
+                    blocked_ids: &ws.blocked_spark_ids,
+                    pal,
                     has_bg,
-                    &ws.spark_create_form,
-                    &ws.spark_status_menu,
-                )
+                    create_form: &ws.spark_create_form,
+                    status_menu: &ws.spark_status_menu,
+                    collapsed: &ws.collapsed_epics,
+                    refreshing: ws.sparks_refreshing,
+                })
                 .map(Message::Sparks)
             }
         } else {
-            screen::sparks::view(
-                &ws.sparks,
-                &ws.blocked_spark_ids,
-                &pal,
+            screen::sparks::view(screen::sparks::ViewCtx {
+                sparks: &ws.sparks,
+                blocked_ids: &ws.blocked_spark_ids,
+                pal,
                 has_bg,
-                &ws.spark_create_form,
-                &ws.spark_status_menu,
-            )
+                create_form: &ws.spark_create_form,
+                status_menu: &ws.spark_status_menu,
+                collapsed: &ws.collapsed_epics,
+                refreshing: ws.sparks_refreshing,
+            })
             .map(Message::Sparks)
         };
 
