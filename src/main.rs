@@ -392,11 +392,6 @@ enum Message {
     /// reload — all reading liveness from this single snapshot. Spark
     /// `ryve-a5b9e4a1`.
     ProcessSnapshotReady(Arc<ProcessSnapshot>),
-    /// Inert no-op. Used by the global keyboard subscription for any key
-    /// event that does not map to a real hotkey, so unmatched keystrokes
-    /// can never accidentally re-trigger an expensive `SparksPoll`.
-    /// Spark ryve-5b9c5d93 (perf regression harness).
-    Noop,
     /// Periodic backup tick — take a `.backup` snapshot of each open
     /// workshop's sparks.db into `.ryve/backups/`. Also fires once on
     /// graceful workshop close. Spark ryve-7c8573c4.
@@ -608,7 +603,7 @@ impl std::fmt::Debug for Message {
             Self::AgentContextSynced => write!(f, "AgentContextSynced"),
             Self::SparksPoll => write!(f, "SparksPoll"),
             Self::ProcessSnapshotReady(_) => write!(f, "ProcessSnapshotReady"),
-            Self::Noop => write!(f, "Noop"),
+
             Self::BackupTick => write!(f, "BackupTick"),
             Self::BackupFinished(r) => match r {
                 Ok(p) => write!(f, "BackupFinished(ok={})", p.display()),
@@ -4197,7 +4192,6 @@ impl App {
             }
             Message::BackgroundConfigSaved => Task::none(),
             Message::AgentContextSynced => Task::none(),
-            Message::Noop => Task::none(),
             Message::BackupTick => {
                 // Spark ryve-7c8573c4: periodic snapshot of every open
                 // workshop's sparks.db so a crash or corruption leaves
@@ -6010,12 +6004,20 @@ impl App {
         // routing decision lives in [`perf_core::classify_key_event`]. The
         // smoke test in `perf_core/tests/sparks_poll_smoke.rs` drives the
         // *same* classifier with synthetic events to assert no key path
-        // ever resolves to `SparksPoll`. This subsumes the lean
-        // event::listen_with fix from hand/0e2ed795 ([sp-18253584]) by
-        // making the same correctness property automatically tested.
-        // Sparks ryve-5b9c5d93 + ryve-a13f9d3a.
-        let hotkeys = keyboard::listen().map(|event| {
-            let (kind, mods) = match &event {
+        // ever resolves to `SparksPoll`.
+        //
+        // [sp-78d34de4]: switched from `keyboard::listen().map()` to
+        // `event::listen_with()` so unmatched keys return `None` — no
+        // `Message` is dispatched and the iced update loop is not entered.
+        // Previously every keystroke (including terminal typing) produced
+        // at minimum a `Message::Noop`, adding unnecessary overhead.
+        let hotkeys = event::listen_with(|event, _status, _id| {
+            let keyboard_event = match event {
+                iced::Event::Keyboard(ke) => ke,
+                _ => return None,
+            };
+
+            let (kind, mods) = match &keyboard_event {
                 keyboard::Event::KeyPressed {
                     key: keyboard::Key::Character(c),
                     modifiers,
@@ -6042,28 +6044,23 @@ impl App {
                     },
                     perf_core::KeyModifiers::default(),
                 ),
-                _ => (
-                    perf_core::KeyKind::Other,
-                    perf_core::KeyModifiers::default(),
-                ),
+                _ => return None,
             };
 
             match perf_core::classify_key_event(kind, mods) {
-                perf_core::KeyDispatch::NewDefaultHand => Message::NewDefaultHand,
+                perf_core::KeyDispatch::NewDefaultHand => Some(Message::NewDefaultHand),
                 perf_core::KeyDispatch::CopySelection => {
-                    Message::FileViewer(file_viewer::Message::CopySelection)
+                    Some(Message::FileViewer(file_viewer::Message::CopySelection))
                 }
-                perf_core::KeyDispatch::HotkeyCmdF => Message::HotkeyCmdF,
-                perf_core::KeyDispatch::NewWorkshopDialog => Message::NewWorkshopDialog,
-                perf_core::KeyDispatch::HotkeyEscape => Message::HotkeyEscape,
+                perf_core::KeyDispatch::HotkeyCmdF => Some(Message::HotkeyCmdF),
+                perf_core::KeyDispatch::NewWorkshopDialog => Some(Message::NewWorkshopDialog),
+                perf_core::KeyDispatch::HotkeyEscape => Some(Message::HotkeyEscape),
                 perf_core::KeyDispatch::ShiftStateChanged(shift) => {
-                    Message::ShiftStateChanged(shift)
+                    Some(Message::ShiftStateChanged(shift))
                 }
-                // SparksPoll is a sentinel that classify_key_event must
-                // never return. The regression test asserts this; if it
-                // ever did escape, we still want a no-op rather than a
-                // workgraph reload — so map it to Noop here too.
-                perf_core::KeyDispatch::Noop | perf_core::KeyDispatch::SparksPoll => Message::Noop,
+                // Unmatched keys and the SparksPoll sentinel both return
+                // None — no message dispatched, no update loop entered.
+                perf_core::KeyDispatch::Noop | perf_core::KeyDispatch::SparksPoll => None,
             }
         });
 
