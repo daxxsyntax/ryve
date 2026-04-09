@@ -198,6 +198,7 @@ impl CollapsedEpics {
         self.ids.contains(id)
     }
 
+    #[allow(dead_code)]
     pub fn toggle(&mut self, id: &str) {
         if !self.ids.remove(id) {
             self.ids.insert(id.to_string());
@@ -281,7 +282,10 @@ pub enum Message {
     BeginCloseFlow(String),
     /// Close the spark with a specific reason.
     CloseSparkWithReason(String, String),
-    /// Toggle the expand/collapse state of an epic group header.
+    /// Toggle the collapsed/expanded state of an epic group in the
+    /// workgraph panel. The workshop persists the new state to
+    /// `.ryve/ui_state.json` so the decision survives restart.
+    /// Sparks ryve-8be256a8 / ryve-926870a9.
     ToggleEpicCollapse(String),
 }
 
