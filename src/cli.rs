@@ -17,7 +17,8 @@ use data::ryve_dir::RyveDir;
 use data::sparks::types::*;
 use data::sparks::{
     agent_session_repo, assignment_repo, bond_repo, comment_repo, commit_link_repo,
-    constraint_helpers, contract_repo, crew_repo, ember_repo, event_repo, spark_repo, stamp_repo,
+    constraint_helpers, contract_repo, crew_repo, ember_repo, event_repo, release_repo, spark_repo,
+    stamp_repo,
 };
 
 use crate::agent_prompts::HeadArchetype;
@@ -56,6 +57,8 @@ pub const CLI_COMMANDS: &[&str] = &[
     "hands",
     "head",
     "heads",
+    "release",
+    "releases",
     "worktree",
     "worktrees",
     "wt",
@@ -167,6 +170,9 @@ pub async fn run(args: Vec<String>) {
         "hand" | "hands" => handle_hand(&pool, &workshop_root, &args_clean[2..], json_mode).await,
         "head" | "heads" => {
             handle_head(&pool, &workshop_root, &ws_id, &args_clean[2..], json_mode).await
+        }
+        "release" | "releases" => {
+            handle_release(&pool, &workshop_root, &args_clean[2..], json_mode).await
         }
         "worktree" | "worktrees" | "wt" => {
             handle_worktree(&pool, &workshop_root, &args_clean[2..], json_mode).await
@@ -287,6 +293,16 @@ fn print_usage() {
     eprintln!("  head archetype list                  List registered Head archetypes");
     eprintln!("  head render <archetype> --epic <id>  Dry-run: render an archetype prompt");
     eprintln!("  head --help                          Long-form Head documentation");
+    eprintln!();
+    eprintln!("  release create <major|minor|patch>   Create a new release");
+    eprintln!("  release list                         List releases");
+    eprintln!("  release show <id>                    Show release details + member epics");
+    eprintln!("  release add-epic <id> <epic_id>      Add an epic to a release");
+    eprintln!("  release remove-epic <id> <epic_id>   Remove an epic from a release");
+    eprintln!("  release status <id> <status>         Transition release status");
+    eprintln!(
+        "  release close <id>                   Close a release (verify, tag, build, record)"
+    );
     eprintln!();
     eprintln!(
         "  worktree prune [--yes]               Prune stale hand worktrees (dry-run by default)"
@@ -1915,8 +1931,73 @@ See also:
     );
 }
 
+fn print_head_spawn_usage() {
+    println!(
+        "ryve head spawn — launch a Head (crew orchestrator) on an epic
+
+USAGE:
+  ryve head spawn <epic_id> [OPTIONS]
+
+ARGUMENTS:
+  <epic_id>    The parent epic spark the Head will decompose. Should have
+               a populated `problem_statement` and `acceptance_criteria`
+               intent (`ryve spark show <epic_id>` to verify before
+               spawning).
+
+OPTIONS:
+  --archetype <name>  Head archetype: build, research, or review.
+                      Defaults to build. See `ryve head archetype list`.
+  --agent <name>      Coding agent to run as the Head (claude, codex, aider,
+                      opencode, …). Defaults to the first detected agent.
+  --crew <id>         Attach the Head to an existing crew. Optional: most
+                      workflows create the crew from inside the Head itself
+                      via `ryve crew create --head-session $RYVE_SESSION_ID`.
+
+EFFECTS:
+  1. Creates a git worktree for the Head at `.ryve/worktrees/<short>/`.
+  2. Persists an `agent_sessions` row with `session_label = \"head\"`.
+  3. Creates or reuses a Crew (via `--crew`), registers the Head as a
+     crew member with role \"head\", and sets `head_session_id` on the
+     Crew row. No `hand_assignments` row is created — the Head's
+     relationship to the workgraph is carried by the Crew, not a spark
+     claim.
+  4. Writes the Head system prompt (composed via `compose_head_prompt`,
+     injecting the epic id + title + archetype) to `.ryve/prompts/head-<id>.md`.
+  5. Launches the agent in full-auto, detached, with stdout/stderr going
+     to `.ryve/logs/head-<id>.log`.
+
+WORKED EXAMPLE:
+  # 1. Create an epic capturing the goal:
+  ryve spark create --type epic --priority 1 \\
+      --problem 'add OAuth login to the dashboard' \\
+      --acceptance 'user can log in with Google on /login' \\
+      --acceptance 'session cookie set and verified on /dashboard' \\
+      'Add OAuth login'
+  # → prints something like `created sp-1234`.
+
+  # 2. Spawn a Head on that epic:
+  ryve head spawn sp-1234 --agent claude
+
+  # 3. Watch the Head work. It will:
+  #    - create 2–8 child sparks under sp-1234
+  #    - create a crew and spawn Hands on each child
+  #    - poll progress
+  #    - eventually spawn a Merger that opens a single PR
+  #    - post the PR URL as a comment on sp-1234
+
+  # 4. Observe:
+  ryve spark show sp-1234    # children appear bonded parent_child
+  ryve crew list             # crew appears
+  ryve hand list             # sub-Hands appear with role=owner
+  ryve head list             # the Head itself appears
+"
+    );
+}
+
+// ── Head command dispatch ─────────────────────────────
+
 /// Consolidated `ryve head` dispatcher. Combines spawn (ryve-e4cadc03),
-/// list, archetype (ryve-982bddb8), and orchestrate (ryve-85945fa3).
+/// list, archetype (ryve-982bddb8), orchestrate (ryve-85945fa3), and render.
 async fn handle_head(
     pool: &sqlx::SqlitePool,
     workshop_root: &Path,
@@ -1928,21 +2009,19 @@ async fn handle_head(
         print_head_usage();
         process::exit(1);
     }
+    if matches!(args[0].as_str(), "help" | "--help" | "-h") {
+        print_head_usage();
+        return;
+    }
     match args[0].as_str() {
-        "help" | "--help" | "-h" => {
-            print_head_usage();
-        }
         "spawn" => {
-            if matches!(
-                args.get(1).map(String::as_str),
-                Some("help" | "--help" | "-h")
-            ) {
-                print_head_usage();
+            if args.len() >= 2 && matches!(args[1].as_str(), "help" | "--help" | "-h") {
+                print_head_spawn_usage();
                 return;
             }
             if args.len() < 2 {
                 die(
-                    "head spawn requires <epic_id> --archetype <build|research|review> [--agent <name>] [--crew <id>]",
+                    "head spawn requires <epic_id> --archetype <build|research|review> [--agent <name>] [--crew <id>]. Try `ryve head spawn --help`.",
                 );
             }
             let epic_id = args[1].clone();
@@ -1970,7 +2049,9 @@ async fn handle_head(
                             crew_id = Some(args[i].clone());
                         }
                     }
-                    other => die(&format!("unknown head spawn flag '{other}'")),
+                    other => die(&format!(
+                        "unknown head spawn flag '{other}'. Try `ryve head spawn --help`."
+                    )),
                 }
                 i += 1;
             }
@@ -1978,7 +2059,7 @@ async fn handle_head(
             let archetype = match archetype_name.as_deref() {
                 Some(name) => HeadArchetype::from_str(name).unwrap_or_else(|| {
                     die(&format!(
-                        "invalid archetype '{name}' (build|research|review)"
+                        "unknown archetype '{name}': expected build, research, or review"
                     ))
                 }),
                 None => die(
@@ -2010,6 +2091,7 @@ async fn handle_head(
                             "worktree": spawned.worktree_path,
                             "log": spawned.log_path,
                             "pid": spawned.child_pid,
+                            "role": "head",
                         });
                         println!(
                             "{}",
@@ -2026,6 +2108,9 @@ async fn handle_head(
                         );
                         println!("  worktree: {}", spawned.worktree_path.display());
                         println!("  log:      {}", spawned.log_path.display());
+                        println!(
+                            "  tip: `ryve head list` to see it, `ryve crew list` once it creates a crew"
+                        );
                     }
                 }
                 Err(e) => die(&format!("{e}")),
@@ -2660,6 +2745,437 @@ fn print_prune_report_json(candidates: &[PruneCandidate], summary: &PruneSummary
         "{}",
         serde_json::to_string_pretty(&payload).unwrap_or_default()
     );
+}
+
+// ── Release ─────────────────────────────────────────
+
+async fn handle_release(
+    pool: &sqlx::SqlitePool,
+    workshop_root: &Path,
+    args: &[String],
+    json_mode: bool,
+) {
+    if args.is_empty() {
+        die(
+            "release subcommand required (create, list, show, add-epic, remove-epic, status, close)",
+        );
+    }
+    match args[0].as_str() {
+        "create" => {
+            if args.len() < 2 {
+                die("release create requires <major|minor|patch>");
+            }
+            let bump = match args[1].as_str() {
+                "major" => data::release_version::Bump::Major,
+                "minor" => data::release_version::Bump::Minor,
+                "patch" => data::release_version::Bump::Patch,
+                other => die(&format!(
+                    "invalid bump kind '{other}': expected major, minor, or patch"
+                )),
+            };
+
+            // Find the maximum semver among closed releases to bump from.
+            let closed = release_repo::list(pool, Some(vec![ReleaseStatus::Closed]))
+                .await
+                .unwrap_or_default();
+            let prev = closed
+                .iter()
+                .filter_map(|r| data::release_version::parse(&r.version).ok())
+                .max();
+            let version = match data::release_version::next(prev, bump) {
+                Ok(v) => data::release_version::format(v),
+                Err(e) => die(&format!("version computation failed: {e}")),
+            };
+
+            let branch_name = data::release_branch::release_branch_name(&version);
+            let new = NewRelease {
+                version,
+                branch_name: Some(branch_name),
+                problem: None,
+                acceptance: Vec::new(),
+                notes: None,
+            };
+            match release_repo::create(pool, new).await {
+                Ok(r) => {
+                    // Cut the release branch so the DB row and the git
+                    // branch are created atomically from the CLI's
+                    // perspective.
+                    let rb = data::release_branch::open(workshop_root);
+                    match rb.cut_release_branch(&r.version).await {
+                        Ok(branch) => {
+                            if json_mode {
+                                let payload = serde_json::json!({
+                                    "release": r,
+                                    "branch": branch,
+                                });
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                                );
+                            } else {
+                                println!("created {} — v{} ({})", r.id, r.version, r.status);
+                                println!("  branch: {branch}");
+                            }
+                        }
+                        Err(e) => {
+                            // The DB row was created but branch cutting
+                            // failed. Report both so the user can retry
+                            // the branch cut manually.
+                            eprintln!("warning: release row created but branch cut failed: {e}");
+                            if json_mode {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&r).unwrap_or_default()
+                                );
+                            } else {
+                                println!("created {} — v{} ({})", r.id, r.version, r.status);
+                            }
+                        }
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "list" | "ls" => match release_repo::list(pool, None).await {
+            Ok(releases) => {
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&releases).unwrap_or_default()
+                    );
+                } else if releases.is_empty() {
+                    println!("No releases.");
+                } else {
+                    println!("{:<16} {:<12} {:<12} BRANCH", "ID", "VERSION", "STATUS");
+                    let sep = "-".repeat(64);
+                    println!("{sep}");
+                    for r in &releases {
+                        let branch = r.branch_name.as_deref().unwrap_or("");
+                        println!("{:<16} {:<12} {:<12} {}", r.id, r.version, r.status, branch);
+                    }
+                }
+            }
+            Err(e) => die(&format!("{e}")),
+        },
+        "show" => {
+            if args.len() < 2 {
+                die("release show requires <id>");
+            }
+            let release = match release_repo::get(pool, &args[1]).await {
+                Ok(r) => r,
+                Err(e) => die(&format!("{e}")),
+            };
+            let epics = release_repo::list_member_epics(pool, &release.id)
+                .await
+                .unwrap_or_default();
+            if json_mode {
+                let payload = serde_json::json!({
+                    "release": release,
+                    "epics": epics,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
+            } else {
+                println!("ID:       {}", release.id);
+                println!("Version:  {}", release.version);
+                println!("Status:   {}", release.status);
+                if let Some(ref b) = release.branch_name {
+                    println!("Branch:   {b}");
+                }
+                println!("Created:  {}", release.created_at);
+                if let Some(ref t) = release.cut_at {
+                    println!("Cut at:   {t}");
+                }
+                if let Some(ref t) = release.tag {
+                    println!("Tag:      {t}");
+                }
+                if let Some(ref p) = release.artifact_path {
+                    println!("Artifact: {p}");
+                }
+                if let Some(ref p) = release.problem {
+                    println!("Problem:  {p}");
+                }
+                let acc = release.acceptance();
+                if !acc.is_empty() {
+                    println!("Acceptance:");
+                    for a in &acc {
+                        println!("  - {a}");
+                    }
+                }
+                if let Some(ref n) = release.notes {
+                    println!("Notes:    {n}");
+                }
+                if epics.is_empty() {
+                    println!("\nNo member epics.");
+                } else {
+                    println!("\nMember epics ({}):", epics.len());
+                    for eid in &epics {
+                        println!("  {eid}");
+                    }
+                }
+            }
+        }
+        "add-epic" => {
+            if args.len() < 3 {
+                die("release add-epic requires <release_id> <epic_id>");
+            }
+            match release_repo::add_epic(pool, &args[1], &args[2]).await {
+                Ok(()) => {
+                    if json_mode {
+                        let payload = serde_json::json!({
+                            "release_id": args[1],
+                            "epic_id": args[2],
+                            "action": "added",
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload).unwrap_or_default()
+                        );
+                    } else {
+                        println!("{} added to release {}", args[2], args[1]);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "remove-epic" => {
+            if args.len() < 3 {
+                die("release remove-epic requires <release_id> <epic_id>");
+            }
+            match release_repo::remove_epic(pool, &args[1], &args[2]).await {
+                Ok(()) => {
+                    if json_mode {
+                        let payload = serde_json::json!({
+                            "release_id": args[1],
+                            "epic_id": args[2],
+                            "action": "removed",
+                        });
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&payload).unwrap_or_default()
+                        );
+                    } else {
+                        println!("{} removed from release {}", args[2], args[1]);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "status" => {
+            if args.len() < 3 {
+                die("release status requires <id> <new_status>");
+            }
+            let status = match ReleaseStatus::from_str(&args[2]) {
+                Some(s) => s,
+                None => die(&format!(
+                    "invalid release status '{}': expected planning, in_progress, ready, cut, closed, or abandoned",
+                    args[2]
+                )),
+            };
+            match release_repo::set_status(pool, &args[1], status).await {
+                Ok(r) => {
+                    if json_mode {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                    } else {
+                        println!("{} -> {}", r.id, r.status);
+                    }
+                }
+                Err(e) => die(&format!("{e}")),
+            }
+        }
+        "close" => {
+            if args.len() < 2 {
+                die("release close requires <id>");
+            }
+            release_close(pool, workshop_root, &args[1], json_mode).await;
+        }
+        other => die(&format!(
+            "unknown release subcommand '{other}': expected create, list, show, add-epic, remove-epic, status, or close"
+        )),
+    }
+}
+
+/// Orchestrate the full release-close ceremony:
+///   1. Verify all member epics are closed
+///   2. Tag the release branch
+///   3. Build the artifact
+///   4. Record the artifact path on the release row
+///   5. Transition to closed
+///
+/// On intermediate failure, rollback is best-effort: we do NOT leave a
+/// half-closed release in the DB. The release stays in its current status and
+/// the caller gets a non-zero exit code.
+async fn release_close(
+    pool: &sqlx::SqlitePool,
+    workshop_root: &Path,
+    release_id: &str,
+    json_mode: bool,
+) {
+    // 0. Fetch the release.
+    let release = match release_repo::get(pool, release_id).await {
+        Ok(r) => r,
+        Err(e) => die(&format!("{e}")),
+    };
+
+    // 1. Verify all member epics are closed.
+    let epics = release_repo::list_member_epics(pool, release_id)
+        .await
+        .unwrap_or_default();
+    let mut unclosed: Vec<String> = Vec::new();
+    for eid in &epics {
+        match spark_repo::get(pool, eid).await {
+            Ok(spark) => {
+                if spark.status != "closed" {
+                    unclosed.push(format!("{} (status: {})", spark.id, spark.status));
+                }
+            }
+            Err(e) => die(&format!("failed to fetch epic {eid}: {e}")),
+        }
+    }
+    if !unclosed.is_empty() {
+        die(&format!(
+            "cannot close release: {} unclosed epic(s): {}",
+            unclosed.len(),
+            unclosed.join(", ")
+        ));
+    }
+
+    // 2. Checkout the release branch so tag_release finds HEAD on the
+    //    expected branch. We restore the original branch afterwards.
+    let rb = data::release_branch::open(workshop_root);
+    let original_branch = {
+        let out = tokio::process::Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(workshop_root)
+            .output()
+            .await;
+        out.ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let release_branch = data::release_branch::release_branch_name(&release.version);
+    let checkout_out = tokio::process::Command::new("git")
+        .args(["checkout", &release_branch])
+        .current_dir(workshop_root)
+        .output()
+        .await;
+    match checkout_out {
+        Ok(o) if !o.status.success() => {
+            die(&format!(
+                "failed to checkout release branch {release_branch}: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => die(&format!("failed to checkout release branch: {e}")),
+        _ => {}
+    }
+
+    let tag_name = format!("v{}", release.version);
+    // We need an artifact path for the tag message — use the deterministic
+    // path even though the artifact doesn't exist yet. The tag message is
+    // informational and the path will be correct once step 3 completes.
+    let target_triple = match crate::release_artifact::host_target_triple_for_cli().await {
+        Ok(t) => t,
+        Err(e) => die(&format!("failed to determine host target triple: {e}")),
+    };
+    let anticipated_artifact =
+        crate::release_artifact::artifact_path_for(workshop_root, &release.version, &target_triple);
+    if let Err(e) = rb
+        .tag_release(&release.version, &anticipated_artifact)
+        .await
+    {
+        die(&format!("failed to tag release: {e}"));
+    }
+
+    // 3. Build the artifact.
+    let artifact_path = match crate::release_artifact::build_release_artifact(
+        workshop_root,
+        &release.version,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            // Rollback: delete the tag we just created.
+            let _ = tokio::process::Command::new("git")
+                .args(["tag", "-d", &tag_name])
+                .current_dir(workshop_root)
+                .output()
+                .await;
+            die(&format!("artifact build failed (tag rolled back): {e}"));
+        }
+    };
+
+    // 4. Record metadata on the release row.
+    if let Err(e) = release_repo::record_close_metadata(
+        pool,
+        release_id,
+        &tag_name,
+        &artifact_path.to_string_lossy(),
+    )
+    .await
+    {
+        // Rollback: delete tag, remove artifact.
+        let _ = tokio::process::Command::new("git")
+            .args(["tag", "-d", &tag_name])
+            .current_dir(workshop_root)
+            .output()
+            .await;
+        let _ = tokio::fs::remove_file(&artifact_path).await;
+        die(&format!(
+            "failed to record close metadata (tag + artifact rolled back): {e}"
+        ));
+    }
+
+    // 5. Transition to closed.
+    match release_repo::set_status(pool, release_id, ReleaseStatus::Closed).await {
+        Ok(r) => {
+            if json_mode {
+                let payload = serde_json::json!({
+                    "release": r,
+                    "tag": tag_name,
+                    "artifact_path": artifact_path.to_string_lossy(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
+            } else {
+                println!("release {} closed", r.id);
+                println!("  tag:      {tag_name}");
+                println!("  artifact: {}", artifact_path.display());
+            }
+        }
+        Err(e) => {
+            // Rollback: clear metadata, delete tag, remove artifact.
+            let _ =
+                sqlx::query("UPDATE releases SET tag = NULL, artifact_path = NULL WHERE id = ?")
+                    .bind(release_id)
+                    .execute(pool)
+                    .await;
+            let _ = tokio::process::Command::new("git")
+                .args(["tag", "-d", &tag_name])
+                .current_dir(workshop_root)
+                .output()
+                .await;
+            let _ = tokio::fs::remove_file(&artifact_path).await;
+            die(&format!(
+                "failed to transition to closed (tag + artifact + metadata rolled back): {e}"
+            ));
+        }
+    }
+
+    // 6. Restore the original branch so the working tree is back where
+    //    the user started.
+    if let Some(ref branch) = original_branch {
+        let _ = tokio::process::Command::new("git")
+            .args(["checkout", branch])
+            .current_dir(workshop_root)
+            .output()
+            .await;
+    }
 }
 
 fn plural(n: usize) -> &'static str {

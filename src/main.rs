@@ -12,6 +12,7 @@ mod head_archetype;
 mod head_archetypes;
 mod icons;
 mod process_snapshot;
+mod release_artifact;
 mod screen;
 mod style;
 mod widget;
@@ -337,8 +338,16 @@ enum Message {
     SparkDetail(screen::spark_detail::Message),
     SparkPicker(screen::spark_picker::Message),
     HeadPicker(screen::head_picker::Message),
+    Releases(screen::releases::Message),
     Background(screen::background_picker::Message),
     StatusBar(screen::status_bar::Message),
+
+    /// Release data loaded from DB (all releases + member epic IDs).
+    ReleasesLoaded(
+        Uuid,
+        Vec<data::sparks::types::Release>,
+        Vec<(String, Vec<String>)>,
+    ),
 
     /// Background image loaded from disk
     BackgroundLoaded(Uuid, Option<Vec<u8>>),
@@ -558,6 +567,8 @@ impl std::fmt::Debug for Message {
             Self::EmberBar(m) => write!(f, "EmberBar({m:?})"),
             Self::EmberDismissed { ember_id, .. } => write!(f, "EmberDismissed({ember_id})"),
             Self::OpenUrl(url) => write!(f, "OpenUrl({url})"),
+            Self::Releases(m) => write!(f, "Releases({m:?})"),
+            Self::ReleasesLoaded(id, _, _) => write!(f, "ReleasesLoaded({id})"),
         }
     }
 }
@@ -2378,6 +2389,38 @@ impl App {
                             }
                         }
                     }
+                    screen::sparks::Message::ShowReleases => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.show_releases = true;
+                            // Trigger a releases load from the DB.
+                            if let Some(ref pool) = ws.sparks_db {
+                                let pool = pool.clone();
+                                let id = ws.id;
+                                return Task::perform(
+                                    async move {
+                                        let releases =
+                                            data::sparks::release_repo::list(&pool, None)
+                                                .await
+                                                .unwrap_or_default();
+                                        let mut epic_ids = Vec::new();
+                                        for r in &releases {
+                                            let ids =
+                                                data::sparks::release_repo::list_member_epics(
+                                                    &pool, &r.id,
+                                                )
+                                                .await
+                                                .unwrap_or_default();
+                                            epic_ids.push((r.id.clone(), ids));
+                                        }
+                                        (releases, epic_ids)
+                                    },
+                                    move |(releases, epic_ids)| {
+                                        Message::ReleasesLoaded(id, releases, epic_ids)
+                                    },
+                                );
+                            }
+                        }
+                    }
                     screen::sparks::Message::ShowCreateForm => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_create_form.reset();
@@ -2561,6 +2604,63 @@ impl App {
                             }
                         }
                     }
+                }
+                Task::none()
+            }
+
+            // ── Releases ─────────────────────────────────
+            Message::Releases(msg) => {
+                let Some(idx) = self.active_workshop else {
+                    return Task::none();
+                };
+                match msg {
+                    screen::releases::Message::Back => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.show_releases = false;
+                        }
+                    }
+                    screen::releases::Message::TogglePastReleases => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.releases_state.past_expanded = !ws.releases_state.past_expanded;
+                        }
+                    }
+                    screen::releases::Message::RequestClose(release_id) => {
+                        // Emit a toast prompting the user to spawn a Release
+                        // Manager via Atlas if none is running. The workshop
+                        // update loop does not mutate release state directly —
+                        // the Release Manager archetype owns the close flow.
+                        return self.push_toast(
+                            "Release close requested",
+                            format!(
+                                "Ask Atlas to spawn a Release Manager to close release {release_id}."
+                            ),
+                            ToastKind::Info,
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::ReleasesLoaded(id, releases, epic_ids_per_release) => {
+                if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    // Build a HashMap keyed by release_id for robust
+                    // joining instead of fragile index correlation.
+                    let epic_map: std::collections::HashMap<&str, &[String]> = epic_ids_per_release
+                        .iter()
+                        .map(|(rid, ids)| (rid.as_str(), ids.as_slice()))
+                        .collect();
+                    let mut view_data = Vec::new();
+                    for release in releases.into_iter() {
+                        let epic_ids = epic_map.get(release.id.as_str()).copied().unwrap_or(&[]);
+                        let member_epics: Vec<_> = epic_ids
+                            .iter()
+                            .filter_map(|eid| ws.sparks.iter().find(|s| s.id == *eid).cloned())
+                            .collect();
+                        view_data.push(screen::releases::ReleaseViewData {
+                            release,
+                            member_epics,
+                        });
+                    }
+                    ws.release_view_data = view_data;
                 }
                 Task::none()
             }
@@ -4672,7 +4772,10 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        let sparks_panel = if let Some(ref selected_id) = ws.selected_spark {
+        let sparks_panel = if ws.show_releases {
+            screen::releases::view(&ws.release_view_data, &ws.releases_state, &pal, has_bg)
+                .map(Message::Releases)
+        } else if let Some(ref selected_id) = ws.selected_spark {
             if let Some(spark) = ws.sparks.iter().find(|s| s.id == *selected_id) {
                 screen::spark_detail::view(
                     spark,

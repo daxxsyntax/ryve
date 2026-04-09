@@ -507,8 +507,9 @@ pub async fn drop_closed_siblings(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::Duration as ChronoDuration;
+
+    use super::*;
 
     fn make_assignment(
         session_id: &str,
