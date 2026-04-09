@@ -276,6 +276,7 @@ enum Message {
         config: data::ryve_dir::WorkshopConfig,
         custom_agents: Vec<data::ryve_dir::AgentDef>,
         agent_context: Option<String>,
+        agent_context_sync_cache: std::sync::Arc<std::sync::Mutex<data::agent_context::SyncCache>>,
     },
     /// Workgraph sparks loaded from DB
     SparksLoaded(Uuid, Vec<Spark>),
@@ -750,6 +751,7 @@ impl App {
                         config: init.config,
                         custom_agents: init.custom_agents,
                         agent_context: init.agent_context,
+                        agent_context_sync_cache: init.agent_context_sync_cache,
                     },
                     Err(e) => Message::WorkshopInitFailed {
                         id: ws_id,
@@ -785,6 +787,7 @@ impl App {
                 config,
                 custom_agents,
                 agent_context,
+                agent_context_sync_cache,
             } => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
                 let Some(idx) = ws_idx else {
@@ -795,6 +798,10 @@ impl App {
                     ws.config = config;
                     ws.custom_agents = custom_agents;
                     ws.agent_context = agent_context;
+                    // Hand off the warm hash cache from init_workshop so the
+                    // first SparksLoaded sync tick is a no-op on disk.
+                    // Spark ryve-86b0b326.
+                    ws.agent_context_sync_cache = agent_context_sync_cache;
 
                     // Load sparks + agent sessions + scan file tree in parallel
                     let ws_id = ws.workshop_id();
@@ -917,14 +924,20 @@ impl App {
                         ));
                     }
 
-                    // Sync .ryve/WORKSHOP.md and pointers (including into worktrees)
+                    // Sync .ryve/WORKSHOP.md and pointers (including into worktrees).
+                    // The shared `agent_context_sync_cache` lets repeated calls
+                    // skip writes when nothing on disk has changed — without it,
+                    // ~25 file writes fired every 3s on a 5-worktree workshop.
+                    // Spark ryve-86b0b326.
                     if !ws.config.agents.disable_sync {
                         let dir = ws.directory.clone();
                         let ryve_dir = ws.ryve_dir.clone();
                         let config = ws.config.clone();
+                        let cache = ws.agent_context_sync_cache.clone();
                         tasks.push(Task::perform(
                             async move {
-                                let _ = data::agent_context::sync(&dir, &ryve_dir, &config).await;
+                                let _ = data::agent_context::sync(&dir, &ryve_dir, &config, &cache)
+                                    .await;
                             },
                             |_| Message::AgentContextSynced,
                         ));
