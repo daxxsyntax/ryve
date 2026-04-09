@@ -9,6 +9,7 @@ mod font_intern;
 mod hand_spawn;
 mod icons;
 mod process_snapshot;
+mod release_artifact;
 mod screen;
 mod style;
 mod widget;
