@@ -58,15 +58,24 @@ mod tests {
 
     #[test]
     fn many_calls_with_same_name_do_not_grow_cache() {
-        // Use a name unlikely to collide with other tests in this module.
+        // Use a name unlikely to collide with other tests in this module
+        // or with production code paths that intern real font families
+        // during the parallel workshop tests.
         let unique = "font-intern-stress-test-family";
         let first = intern(unique);
-        let before = cache().lock().unwrap().len();
         for _ in 0..1000 {
             let p = intern(unique);
             assert_eq!(p.as_ptr(), first.as_ptr());
         }
-        let after = cache().lock().unwrap().len();
-        assert_eq!(before, after);
+        // The unique key must be present exactly once, with the same
+        // pointer as the original insert. Cannot assert absolute cache
+        // length here because other tests (and production code reached
+        // from workshop-level tests) call `intern` concurrently.
+        let guard = cache().lock().unwrap();
+        assert_eq!(
+            guard.get(unique).map(|s| s.as_ptr()),
+            Some(first.as_ptr()),
+            "unique name must be interned exactly once across all parallel calls"
+        );
     }
 }

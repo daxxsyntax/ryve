@@ -359,10 +359,16 @@ enum Message {
     /// reload — all reading liveness from this single snapshot. Spark
     /// `ryve-a5b9e4a1`.
     ProcessSnapshotReady(Arc<ProcessSnapshot>),
-    /// Inert no-op. Used by the global keyboard subscription for any key
-    /// event that does not map to a real hotkey, so unmatched keystrokes
-    /// can never accidentally re-trigger an expensive `SparksPoll`.
-    /// Spark ryve-5b9c5d93 (perf regression harness).
+    /// Inert no-op. The production keyboard subscription already filters
+    /// unmatched events to `None` (sp-27a217db / hand/0e2ed795), so this
+    /// variant is not currently constructed — it is kept as the stable
+    /// sink for any future dispatch path that needs to swallow a key
+    /// event without triggering an expensive `SparksPoll`. The perf
+    /// regression harness (spark ryve-5b9c5d93) asserts in
+    /// `perf_core/tests/sparks_poll_smoke.rs` that no key ever maps to
+    /// a workgraph reload; `Noop` is the message-level equivalent of
+    /// that invariant.
+    #[allow(dead_code)]
     Noop,
     /// Spawn a new Hand with the default agent (Cmd+H)
     NewDefaultHand,
