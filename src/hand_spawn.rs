@@ -209,7 +209,7 @@ pub async fn spawn_hand(
             // this point — the assignment row would have failed above)
             // we still compose a prompt with just the id.
             let epic_title = spark_repo::get(pool, spark_id).await.ok().map(|s| s.title);
-            compose_head_prompt(Some(spark_id), epic_title.as_deref())
+            compose_head_prompt(HeadArchetype::Build, Some(spark_id), epic_title.as_deref())
         }
         HandKind::Merger => compose_merger_prompt(crew_id.unwrap_or(""), spark_id),
     };
