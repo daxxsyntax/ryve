@@ -1011,7 +1011,7 @@ impl Workshop {
     }
 
     /// Like [`begin_hand_terminal`] but marks the resulting tab as the Atlas
-    /// director so the tab bar renders it with distinct visual treatment.
+    /// director — pinned to index 0 with distinct visual treatment.
     pub fn begin_atlas_terminal(
         &mut self,
         title: String,

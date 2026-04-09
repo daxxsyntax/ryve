@@ -1606,21 +1606,24 @@ impl App {
                                 .get(&resume_agent.command)
                                 .is_some_and(|s| s.full_auto);
                             let next_id = &mut self.next_terminal_id;
-                            let is_atlas = session.name.starts_with("Atlas (");
-                            let tab_id = ws.begin_hand_terminal(
-                                session.name.clone(),
-                                workshop::PendingTerminalKind::Agent(resume_agent.clone()),
-                                next_id,
-                                session_id.clone(),
-                                full_auto,
-                            );
-                            // Re-pin restored Atlas tabs (spark ryve-59983890).
-                            if is_atlas {
-                                if let Some(tab) = ws.bench.tabs.iter_mut().find(|t| t.id == tab_id)
-                                {
-                                    tab.pinned = true;
-                                }
-                            }
+                            let is_atlas = session.name.starts_with("Atlas");
+                            let tab_id = if is_atlas {
+                                ws.begin_atlas_terminal(
+                                    session.name.clone(),
+                                    workshop::PendingTerminalKind::Agent(resume_agent.clone()),
+                                    next_id,
+                                    session_id.clone(),
+                                    full_auto,
+                                )
+                            } else {
+                                ws.begin_hand_terminal(
+                                    session.name.clone(),
+                                    workshop::PendingTerminalKind::Agent(resume_agent.clone()),
+                                    next_id,
+                                    session_id.clone(),
+                                    full_auto,
+                                )
+                            };
                             follow_up.push(Self::dispatch_worktree_task(
                                 ws,
                                 tab_id,
@@ -2149,13 +2152,24 @@ impl App {
                                 .agent_settings
                                 .get(&resume_agent.command)
                                 .is_some_and(|s| s.full_auto);
-                            let tab_id = ws.begin_hand_terminal(
-                                session.name.clone(),
-                                workshop::PendingTerminalKind::Agent(resume_agent.clone()),
-                                next_id,
-                                session_id.clone(),
-                                full_auto,
-                            );
+                            let is_atlas = session.name.starts_with("Atlas");
+                            let tab_id = if is_atlas {
+                                ws.begin_atlas_terminal(
+                                    session.name.clone(),
+                                    workshop::PendingTerminalKind::Agent(resume_agent.clone()),
+                                    next_id,
+                                    session_id.clone(),
+                                    full_auto,
+                                )
+                            } else {
+                                ws.begin_hand_terminal(
+                                    session.name.clone(),
+                                    workshop::PendingTerminalKind::Agent(resume_agent.clone()),
+                                    next_id,
+                                    session_id.clone(),
+                                    full_auto,
+                                )
+                            };
                             let worktree_task =
                                 Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
 
