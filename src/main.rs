@@ -3049,6 +3049,12 @@ impl App {
                             edit.update_draft(screen::spark_detail::Field::Title, val);
                         }
                     }
+                    // Spark ryve-dba4b8c4: navigate to the agent session.
+                    screen::spark_detail::Message::FocusAgentSession(session_id) => {
+                        return self.update(Message::Agents(screen::agents::Message::SelectAgent(
+                            session_id,
+                        )));
+                    }
                     screen::spark_detail::Message::TitleSubmit
                     | screen::spark_detail::Message::TitleBlur => {
                         let Some(ws) = self.workshops.get_mut(idx) else {
@@ -3551,6 +3557,12 @@ impl App {
                                 );
                             }
                         }
+                    }
+                    // Spark ryve-dba4b8c4: navigate to the agent session.
+                    screen::sparks::Message::FocusAgentSession(session_id) => {
+                        return self.update(Message::Agents(screen::agents::Message::SelectAgent(
+                            session_id,
+                        )));
                     }
                 }
                 Task::none()
@@ -5941,6 +5953,7 @@ impl App {
                     &ws.spark_edit_session,
                     ws.spark_edit.as_ref(),
                     &ws.assignee_edit,
+                    &ws.agent_sessions,
                     ws.description_editor.as_ref(),
                     description_draft,
                     ws.pending_nav_prompt.as_ref(),
@@ -5953,6 +5966,7 @@ impl App {
                 screen::sparks::view(screen::sparks::ViewCtx {
                     sparks: &ws.sparks,
                     blocked_ids: &ws.blocked_spark_ids,
+                    agent_sessions: &ws.agent_sessions,
                     pal,
                     has_bg,
                     create_form: &ws.spark_create_form,
@@ -5966,6 +5980,7 @@ impl App {
             screen::sparks::view(screen::sparks::ViewCtx {
                 sparks: &ws.sparks,
                 blocked_ids: &ws.blocked_spark_ids,
+                agent_sessions: &ws.agent_sessions,
                 pal,
                 has_bg,
                 create_form: &ws.spark_create_form,
