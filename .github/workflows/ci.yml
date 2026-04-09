@@ -56,3 +56,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
       - run: cargo test --workspace
+
+  bundled-tmux:
+    name: Bundled tmux builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tmux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential autoconf automake libevent-dev libncurses-dev bison pkg-config
+      - name: Build vendored tmux
+        run: ./scripts/build-vendored-tmux.sh
+      - name: Verify bundled tmux version
+        run: |
+          EXPECTED="$(tr -d '[:space:]' < vendor/tmux/VERSION)"
+          ACTUAL="$(vendor/tmux/bin/tmux -V | sed 's/^tmux //')"
+          echo "Expected: tmux $EXPECTED"
+          echo "Actual:   tmux $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
