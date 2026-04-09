@@ -13,6 +13,7 @@ pub mod head_picker;
 pub mod home;
 pub mod intent_list_editor;
 pub mod log_tail;
+pub mod releases;
 pub mod spark_detail;
 pub mod spark_picker;
 pub mod sparks;

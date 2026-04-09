@@ -1441,7 +1441,8 @@ fn view_description_section<'a>(
             .min_height(120.0)
             .on_action(Message::DescriptionAction)
             .key_binding(|kp| {
-                use iced::keyboard::{Key, key::Named};
+                use iced::keyboard::Key;
+                use iced::keyboard::key::Named;
                 match kp.key.as_ref() {
                     Key::Named(Named::Escape) => {
                         Some(text_editor::Binding::Custom(Message::DescriptionRevert))

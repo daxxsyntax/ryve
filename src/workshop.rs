@@ -308,6 +308,12 @@ pub struct Workshop {
     pub pending_nav_prompt: Option<PendingNavPrompt>,
     /// Active multi-line problem-statement editor, if any. Spark ryve-a5997352.
     pub problem_edit: Option<crate::screen::spark_detail::ProblemEditState>,
+    /// Whether the releases panel is shown instead of the sparks panel.
+    pub show_releases: bool,
+    /// Cached release view data for display. Refreshed alongside sparks.
+    pub release_view_data: Vec<crate::screen::releases::ReleaseViewData>,
+    /// UI state for the releases panel.
+    pub releases_state: crate::screen::releases::ReleasesState,
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
@@ -393,6 +399,9 @@ impl Workshop {
             description_editor: None,
             pending_nav_prompt: None,
             problem_edit: None,
+            show_releases: false,
+            release_view_data: Vec::new(),
+            releases_state: Default::default(),
             bg_is_dark: None,
             pending_agent_spawn: None,
             pending_head_spawn: None,
