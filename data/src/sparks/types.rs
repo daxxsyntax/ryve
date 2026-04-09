@@ -674,6 +674,72 @@ pub enum ConstraintSeverity {
     Info,
 }
 
+// ── Assignment ───────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Assignment {
+    pub assignment_id: String,
+    pub spark_id: String,
+    pub actor_id: String,
+    pub assignment_phase: String,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
+    pub event_version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub struct NewAssignment {
+    pub spark_id: String,
+    pub actor_id: String,
+    pub assignment_phase: AssignmentPhase,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
+}
+
+pub struct UpdateAssignment {
+    pub event_version: Option<i64>,
+    pub source_branch: Option<Option<String>>,
+    pub target_branch: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignmentPhase {
+    Claimed,
+    Working,
+    Review,
+    Merging,
+    Done,
+    Abandoned,
+}
+
+impl AssignmentPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Claimed => "claimed",
+            Self::Working => "working",
+            Self::Review => "review",
+            Self::Merging => "merging",
+            Self::Done => "done",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "claimed" => Some(Self::Claimed),
+            "working" => Some(Self::Working),
+            "review" => Some(Self::Review),
+            "merging" => Some(Self::Merging),
+            "done" => Some(Self::Done),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+}
+
 // ── Hand Assignment ──────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
