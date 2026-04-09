@@ -2131,14 +2131,7 @@ fn status_symbol(status: &str) -> &'static str {
 }
 
 fn status_color(status: &str, pal: &Palette) -> iced::Color {
-    match status {
-        "open" => pal.text_secondary,
-        "in_progress" => pal.accent,
-        "blocked" => pal.danger,
-        "deferred" => pal.text_tertiary,
-        "closed" => pal.text_tertiary,
-        _ => pal.text_secondary,
-    }
+    style::status_color(status, pal)
 }
 
 fn format_status(status: &str) -> &'static str {

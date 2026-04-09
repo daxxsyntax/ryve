@@ -339,14 +339,7 @@ fn status_symbol(status: &str) -> &'static str {
 
 /// Map spark status string to a palette color.
 fn spark_status_color(status: &str, pal: &Palette) -> iced::Color {
-    match status {
-        "open" => pal.text_secondary,
-        "in_progress" => pal.accent,
-        "blocked" => pal.danger,
-        "deferred" => pal.text_tertiary,
-        "closed" => pal.success,
-        _ => pal.text_secondary,
-    }
+    style::status_color(status, pal)
 }
 
 #[cfg(test)]
