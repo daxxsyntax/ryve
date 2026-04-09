@@ -146,8 +146,6 @@ pub struct Workshop {
     pub spark_create_form: crate::screen::sparks::CreateForm,
     /// Inline status popover state for the workgraph panel.
     pub spark_status_menu: crate::screen::sparks::StatusMenu,
-    /// Expand/collapse state for epic group headers in the workgraph panel.
-    pub spark_collapsed_epics: crate::screen::sparks::CollapsedEpics,
     /// Currently selected spark ID (for detail view).
     pub selected_spark: Option<String>,
     /// Cached contracts for the currently selected spark.
@@ -241,7 +239,6 @@ impl Workshop {
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
             spark_status_menu: Default::default(),
-            spark_collapsed_epics: Default::default(),
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
             selected_spark_bonds: Vec::new(),
@@ -263,8 +260,9 @@ impl Workshop {
     // ── Collapsed epic state (spark ryve-926870a9) ──────────
 
     /// Flip the collapse state of the given epic. Returns `true` if the
-    /// epic is now collapsed. Callers are expected to persist the result
-    /// via [`Workshop::save_ui_state_task`].
+    /// epic is now collapsed. Callers are expected to persist the updated
+    /// UI state using [`Workshop::ui_state_snapshot`], with the actual
+    /// save occurring at the existing persistence call sites.
     pub fn toggle_epic_collapse(&mut self, epic_id: &str) -> bool {
         if self.collapsed_epics.remove(epic_id) {
             false

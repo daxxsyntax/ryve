@@ -220,7 +220,9 @@ fn print_usage() {
     eprintln!("  spark list [--all]                  List sparks (active by default)");
     eprintln!("  spark create --parent <epic-id> <title>   Create a task spark under an epic");
     eprintln!("  spark create --type epic <title>          Create a top-level epic");
-    eprintln!("  spark create --help                       Show all create flags (intent, risk, etc.)");
+    eprintln!(
+        "  spark create --help                       Show all create flags (intent, risk, etc.)"
+    );
     eprintln!("  spark show <id>                     Show spark details + intent");
     eprintln!("  spark status <id> <new_status>      Update status");
     eprintln!("  spark close <id> [reason]           Close a spark");
@@ -556,9 +558,7 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                 eprintln!("  --priority, -p <0-4>        P0=critical, P4=negligible (default: 2)");
                 eprintln!("  --risk, -r <level>          trivial|normal|elevated|critical");
                 eprintln!("  --scope, -s <boundary>      Scope boundary (e.g. 'src/auth/')");
-                eprintln!(
-                    "  --parent <spark_id>         Parent spark id (required for non-epic types)"
-                );
+
                 eprintln!("  --description, -d <text>    Description");
                 eprintln!("  --problem <text>            Intent: problem being solved");
                 eprintln!(
@@ -657,12 +657,10 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             // The data layer is the source of truth; this is a usability shim that
             // surfaces the rule before we hit a raw error from the repo.
             if spark_type != SparkType::Epic && parent.is_none() {
-                die(&format!(
-                    "non-epic spark requires a parent epic.\n  \
+                die("non-epic spark requires a parent epic.\n  \
                      use --parent <epic-id> to nest under an existing epic, or\n  \
                      use --type epic if you intended a top-level spark.\n  \
-                     run `ryve spark list --type epic` to find an epic id."
-                ));
+                     run `ryve spark list --all` to find an epic id.");
             }
 
             // Validate the parent: must exist and be of type 'epic'.
@@ -718,13 +716,14 @@ async fn handle_spark(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
                 Ok(spark) => {
                     // Mirror the parent linkage as a parent_child bond so the bond
                     // graph and the spark.parent_id column stay in sync.
-                    if let Some(ref pid) = parent {
-                        if let Err(e) = bond_repo::create(pool, pid, &spark.id, BondType::ParentChild).await {
-                            die(&format!(
-                                "spark {} created but parent_child bond from {pid} failed: {e}",
-                                spark.id
-                            ));
-                        }
+                    if let Some(ref pid) = parent
+                        && let Err(e) =
+                            bond_repo::create(pool, pid, &spark.id, BondType::ParentChild).await
+                    {
+                        die(&format!(
+                            "spark {} created but parent_child bond from {pid} failed: {e}",
+                            spark.id
+                        ));
                     }
                     if json_mode {
                         println!(

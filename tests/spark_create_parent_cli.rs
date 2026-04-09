@@ -60,7 +60,10 @@ fn parse_created_id(stdout: &str) -> String {
 #[test]
 fn task_without_parent_is_rejected_with_friendly_message() {
     let ws = fresh_workshop();
-    let out = run(&ws, &["spark", "create", "--type", "task", "orphan attempt"]);
+    let out = run(
+        &ws,
+        &["spark", "create", "--type", "task", "orphan attempt"],
+    );
     assert!(!out.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -76,7 +79,10 @@ fn task_without_parent_is_rejected_with_friendly_message() {
 #[test]
 fn epic_can_be_created_without_parent() {
     let ws = fresh_workshop();
-    let out = run(&ws, &["spark", "create", "--type", "epic", "top-level epic"]);
+    let out = run(
+        &ws,
+        &["spark", "create", "--type", "epic", "top-level epic"],
+    );
     assert!(
         out.status.success(),
         "epic create failed: {}",
@@ -94,7 +100,13 @@ fn task_with_epic_parent_creates_child_and_parent_child_bond() {
     let child_out = run(
         &ws,
         &[
-            "spark", "create", "--type", "task", "--parent", &epic_id, "child task",
+            "spark",
+            "create",
+            "--type",
+            "task",
+            "--parent",
+            &epic_id,
+            "child task",
         ],
     );
     assert!(
@@ -135,7 +147,13 @@ fn parent_must_be_an_epic_not_some_other_type() {
     let task_out = run(
         &ws,
         &[
-            "spark", "create", "--type", "task", "--parent", &epic_id, "first task",
+            "spark",
+            "create",
+            "--type",
+            "task",
+            "--parent",
+            &epic_id,
+            "first task",
         ],
     );
     let task_id = parse_created_id(&String::from_utf8_lossy(&task_out.stdout));

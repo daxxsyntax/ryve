@@ -352,7 +352,13 @@ mod orphan_rejection_tests {
     #[tokio::test]
     async fn rejects_orphan_bug_and_feature() {
         let pool = fresh_pool().await;
-        for kind in [SparkType::Bug, SparkType::Feature, SparkType::Chore, SparkType::Spike, SparkType::Milestone] {
+        for kind in [
+            SparkType::Bug,
+            SparkType::Feature,
+            SparkType::Chore,
+            SparkType::Spike,
+            SparkType::Milestone,
+        ] {
             let err = create(&pool, new_spark("ws", "orphan", kind, None))
                 .await
                 .expect_err("orphan non-epic must be rejected");
@@ -376,12 +382,9 @@ mod orphan_rejection_tests {
     #[tokio::test]
     async fn accepts_nested_epic() {
         let pool = fresh_pool().await;
-        let parent = create(
-            &pool,
-            new_spark("ws", "outer epic", SparkType::Epic, None),
-        )
-        .await
-        .unwrap();
+        let parent = create(&pool, new_spark("ws", "outer epic", SparkType::Epic, None))
+            .await
+            .unwrap();
         let nested = create(
             &pool,
             new_spark("ws", "inner epic", SparkType::Epic, Some(parent.id.clone())),

@@ -88,20 +88,18 @@ impl CreateForm {
 /// - Otherwise walk `parent_id` links upward until we find an epic and
 ///   return it. If the chain contains no epic (shouldn't happen in a
 ///   well-formed workgraph, but may during migration), return `None`.
-pub fn resolve_default_parent_epic(
-    sparks: &[Spark],
-    focused_id: Option<&str>,
-) -> Option<String> {
+pub fn resolve_default_parent_epic(sparks: &[Spark], focused_id: Option<&str>) -> Option<String> {
     let focused_id = focused_id?;
     // Quick index by id so the walk is O(depth) not O(n*depth).
-    let mut cursor = sparks.iter().find(|s| s.id == focused_id)?;
+    let index: HashMap<&str, &Spark> = sparks.iter().map(|s| (s.id.as_str(), s)).collect();
+    let mut cursor = index.get(focused_id)?;
     // Guard against cycles or unusually deep chains.
     for _ in 0..64 {
         if cursor.spark_type == "epic" {
             return Some(cursor.id.clone());
         }
         let parent_id = cursor.parent_id.as_deref()?;
-        cursor = sparks.iter().find(|s| s.id == parent_id)?;
+        cursor = index.get(parent_id)?;
     }
     None
 }
@@ -223,28 +221,6 @@ pub fn group_by_epic<'a>(sparks: &'a [Spark]) -> Vec<EpicGroup<'a>> {
     groups
 }
 
-/// Persistent expand/collapse state for epic group headers in the
-/// sparks panel. Stored on the workshop so the state survives panel
-/// re-renders and spark reloads. By default every epic is expanded;
-/// an id is only present here once the user has clicked to collapse it.
-#[derive(Debug, Clone, Default)]
-pub struct CollapsedEpics {
-    ids: HashSet<String>,
-}
-
-impl CollapsedEpics {
-    pub fn is_collapsed(&self, id: &str) -> bool {
-        self.ids.contains(id)
-    }
-
-    #[allow(dead_code)]
-    pub fn toggle(&mut self, id: &str) {
-        if !self.ids.remove(id) {
-            self.ids.insert(id.to_string());
-        }
-    }
-}
-
 // ── Status menu ──────────────────────────────────────
 
 /// Inline status popover state. Tracks which spark (if any) currently
@@ -344,17 +320,29 @@ pub(crate) fn refresh_button_glyph(refreshing: bool) -> &'static str {
 
 // ── View ─────────────────────────────────────────────
 
-pub fn view<'a>(
-    sparks: &'a [Spark],
-    blocked_ids: &'a HashSet<String>,
-    pal: &Palette,
-    has_bg: bool,
-    create_form: &'a CreateForm,
-    status_menu: &'a StatusMenu,
-    collapsed: &'a CollapsedEpics,
-    refreshing: bool,
-) -> Element<'a, Message> {
-    let pal = *pal;
+/// Bundles the view parameters to stay within the clippy argument limit.
+pub struct ViewCtx<'a> {
+    pub sparks: &'a [Spark],
+    pub blocked_ids: &'a HashSet<String>,
+    pub pal: Palette,
+    pub has_bg: bool,
+    pub create_form: &'a CreateForm,
+    pub status_menu: &'a StatusMenu,
+    pub collapsed: &'a HashSet<String>,
+    pub refreshing: bool,
+}
+
+pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
+    let ViewCtx {
+        sparks,
+        blocked_ids,
+        pal,
+        has_bg,
+        create_form,
+        status_menu,
+        collapsed,
+        refreshing,
+    } = ctx;
 
     // Refresh button: dim the glyph and swap it for an ellipsis while a
     // refetch is in flight so the click surfaces visible feedback.
@@ -618,30 +606,38 @@ fn view_epic_group<'a>(
     blocked_ids: &HashSet<String>,
     pal: &Palette,
     status_menu: &'a StatusMenu,
-    collapsed: &'a CollapsedEpics,
+    collapsed: &'a HashSet<String>,
 ) -> Element<'a, Message> {
     let pal = *pal;
     let epic = group.epic;
-    let is_collapsed = collapsed.is_collapsed(&epic.id);
+    let is_collapsed = collapsed.contains(&epic.id);
     let is_blocked = blocked_ids.contains(&epic.id);
 
-    let mut col = column![view_epic_header(epic, is_collapsed, is_blocked, depth, &pal)].spacing(2);
+    let mut col = column![view_epic_header(
+        epic,
+        is_collapsed,
+        is_blocked,
+        depth,
+        &pal
+    )]
+    .spacing(2);
 
     if !is_collapsed {
         for child in &group.children {
-            if child.spark_type == "epic" && depth < 1 {
-                if let Some(nested) = all_groups.iter().find(|g| g.epic.id == child.id) {
-                    col = col.push(view_epic_group(
-                        nested,
-                        all_groups,
-                        depth + 1,
-                        blocked_ids,
-                        &pal,
-                        status_menu,
-                        collapsed,
-                    ));
-                    continue;
-                }
+            if child.spark_type == "epic"
+                && depth < 1
+                && let Some(nested) = all_groups.iter().find(|g| g.epic.id == child.id)
+            {
+                col = col.push(view_epic_group(
+                    nested,
+                    all_groups,
+                    depth + 1,
+                    blocked_ids,
+                    &pal,
+                    status_menu,
+                    collapsed,
+                ));
+                continue;
             }
             let child_blocked = blocked_ids.contains(&child.id);
             col = col.push(view_spark_row_indented(
@@ -668,19 +664,11 @@ fn view_epic_header<'a>(
     pal: &Palette,
 ) -> Element<'a, Message> {
     let pal = *pal;
-    let chevron = if is_collapsed {
-        "\u{25B8}"
-    } else {
-        "\u{25BE}"
-    };
-    let chevron_btn = button(
-        text(chevron)
-            .size(FONT_ICON_SM)
-            .color(pal.text_secondary),
-    )
-    .style(button::text)
-    .padding([2, 4])
-    .on_press(Message::ToggleEpicCollapse(epic.id.clone()));
+    let chevron = if is_collapsed { "\u{25B8}" } else { "\u{25BE}" };
+    let chevron_btn = button(text(chevron).size(FONT_ICON_SM).color(pal.text_secondary))
+        .style(button::text)
+        .padding([2, 4])
+        .on_press(Message::ToggleEpicCollapse(epic.id.clone()));
 
     let status_indicator = status_symbol(&epic.status);
     let id = epic.id.clone();
@@ -964,7 +952,9 @@ mod tests {
         // P2 task open            -> sp-e, sp-f (by id)
         assert_eq!(
             ids,
-            vec!["sp-b", "sp-a", "sp-c", "sp-g", "sp-d", "sp-h", "sp-e", "sp-f"]
+            vec![
+                "sp-b", "sp-a", "sp-c", "sp-g", "sp-d", "sp-h", "sp-e", "sp-f"
+            ]
         );
     }
 
@@ -975,8 +965,14 @@ mod tests {
             mk_sort_spark("sp-1", 1, "task", "open"),
             mk_sort_spark("sp-3", 0, "bug", "blocked"),
         ];
-        let a: Vec<&str> = default_sort(&sparks).iter().map(|s| s.id.as_str()).collect();
-        let b: Vec<&str> = default_sort(&sparks).iter().map(|s| s.id.as_str()).collect();
+        let a: Vec<&str> = default_sort(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        let b: Vec<&str> = default_sort(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(a, b);
     }
 
@@ -991,7 +987,10 @@ mod tests {
             mk_sort_spark("f", 0, "bug", "open"),
             mk_sort_spark("g", 0, "epic", "open"),
         ];
-        let ids: Vec<&str> = default_sort(&sparks).iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = default_sort(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["g", "f", "e", "d", "c", "b", "a"]);
     }
 
@@ -1005,7 +1004,10 @@ mod tests {
             mk_sort_spark("e", 0, "task", "blocked"),
             mk_sort_spark("f", 0, "task", "in_progress"),
         ];
-        let ids: Vec<&str> = default_sort(&sparks).iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = default_sort(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["f", "e", "d", "c", "b", "a"]);
     }
 
@@ -1016,7 +1018,10 @@ mod tests {
             mk_sort_spark("b", 0, "task", "open"),
             mk_sort_spark("c", 0, "task", "zzz"),
         ];
-        let ids: Vec<&str> = default_sort(&sparks).iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = default_sort(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
         // Known type before unknown; within task, known status before unknown.
         assert_eq!(ids, vec!["b", "c", "a"]);
     }
@@ -1232,14 +1237,12 @@ mod tests {
 
         let outer = &groups[0];
         assert_eq!(outer.epic.id, "outer");
-        let outer_children: Vec<&str> =
-            outer.children.iter().map(|s| s.id.as_str()).collect();
+        let outer_children: Vec<&str> = outer.children.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(outer_children, vec!["inner"]);
 
         let inner = &groups[1];
         assert_eq!(inner.epic.id, "inner");
-        let inner_children: Vec<&str> =
-            inner.children.iter().map(|s| s.id.as_str()).collect();
+        let inner_children: Vec<&str> = inner.children.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(inner_children, vec!["leaf"]);
     }
 
@@ -1276,12 +1279,12 @@ mod tests {
 
     #[test]
     fn collapsed_epics_toggle_is_symmetric() {
-        let mut c = CollapsedEpics::default();
-        assert!(!c.is_collapsed("e1"));
-        c.toggle("e1");
-        assert!(c.is_collapsed("e1"));
-        c.toggle("e1");
-        assert!(!c.is_collapsed("e1"));
+        let mut c = HashSet::<String>::new();
+        assert!(!c.contains("e1"));
+        c.insert("e1".to_string());
+        assert!(c.contains("e1"));
+        c.remove("e1");
+        assert!(!c.contains("e1"));
     }
 
     #[test]

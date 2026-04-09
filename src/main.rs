@@ -469,11 +469,9 @@ impl std::fmt::Debug for Message {
             }
             Self::WorkshopReady { id, .. } => write!(f, "WorkshopReady({id})"),
             Self::SparksLoaded(id, s) => write!(f, "SparksLoaded({id}, {} sparks)", s.len()),
-            Self::SparkCreated(id, new_id, s) => write!(
-                f,
-                "SparkCreated({id}, {new_id:?}, {} sparks)",
-                s.len()
-            ),
+            Self::SparkCreated(id, new_id, s) => {
+                write!(f, "SparkCreated({id}, {new_id:?}, {} sparks)", s.len())
+            }
             Self::FailingContractsLoaded(id, n) => {
                 write!(f, "FailingContractsLoaded({id}, {n})")
             }
@@ -1102,15 +1100,14 @@ impl App {
                 // standard SparksLoaded handler. Then, if the create
                 // succeeded, select the new spark so the detail panel
                 // focuses it immediately — this is the "new spark is
-                // selected" half of the acceptance criterion. Grouping
-                // state is not yet present in this worktree; once it
-                // lands, the selection handler can expand the parent
-                // group for free.
+                // selected" half of the acceptance criterion. Epic
+                // grouping and collapse state are available, so the
+                // selection handler can expand the parent group for free.
                 let load_task = self.update(Message::SparksLoaded(id, sparks));
                 let select_task = if let Some(new_id) = new_id {
-                    self.update(Message::Sparks(
-                        screen::sparks::Message::SelectSpark(new_id),
-                    ))
+                    self.update(Message::Sparks(screen::sparks::Message::SelectSpark(
+                        new_id,
+                    )))
                 } else {
                     Task::none()
                 };
@@ -2402,9 +2399,7 @@ impl App {
                 // "+" form without persisting, per spark ryve-d158cc9f
                 // acceptance criteria.
                 if self.workshops[idx].spark_create_form.visible {
-                    tasks.push(self.update(Message::Sparks(
-                        screen::sparks::Message::CancelCreate,
-                    )));
+                    tasks.push(self.update(Message::Sparks(screen::sparks::Message::CancelCreate)));
                 }
                 tasks.push(self.update(Message::FileViewer(file_viewer::Message::ClearSelection)));
                 Task::batch(tasks)
@@ -2468,11 +2463,10 @@ impl App {
                             // focused the form opens with an empty parent
                             // and the user must pick one (unless they are
                             // creating a top-level epic).
-                            let default_parent =
-                                screen::sparks::resolve_default_parent_epic(
-                                    &ws.sparks,
-                                    ws.selected_spark.as_deref(),
-                                );
+                            let default_parent = screen::sparks::resolve_default_parent_epic(
+                                &ws.sparks,
+                                ws.selected_spark.as_deref(),
+                            );
                             ws.spark_create_form
                                 .open_with_default_parent(default_parent);
                         }
@@ -2542,6 +2536,7 @@ impl App {
                             let id = ws.id;
                             return Task::perform(
                                 async move {
+                                    let bond_parent_id = parent_id.clone();
                                     let new = data::sparks::types::NewSpark {
                                         title,
                                         description: String::new(),
@@ -2557,10 +2552,22 @@ impl App {
                                         risk_level: None,
                                         scope_boundary: None,
                                     };
-                                    let new_id = data::sparks::spark_repo::create(&pool, new)
-                                        .await
-                                        .ok()
-                                        .map(|s| s.id);
+                                    let new_id =
+                                        match data::sparks::spark_repo::create(&pool, new).await {
+                                            Ok(spark) => {
+                                                if let Some(ref pid) = bond_parent_id {
+                                                    let _ = data::sparks::bond_repo::create(
+                                                        &pool,
+                                                        pid,
+                                                        &spark.id,
+                                                        data::sparks::types::BondType::ParentChild,
+                                                    )
+                                                    .await;
+                                                }
+                                                Some(spark.id)
+                                            }
+                                            Err(_) => None,
+                                        };
                                     let sparks = load_sparks(pool, ws_id).await;
                                     (new_id, sparks)
                                 },
@@ -4771,29 +4778,29 @@ impl App {
                 )
                 .map(Message::SparkDetail)
             } else {
-                screen::sparks::view(
-                    &ws.sparks,
-                    &ws.blocked_spark_ids,
-                    &pal,
+                screen::sparks::view(screen::sparks::ViewCtx {
+                    sparks: &ws.sparks,
+                    blocked_ids: &ws.blocked_spark_ids,
+                    pal,
                     has_bg,
-                    &ws.spark_create_form,
-                    &ws.spark_status_menu,
-                    &ws.spark_collapsed_epics,
-                    ws.sparks_refreshing,
-                )
+                    create_form: &ws.spark_create_form,
+                    status_menu: &ws.spark_status_menu,
+                    collapsed: &ws.collapsed_epics,
+                    refreshing: ws.sparks_refreshing,
+                })
                 .map(Message::Sparks)
             }
         } else {
-            screen::sparks::view(
-                &ws.sparks,
-                &ws.blocked_spark_ids,
-                &pal,
+            screen::sparks::view(screen::sparks::ViewCtx {
+                sparks: &ws.sparks,
+                blocked_ids: &ws.blocked_spark_ids,
+                pal,
                 has_bg,
-                &ws.spark_create_form,
-                &ws.spark_status_menu,
-                &ws.spark_collapsed_epics,
-                ws.sparks_refreshing,
-            )
+                create_form: &ws.spark_create_form,
+                status_menu: &ws.spark_status_menu,
+                collapsed: &ws.collapsed_epics,
+                refreshing: ws.sparks_refreshing,
+            })
             .map(Message::Sparks)
         };
 

@@ -62,7 +62,10 @@ async fn orphan_reparent_creates_unsorted_epic_per_workshop(pool: sqlx::SqlitePo
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(orphan_non_epic, 0, "all non-epic orphans must be reparented");
+    assert_eq!(
+        orphan_non_epic, 0,
+        "all non-epic orphans must be reparented"
+    );
 
     // Exactly one 'Unsorted' epic per affected workshop.
     let ws_a_unsorted: i64 = sqlx::query_scalar(
@@ -71,7 +74,10 @@ async fn orphan_reparent_creates_unsorted_epic_per_workshop(pool: sqlx::SqlitePo
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ws_a_unsorted, 1, "ws-a should have exactly one Unsorted epic");
+    assert_eq!(
+        ws_a_unsorted, 1,
+        "ws-a should have exactly one Unsorted epic"
+    );
 
     let ws_b_unsorted: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sparks WHERE workshop_id = 'ws-b' AND spark_type = 'epic' AND title = 'Unsorted'",
@@ -79,15 +85,17 @@ async fn orphan_reparent_creates_unsorted_epic_per_workshop(pool: sqlx::SqlitePo
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(ws_b_unsorted, 1, "ws-b should have exactly one Unsorted epic");
+    assert_eq!(
+        ws_b_unsorted, 1,
+        "ws-b should have exactly one Unsorted epic"
+    );
 
     // The Unsorted epic must be P4 and type=epic.
-    let (priority, spark_type): (i64, String) = sqlx::query_as(
-        "SELECT priority, spark_type FROM sparks WHERE id = 'ws-a-unsorted-epic'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (priority, spark_type): (i64, String) =
+        sqlx::query_as("SELECT priority, spark_type FROM sparks WHERE id = 'ws-a-unsorted-epic'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(priority, 4);
     assert_eq!(spark_type, "epic");
 
@@ -118,7 +126,10 @@ async fn orphan_reparent_creates_unsorted_epic_per_workshop(pool: sqlx::SqlitePo
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert!(orphan_epic_parent.is_none(), "orphan epics must not be touched");
+    assert!(
+        orphan_epic_parent.is_none(),
+        "orphan epics must not be touched"
+    );
 
     // ── Idempotency: second run is a no-op ─────────────────────────
     run_migration(&pool).await;
@@ -155,5 +166,8 @@ async fn migration_is_noop_when_no_orphans_exist(pool: sqlx::SqlitePool) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(unsorted_count, 0, "no Unsorted epic should be created when there are no orphans");
+    assert_eq!(
+        unsorted_count, 0,
+        "no Unsorted epic should be created when there are no orphans"
+    );
 }
