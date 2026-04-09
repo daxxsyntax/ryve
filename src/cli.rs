@@ -285,6 +285,7 @@ fn print_usage() {
     eprintln!("                                       the shared orchestration module");
     eprintln!("  head list                            List active Head sessions");
     eprintln!("  head archetype list                  List registered Head archetypes");
+    eprintln!("  head render <archetype> --epic <id>  Dry-run: render an archetype prompt");
     eprintln!("  head --help                          Long-form Head documentation");
     eprintln!();
     eprintln!(
@@ -2085,6 +2086,37 @@ async fn handle_head(
         }
         "orchestrate" => {
             handle_head_orchestrate(pool, workshop_root, ws_id, &args[1..], json_mode).await;
+        }
+        "render" => {
+            let archetype_id = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
+                die("usage: ryve head render <archetype> --epic <epic_id>")
+            });
+            let mut epic_id: Option<String> = None;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--epic" => {
+                        epic_id = args.get(i + 1).cloned();
+                        i += 2;
+                    }
+                    other => {
+                        die(&format!("unknown flag for `head render`: {other}"));
+                    }
+                }
+            }
+            let epic_id = epic_id.unwrap_or_else(|| {
+                die("missing --epic <epic_id> (required for head render)")
+            });
+            let archetype = crate::head_archetypes::find(archetype_id).unwrap_or_else(|| {
+                die(&format!(
+                    "unknown archetype '{archetype_id}' — run `ryve head list`"
+                ))
+            });
+            let rendered = archetype.render(&epic_id);
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
+                println!();
+            }
         }
         other => die(&format!(
             "unknown head subcommand '{other}'. Try `ryve head --help`."
