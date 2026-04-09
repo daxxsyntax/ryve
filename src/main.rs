@@ -1041,6 +1041,9 @@ impl App {
                     ws.sparks_filter = crate::screen::sparks::SparksFilter::from_persisted(
                         &ui_state.sparks_filter,
                     );
+                    ws.sort_mode = crate::screen::sparks::SortMode::from_persist_key(
+                        &ui_state.sparks_filter.sort_mode,
+                    );
                     // Hand off the warm hash cache from init_workshop so the
                     // first SparksLoaded sync tick is a no-op on disk.
                     // Spark ryve-86b0b326.
@@ -3538,11 +3541,31 @@ impl App {
                     screen::sparks::Message::ToggleStatusFilter(status) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_status(&status);
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::ToggleShowClosed => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.show_closed = !ws.sparks_filter.show_closed;
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::ToggleEpicCollapse(epic_id) => {
@@ -3569,18 +3592,45 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_type(ty);
                             ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::FilterTogglePriority(p) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_priority(p);
                             ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::FilterSetAssignee(a) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.set_assignee(a);
                             ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::SetSortMode(mode) => {
@@ -3588,6 +3638,16 @@ impl App {
                             ws.sort_mode = mode;
                             ws.sort_dropdown_open = false;
                             ws.sort_sparks();
+                            ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::ToggleSortDropdown => {
@@ -3599,12 +3659,30 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.search = query;
                             ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::ClearSearch => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.search.clear();
                             ws.recompute_filtered_sparks();
+                            let ryve_dir = ws.ryve_dir.clone();
+                            let snapshot = ws.ui_state_snapshot();
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    data::ryve_dir::save_ui_state(&ryve_dir, &snapshot).await
+                                {
+                                    log::warn!("failed to save .ryve/ui_state.json: {e}");
+                                }
+                            });
                         }
                     }
                     screen::sparks::Message::SparksFilterChanged => {

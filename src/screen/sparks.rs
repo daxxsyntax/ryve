@@ -74,8 +74,13 @@ impl SparksFilter {
         if spark_status == "closed" {
             return self.show_closed;
         }
-        // Completed is treated like closed when show_closed is false.
-        if spark_status == "completed" && !self.show_closed && self.status.is_empty() {
+        // Completed is a distinct terminal state that remains visible
+        // regardless of the show_closed toggle (which only governs
+        // `status == "closed"`).
+        if spark_status == "completed" {
+            if !self.status.is_empty() {
+                return self.status.contains(spark_status);
+            }
             return true;
         }
         // Empty status set means "show all (minus closed unless toggled)".
@@ -129,14 +134,16 @@ impl SparksFilter {
     }
 
     /// Snapshot the filter state for persistence in `.ryve/ui_state.json`.
-    pub fn to_persisted(&self) -> data::ryve_dir::SparksFilterState {
+    /// Note: sort_mode is stored on the Workshop, not on SparksFilter, so
+    /// the caller must pass it in.
+    pub fn to_persisted_with_sort(&self, sort_mode: SortMode) -> data::ryve_dir::SparksFilterState {
         data::ryve_dir::SparksFilterState {
             status: self.status.clone(),
             spark_type: self.spark_types.clone(),
             priority: self.priorities.clone(),
             assignee: self.assignee.clone(),
             search: self.search.clone(),
-            sort_mode: String::new(),
+            sort_mode: sort_mode.to_persist_key().to_string(),
             show_closed: self.show_closed,
         }
     }
@@ -297,14 +304,14 @@ const STATUS_ORDER: &[&str] = &[
     "closed",
 ];
 
-fn spark_type_rank(ty: &str) -> usize {
+pub fn spark_type_rank(ty: &str) -> usize {
     SPARK_TYPE_ORDER
         .iter()
         .position(|t| *t == ty)
         .unwrap_or(SPARK_TYPE_ORDER.len())
 }
 
-fn status_rank(status: &str) -> usize {
+pub fn status_rank(status: &str) -> usize {
     STATUS_ORDER
         .iter()
         .position(|s| *s == status)
@@ -527,19 +534,6 @@ pub struct ViewCtx<'a> {
     pub sort_dropdown_open: bool,
 }
 
-/// Map a spark status to its canonical palette color.
-pub fn status_color(status: &str, pal: &Palette) -> iced::Color {
-    match status {
-        "open" => pal.text_secondary,
-        "in_progress" => pal.accent,
-        "blocked" => pal.danger,
-        "deferred" => pal.text_tertiary,
-        "completed" => pal.success,
-        "closed" => pal.text_tertiary,
-        _ => pal.text_secondary,
-    }
-}
-
 pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     let ViewCtx {
         sparks,
@@ -696,7 +690,7 @@ fn view_filter_pills<'a>(filter: &SparksFilter, pal: &Palette) -> Element<'a, Me
 
     for (key, label) in FILTER_STATUSES {
         let selected = filter.status.contains(*key);
-        let color = status_color(key, &pal);
+        let color = style::status_color(key, &pal);
         let key_owned = (*key).to_string();
         pills = pills.push(filter_pill(label, selected, color, &pal, move || {
             Message::ToggleStatusFilter(key_owned.clone())
@@ -707,7 +701,7 @@ fn view_filter_pills<'a>(filter: &SparksFilter, pal: &Palette) -> Element<'a, Me
     pills = pills.push(filter_pill(
         "Closed",
         filter.show_closed,
-        status_color("closed", &pal),
+        style::status_color("closed", &pal),
         &pal,
         || Message::ToggleShowClosed,
     ));
@@ -1694,7 +1688,9 @@ mod tests {
         let result = apply_filter(&filter, &sparks);
         let result_ids = ids_of(&result);
         assert!(!result_ids.contains(&"sp-closed"));
-        assert!(!result_ids.contains(&"sp-done"));
+        // `completed` is a distinct terminal state and remains visible
+        // even when show_closed is false — only `closed` is hidden.
+        assert!(result_ids.contains(&"sp-done"));
     }
 
     #[test]
@@ -2231,16 +2227,16 @@ mod tests {
     fn status_color_returns_distinct_colors_for_key_statuses() {
         let pal = crate::style::Palette::dark();
         assert_ne!(
-            status_color("open", &pal),
-            status_color("in_progress", &pal)
+            crate::style::status_color("open", &pal),
+            crate::style::status_color("in_progress", &pal)
         );
         assert_ne!(
-            status_color("blocked", &pal),
-            status_color("deferred", &pal)
+            crate::style::status_color("blocked", &pal),
+            crate::style::status_color("deferred", &pal)
         );
         assert_ne!(
-            status_color("in_progress", &pal),
-            status_color("blocked", &pal)
+            crate::style::status_color("in_progress", &pal),
+            crate::style::status_color("blocked", &pal)
         );
     }
 

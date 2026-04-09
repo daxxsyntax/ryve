@@ -49,6 +49,28 @@ impl SortMode {
         SortMode::RecentlyUpdated,
         SortMode::TypeFirst,
     ];
+
+    /// Stable string key used for JSON persistence.
+    pub fn to_persist_key(self) -> &'static str {
+        match self {
+            SortMode::Default => "default",
+            SortMode::PriorityOnly => "priority_only",
+            SortMode::RecentlyUpdated => "recently_updated",
+            SortMode::TypeFirst => "type_first",
+        }
+    }
+
+    /// Parse from a persisted string key; unknown values fall back to
+    /// `Default`.
+    pub fn from_persist_key(s: &str) -> Self {
+        match s {
+            "default" => SortMode::Default,
+            "priority_only" => SortMode::PriorityOnly,
+            "recently_updated" => SortMode::RecentlyUpdated,
+            "type_first" => SortMode::TypeFirst,
+            _ => SortMode::Default,
+        }
+    }
 }
 
 // ── SparksFilter ──────────────────────────────────────
@@ -57,7 +79,8 @@ impl SortMode {
 ///
 /// An empty `HashSet` on any dimension means "allow all values for that
 /// dimension".  `show_closed = false` (the default) hides sparks whose
-/// `status == "closed"`.
+/// `status == "closed"`.  Completed sparks remain visible regardless of
+/// the toggle — they are a distinct terminal state.
 pub struct SparksFilter {
     pub status: HashSet<String>,
     pub spark_type: HashSet<String>,
@@ -92,8 +115,9 @@ pub fn apply_filter<'a>(filter: &SparksFilter, sparks: &'a [Spark]) -> Vec<&'a S
     let mut out: Vec<&Spark> = sparks
         .iter()
         .filter(|s| {
-            // show_closed gate
-            if !filter.show_closed && (s.status == "closed" || s.status == "completed") {
+            // show_closed gate — only hides `closed`; `completed` is a
+            // distinct terminal state and remains visible.
+            if !filter.show_closed && s.status == "closed" {
                 return false;
             }
 

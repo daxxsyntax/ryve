@@ -450,13 +450,15 @@ impl Workshop {
     /// Re-sort `self.sparks` in place according to the active `sort_mode`.
     /// Called after loading sparks from DB and after changing the sort mode.
     pub fn sort_sparks(&mut self) {
-        use crate::screen::sparks::SortMode;
+        use crate::screen::sparks::{SortMode, spark_type_rank, status_rank};
         match self.sort_mode {
             SortMode::Default => self.sparks.sort_by(|a, b| {
                 a.priority
                     .cmp(&b.priority)
-                    .then_with(|| a.spark_type.cmp(&b.spark_type))
-                    .then_with(|| a.status.cmp(&b.status))
+                    .then_with(|| {
+                        spark_type_rank(&a.spark_type).cmp(&spark_type_rank(&b.spark_type))
+                    })
+                    .then_with(|| status_rank(&a.status).cmp(&status_rank(&b.status)))
                     .then_with(|| a.id.cmp(&b.id))
             }),
             SortMode::PriorityOnly => {
@@ -471,10 +473,10 @@ impl Workshop {
                 });
             }
             SortMode::TypeFirst => self.sparks.sort_by(|a, b| {
-                a.spark_type
-                    .cmp(&b.spark_type)
+                spark_type_rank(&a.spark_type)
+                    .cmp(&spark_type_rank(&b.spark_type))
                     .then_with(|| a.priority.cmp(&b.priority))
-                    .then_with(|| a.status.cmp(&b.status))
+                    .then_with(|| status_rank(&a.status).cmp(&status_rank(&b.status)))
                     .then_with(|| a.id.cmp(&b.id))
             }),
         }
@@ -482,10 +484,6 @@ impl Workshop {
 
     // ── Collapsed epic state (spark ryve-926870a9) ──────────
 
-    /// Flip the collapse state of the given epic. Returns `true` if the
-    /// epic is now collapsed. Callers are expected to persist the updated
-    /// UI state using [`Workshop::ui_state_snapshot`], with the actual
-    /// save occurring at the existing persistence call sites.
     /// Recompute `filtered_sparks` from `sparks` and `sparks_filter`.
     /// Must be called after any mutation to either. Spark ryve-baca34b0.
     pub fn recompute_filtered_sparks(&mut self) {
@@ -501,6 +499,10 @@ impl Workshop {
         }
     }
 
+    /// Flip the collapse state of the given epic. Returns `true` if the
+    /// epic is now collapsed. Callers are expected to persist the updated
+    /// UI state using [`Workshop::ui_state_snapshot`], with the actual
+    /// save occurring at the existing persistence call sites.
     pub fn toggle_epic_collapse(&mut self, epic_id: &str) -> bool {
         if self.collapsed_epics.remove(epic_id) {
             false
@@ -556,7 +558,7 @@ impl Workshop {
         UiState {
             version: 1,
             collapsed_epics: self.collapsed_epics.clone(),
-            sparks_filter: self.sparks_filter.to_persisted(),
+            sparks_filter: self.sparks_filter.to_persisted_with_sort(self.sort_mode),
         }
     }
 
