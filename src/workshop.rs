@@ -154,6 +154,11 @@ pub struct Workshop {
     pub blocked_spark_ids: HashSet<String>,
     /// Inline contract-create form for the spark detail view.
     pub contract_create_form: crate::screen::spark_detail::ContractCreateForm,
+    /// Per-selection edit-session state for the spark detail view. Gates
+    /// `begin_edit` on closed/completed sparks behind a confirmation
+    /// modal and short-circuits the save path on failed validation.
+    /// See ryve-8ad372cf.
+    pub spark_edit_session: crate::screen::spark_detail::SparkEditSession,
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
@@ -231,6 +236,7 @@ impl Workshop {
             selected_spark_bonds: Vec::new(),
             blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
+            spark_edit_session: Default::default(),
             bg_is_dark: None,
             pending_agent_spawn: None,
             pending_head_spawn: None,
