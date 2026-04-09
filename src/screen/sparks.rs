@@ -448,6 +448,10 @@ pub enum Message {
     FilterTogglePriority(i32),
     /// Set the assignee filter (None = clear).
     FilterSetAssignee(Option<String>),
+    /// User typed in the search input; updates SparksFilter.search.
+    SearchChanged(String),
+    /// Clear the search input.
+    ClearSearch,
 }
 
 // ── Refresh button glyph ─────────────────────────────
@@ -560,6 +564,30 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     // ── Filter bar (type / priority / assignee) ──
     let filter_bar = view_filter_bar(sparks, filter, agent_session_names, &pal);
 
+    // ── Search bar ──
+    let search_input = text_input("Search sparks...", &filter.search)
+        .size(FONT_BODY)
+        .padding([6, 8])
+        .on_input(Message::SearchChanged);
+
+    let search_row = if filter.search.is_empty() {
+        row![search_input]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+    } else {
+        let clear_btn = button(
+            text("\u{00D7}")
+                .size(FONT_ICON_SM)
+                .color(pal.text_secondary),
+        )
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::ClearSearch);
+        row![search_input, clear_btn]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+    };
+
     let mut list = column![].spacing(2).padding([0, 10]);
 
     // Sort mode dropdown — shown inline below the header when toggled open.
@@ -610,6 +638,7 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         header,
         filter_row,
         filter_bar,
+        search_row,
         scrollable(list).height(Length::Fill)
     ]
     .width(Length::Fill)

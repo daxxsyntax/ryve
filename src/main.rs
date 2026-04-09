@@ -3583,6 +3583,18 @@ impl App {
                             ws.sort_dropdown_open = !ws.sort_dropdown_open;
                         }
                     }
+                    screen::sparks::Message::SearchChanged(query) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search = query;
+                            ws.recompute_filtered_sparks();
+                        }
+                    }
+                    screen::sparks::Message::ClearSearch => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search.clear();
+                            ws.recompute_filtered_sparks();
+                        }
+                    }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_status_menu.dismiss();
