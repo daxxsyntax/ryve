@@ -17,9 +17,12 @@
 //! session list CLI). They are part of the wrapper's required API per
 //! spark ryve-4bae4ff6.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Output, Stdio};
+
+use data::sparks::types::PersistedAgentSession;
+use sqlx::SqlitePool;
 
 // ── Errors ────────────────────────────────────────────────
 
@@ -321,6 +324,131 @@ fn which_tmux() -> Option<PathBuf> {
                 Some(PathBuf::from(s))
             }
         })
+}
+
+// ── Session naming ───────────────────────────────────────
+
+/// The canonical tmux session name for a given agent session.
+/// Format: `<label>-<short_id>` where short_id is the first 8 chars.
+pub fn session_name(session_label: Option<&str>, session_id: &str) -> String {
+    let label = session_label.unwrap_or("hand");
+    let short = &session_id[..8.min(session_id.len())];
+    format!("{label}-{short}")
+}
+
+/// Returns true if `name` looks like a Ryve-managed tmux session.
+fn is_ryve_session(name: &str) -> bool {
+    name.starts_with("hand-") || name.starts_with("head-") || name.starts_with("merger-")
+}
+
+// ── Async session listing ────────────────────────────────
+
+/// A live tmux session discovered on the private socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxSession {
+    pub name: String,
+}
+
+/// List all tmux sessions on the workshop's private socket (async).
+pub async fn list_sessions_async(workshop_dir: &Path) -> Vec<TmuxSession> {
+    let sock = workshop_dir.join(".ryve").join("tmux.sock");
+    if !sock.exists() {
+        return Vec::new();
+    }
+    let output = tokio::process::Command::new("tmux")
+        .args([
+            "-S",
+            &sock.to_string_lossy(),
+            "list-sessions",
+            "-F",
+            "#{session_name}",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| TmuxSession {
+                    name: l.trim().to_string(),
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+// ── Reconciliation ───────────────────────────────────────
+
+/// Outcome of one reconciliation run.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcileResult {
+    pub confirmed_live: Vec<String>,
+    pub marked_stopped: Vec<String>,
+    pub orphaned_tmux: Vec<String>,
+}
+
+/// Reconcile existing tmux sessions with `agent_sessions` DB rows.
+///
+/// Called on app boot to restore liveness state after a Ryve restart.
+pub async fn reconcile_sessions(
+    workshop_dir: &Path,
+    pool: &SqlitePool,
+    workshop_id: &str,
+) -> ReconcileResult {
+    let mut result = ReconcileResult::default();
+
+    let live_tmux = list_sessions_async(workshop_dir).await;
+    let live_names: HashSet<&str> = live_tmux.iter().map(|s| s.name.as_str()).collect();
+
+    let db_sessions: Vec<PersistedAgentSession> =
+        data::sparks::agent_session_repo::list_for_workshop(pool, workshop_id)
+            .await
+            .unwrap_or_default();
+
+    let active_sessions: Vec<&PersistedAgentSession> = db_sessions
+        .iter()
+        .filter(|s| s.status == "active")
+        .collect();
+
+    let mut expected_names: HashSet<String> = HashSet::new();
+
+    for s in &active_sessions {
+        let name = session_name(s.session_label.as_deref(), &s.id);
+        expected_names.insert(name.clone());
+
+        if live_names.contains(name.as_str()) {
+            log::info!(
+                "tmux reconcile: session '{name}' (db={}) confirmed live",
+                s.id
+            );
+            result.confirmed_live.push(s.id.clone());
+        } else {
+            log::info!(
+                "tmux reconcile: session '{name}' (db={}) has no tmux session — marking stopped",
+                s.id
+            );
+            let _ = data::sparks::agent_session_repo::end_session(pool, &s.id).await;
+            result.marked_stopped.push(s.id.clone());
+        }
+    }
+
+    for ts in &live_tmux {
+        if is_ryve_session(&ts.name) && !expected_names.contains(&ts.name) {
+            log::warn!(
+                "tmux reconcile: tmux session '{}' has no matching agent_sessions row — leaving alone",
+                ts.name
+            );
+            result.orphaned_tmux.push(ts.name.clone());
+        }
+    }
+
+    result
 }
 
 // ── Convenience free functions ────────────────────────────
