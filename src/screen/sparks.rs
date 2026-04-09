@@ -145,6 +145,22 @@ pub enum Message {
     CloseSparkWithReason(String, String),
 }
 
+// ── Refresh button glyph ─────────────────────────────
+
+/// Pick the Workgraph panel's refresh-button glyph based on whether an
+/// explicit Refresh refetch is currently in flight. Pulled out of `view`
+/// so it can be unit-tested without constructing an iced `Element`.
+/// Spark ryve-7805b38b.
+pub(crate) fn refresh_button_glyph(refreshing: bool) -> &'static str {
+    if refreshing {
+        // Horizontal ellipsis — signals "work in progress".
+        "\u{2026}"
+    } else {
+        // Clockwise open-circle arrow — the normal refresh icon.
+        "\u{21BB}"
+    }
+}
+
 // ── View ─────────────────────────────────────────────
 
 pub fn view<'a>(
@@ -154,9 +170,19 @@ pub fn view<'a>(
     has_bg: bool,
     create_form: &'a CreateForm,
     status_menu: &'a StatusMenu,
+    refreshing: bool,
 ) -> Element<'a, Message> {
     let pal = *pal;
 
+    // Refresh button: dim the glyph and swap it for an ellipsis while a
+    // refetch is in flight so the click surfaces visible feedback.
+    // Spark ryve-7805b38b.
+    let refresh_glyph = refresh_button_glyph(refreshing);
+    let refresh_color = if refreshing {
+        pal.text_tertiary
+    } else {
+        pal.text_secondary
+    };
     let header = row![
         text("Workgraph").size(FONT_HEADER).color(pal.text_primary),
         Space::new().width(Length::Fill),
@@ -164,7 +190,7 @@ pub fn view<'a>(
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::ShowCreateForm),
-        button(text("\u{21BB}").size(FONT_ICON).color(pal.text_secondary))
+        button(text(refresh_glyph).size(FONT_ICON).color(refresh_color))
             .style(button::text)
             .padding([2, 6])
             .on_press(Message::Refresh),
@@ -574,6 +600,18 @@ mod tests {
     fn status_options_cover_all_non_closed_states() {
         let keys: Vec<&str> = STATUS_OPTIONS.iter().map(|(k, _)| *k).collect();
         assert_eq!(keys, vec!["open", "in_progress", "blocked", "deferred"]);
+    }
+
+    #[test]
+    fn refresh_glyph_swaps_while_refetching() {
+        // Spark ryve-7805b38b: the Workgraph refresh button must surface
+        // a visible in-flight indicator so clicks feel responsive. The
+        // two glyphs must differ so a user can see the state change.
+        let idle = refresh_button_glyph(false);
+        let busy = refresh_button_glyph(true);
+        assert_ne!(idle, busy);
+        assert_eq!(idle, "\u{21BB}");
+        assert_eq!(busy, "\u{2026}");
     }
 
     #[test]
