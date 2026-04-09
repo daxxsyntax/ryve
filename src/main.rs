@@ -286,6 +286,11 @@ enum Message {
     },
     /// Workgraph sparks loaded from DB
     SparksLoaded(Uuid, Vec<Spark>),
+    /// A new spark was just created via the inline "+" form. Carries the
+    /// new spark's id (if the write succeeded) and a fresh sparks list.
+    /// The handler applies the same bookkeeping as `SparksLoaded` and then
+    /// auto-selects the new spark so the detail panel opens for it.
+    SparkCreated(Uuid, Option<String>, Vec<Spark>),
     /// Failing/pending required contract count loaded from DB
     FailingContractsLoaded(Uuid, usize),
     /// Failing/pending required contract list loaded from DB (for Home overview)
@@ -464,6 +469,11 @@ impl std::fmt::Debug for Message {
             }
             Self::WorkshopReady { id, .. } => write!(f, "WorkshopReady({id})"),
             Self::SparksLoaded(id, s) => write!(f, "SparksLoaded({id}, {} sparks)", s.len()),
+            Self::SparkCreated(id, new_id, s) => write!(
+                f,
+                "SparkCreated({id}, {new_id:?}, {} sparks)",
+                s.len()
+            ),
             Self::FailingContractsLoaded(id, n) => {
                 write!(f, "FailingContractsLoaded({id}, {n})")
             }
@@ -1085,6 +1095,26 @@ impl App {
                     return Task::batch(tasks);
                 }
                 Task::none()
+            }
+            Message::SparkCreated(id, new_id, sparks) => {
+                // First, drive the normal post-load bookkeeping (blocked
+                // set, embers, baseline flags, etc.) by forwarding to the
+                // standard SparksLoaded handler. Then, if the create
+                // succeeded, select the new spark so the detail panel
+                // focuses it immediately — this is the "new spark is
+                // selected" half of the acceptance criterion. Grouping
+                // state is not yet present in this worktree; once it
+                // lands, the selection handler can expand the parent
+                // group for free.
+                let load_task = self.update(Message::SparksLoaded(id, sparks));
+                let select_task = if let Some(new_id) = new_id {
+                    self.update(Message::Sparks(
+                        screen::sparks::Message::SelectSpark(new_id),
+                    ))
+                } else {
+                    Task::none()
+                };
+                Task::batch([load_task, select_task])
             }
             Message::FailingContractsLoaded(id, count) => {
                 if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
@@ -2368,6 +2398,14 @@ impl App {
                         self.handle_bench_message(screen::bench::Message::CloseTerminalSearch),
                     );
                 }
+                // Spark create form dismissal: Escape cancels the inline
+                // "+" form without persisting, per spark ryve-d158cc9f
+                // acceptance criteria.
+                if self.workshops[idx].spark_create_form.visible {
+                    tasks.push(self.update(Message::Sparks(
+                        screen::sparks::Message::CancelCreate,
+                    )));
+                }
                 tasks.push(self.update(Message::FileViewer(file_viewer::Message::ClearSelection)));
                 Task::batch(tasks)
             }
@@ -2424,8 +2462,19 @@ impl App {
                     }
                     screen::sparks::Message::ShowCreateForm => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.reset();
-                            ws.spark_create_form.visible = true;
+                            // Default the parent picker to the focused
+                            // spark's nearest epic ancestor (or the spark
+                            // itself, if it is an epic). If nothing is
+                            // focused the form opens with an empty parent
+                            // and the user must pick one (unless they are
+                            // creating a top-level epic).
+                            let default_parent =
+                                screen::sparks::resolve_default_parent_epic(
+                                    &ws.sparks,
+                                    ws.selected_spark.as_deref(),
+                                );
+                            ws.spark_create_form
+                                .open_with_default_parent(default_parent);
                         }
                     }
                     screen::sparks::Message::CreateFormTitleChanged(val) => {
@@ -2450,18 +2499,6 @@ impl App {
                             ws.spark_create_form.priority = p;
                         }
                     }
-                    screen::sparks::Message::CreateFormProblemChanged(val) => {
-                        if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.problem = val;
-                            ws.spark_create_form.error = None;
-                        }
-                    }
-                    screen::sparks::Message::CreateFormAcceptanceChanged(val) => {
-                        if let Some(ws) = self.workshops.get_mut(idx) {
-                            ws.spark_create_form.acceptance = val;
-                            ws.spark_create_form.error = None;
-                        }
-                    }
                     screen::sparks::Message::CreateFormParentEpicChanged(val) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_create_form.parent_epic_id = val;
@@ -2482,24 +2519,9 @@ impl App {
                         }
 
                         let title = ws.spark_create_form.title.trim().to_string();
-                        let problem = ws.spark_create_form.problem.trim().to_string();
-                        let acceptance = ws.spark_create_form.acceptance.trim().to_string();
                         let spark_type_str = ws.spark_create_form.spark_type.clone();
                         let priority = ws.spark_create_form.priority;
                         let parent_id = ws.spark_create_form.parent_epic_id.clone();
-
-                        // Build the structured intent metadata block. The
-                        // CLI's `spark create` writes the same shape so the
-                        // two paths stay interchangeable.
-                        let metadata = serde_json::json!({
-                            "intent": {
-                                "problem_statement": problem,
-                                "invariants": Vec::<String>::new(),
-                                "non_goals": Vec::<String>::new(),
-                                "acceptance_criteria": vec![acceptance],
-                            }
-                        })
-                        .to_string();
 
                         let spark_type = match spark_type_str.as_str() {
                             "bug" => data::sparks::types::SparkType::Bug,
@@ -2531,14 +2553,18 @@ impl App {
                                         parent_id,
                                         due_at: None,
                                         estimated_minutes: None,
-                                        metadata: Some(metadata),
+                                        metadata: None,
                                         risk_level: None,
                                         scope_boundary: None,
                                     };
-                                    let _ = data::sparks::spark_repo::create(&pool, new).await;
-                                    load_sparks(pool, ws_id).await
+                                    let new_id = data::sparks::spark_repo::create(&pool, new)
+                                        .await
+                                        .ok()
+                                        .map(|s| s.id);
+                                    let sparks = load_sparks(pool, ws_id).await;
+                                    (new_id, sparks)
                                 },
-                                move |sparks| Message::SparksLoaded(id, sparks),
+                                move |(new_id, sparks)| Message::SparkCreated(id, new_id, sparks),
                             );
                         }
                     }
