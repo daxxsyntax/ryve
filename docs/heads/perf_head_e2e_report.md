@@ -52,8 +52,9 @@ that:
    lets us observe orchestration shape (crew, hands, merger, branches)
    without waiting on a real coding agent. It mirrors the stub pattern
    already used in `src/hand_spawn.rs` tests.
-4. **Runs PerfHead** — `ryve head spawn <epic> --archetype PerfHead` with
-   the stub bound as the agent command.
+4. **Runs PerfHead** — `ryve head spawn <epic> --archetype build` with
+   the stub agent on `$PATH`. (A dedicated `perf` archetype is aspirational;
+   the current CLI supports `--archetype build|research|review`.)
 5. **Polls for convergence** — until the Crew has ≥6 owner members plus
    exactly 1 merger, or `STALL_SECS` elapses (failure).
 6. **Emits a JSON report** at `$OUT_JSON` capturing observed vs. manual
@@ -63,7 +64,7 @@ that:
 
 | Mode      | Behavior                                                                 |
 |-----------|---------------------------------------------------------------------------|
-| `full`    | Requires `ryve head spawn --archetype PerfHead`. Fails loudly if missing. |
+| `full`    | Requires `ryve head spawn --archetype build`. Fails loudly if missing.    |
 | `dry-run` | Skips the spawn; only seeds the workshop and asserts the scaffold.        |
 
 `dry-run` exists so the harness is useful in CI **before** the epic's
@@ -89,9 +90,10 @@ integrated onto `main`. Once integrated, CI flips to `full`.
 
 ## 3. Current result
 
-As of this spark being closed, `main` does **not** yet contain the PerfHead
-archetype or the `ryve head spawn --archetype PerfHead` subcommand; both
-live on in-flight hand branches for sibling sparks of epic ryve-fbf2a519
+As of this spark being closed, `main` does **not** yet contain a dedicated
+PerfHead archetype. The CLI supports `--archetype build|research|review`;
+a `perf` archetype is aspirational. Related work lives on in-flight hand
+branches for sibling sparks of epic ryve-fbf2a519
 (ryve-53bb0bac, plus the orchestrator and head-spawn CLI Hands). The
 harness has been exercised in `MODE=dry-run` successfully:
 

@@ -1896,7 +1896,7 @@ ARCHETYPES:
   type. To add a new archetype see `docs/HEAD_HOWTO.md`.
 
 USAGE:
-  ryve head spawn <epic_id> [--agent <name>] [--crew <id>]
+  ryve head spawn <epic_id> --archetype <build|research|review> [--agent <name>] [--crew <id>]
   ryve head list
   ryve head --help
   ryve head spawn --help
@@ -1933,6 +1933,13 @@ async fn handle_head(
             print_head_usage();
         }
         "spawn" => {
+            if matches!(
+                args.get(1).map(String::as_str),
+                Some("help" | "--help" | "-h")
+            ) {
+                print_head_usage();
+                return;
+            }
             if args.len() < 2 {
                 die(
                     "head spawn requires <epic_id> --archetype <build|research|review> [--agent <name>] [--crew <id>]",
@@ -2024,35 +2031,33 @@ async fn handle_head(
                 Err(e) => die(&format!("{e}")),
             }
         }
-        "list" | "ls" => {
-            match agent_session_repo::list_for_workshop(pool, ws_id).await {
-                Ok(sessions) => {
-                    let heads: Vec<_> = sessions
-                        .into_iter()
-                        .filter(|s| s.session_label.as_deref() == Some("head"))
-                        .collect();
-                    if json_mode {
+        "list" | "ls" => match agent_session_repo::list_for_workshop(pool, ws_id).await {
+            Ok(sessions) => {
+                let heads: Vec<_> = sessions
+                    .into_iter()
+                    .filter(|s| s.session_label.as_deref() == Some("head"))
+                    .collect();
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&heads).unwrap_or_default()
+                    );
+                } else if heads.is_empty() {
+                    println!("No Head sessions.");
+                } else {
+                    println!("{:<36} {:<20} {:<10} STARTED", "SESSION", "AGENT", "STATUS");
+                    let sep = "-".repeat(90);
+                    println!("{sep}");
+                    for s in &heads {
                         println!(
-                            "{}",
-                            serde_json::to_string_pretty(&heads).unwrap_or_default()
+                            "{:<36} {:<20} {:<10} {}",
+                            s.id, s.agent_name, s.status, s.started_at
                         );
-                    } else if heads.is_empty() {
-                        println!("No Head sessions.");
-                    } else {
-                        println!("{:<36} {:<20} {:<10} STARTED", "SESSION", "AGENT", "STATUS");
-                        let sep = "-".repeat(90);
-                        println!("{sep}");
-                        for s in &heads {
-                            println!(
-                                "{:<36} {:<20} {:<10} {}",
-                                s.id, s.agent_name, s.status, s.started_at
-                            );
-                        }
                     }
                 }
-                Err(e) => die(&format!("{e}")),
             }
-        }
+            Err(e) => die(&format!("{e}")),
+        },
         "archetype" | "archetypes" => {
             let sub = args.get(1).map(|s| s.as_str()).unwrap_or("list");
             match sub {
@@ -2088,9 +2093,10 @@ async fn handle_head(
             handle_head_orchestrate(pool, workshop_root, ws_id, &args[1..], json_mode).await;
         }
         "render" => {
-            let archetype_id = args.get(1).map(|s| s.as_str()).unwrap_or_else(|| {
-                die("usage: ryve head render <archetype> --epic <epic_id>")
-            });
+            let archetype_id = args
+                .get(1)
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| die("usage: ryve head render <archetype> --epic <epic_id>"));
             let mut epic_id: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
@@ -2104,14 +2110,17 @@ async fn handle_head(
                     }
                 }
             }
-            let epic_id = epic_id.unwrap_or_else(|| {
-                die("missing --epic <epic_id> (required for head render)")
-            });
+            let epic_id = epic_id
+                .unwrap_or_else(|| die("missing --epic <epic_id> (required for head render)"));
             let archetype = crate::head_archetypes::find(archetype_id).unwrap_or_else(|| {
                 die(&format!(
-                    "unknown archetype '{archetype_id}' — run `ryve head list`"
+                    "unknown archetype '{archetype_id}'. Known archetypes: 'build', 'research', 'review' (see `ryve head archetype list`)"
                 ))
             });
+            eprintln!(
+                "rendering {} ({}) — template: {}",
+                archetype.display_name, archetype.description, archetype.template_path
+            );
             let rendered = archetype.render(&epic_id);
             print!("{rendered}");
             if !rendered.ends_with('\n') {
@@ -2333,9 +2342,7 @@ async fn handle_head_orchestrate(
                 Err(e) => die(&format!("finalize_with_merger failed: {e}")),
             },
             None => {
-                eprintln!(
-                    "all sparks done but --merge-spark not provided; skipping merger spawn"
-                );
+                eprintln!("all sparks done but --merge-spark not provided; skipping merger spawn");
                 None
             }
         }

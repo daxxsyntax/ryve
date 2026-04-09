@@ -488,8 +488,8 @@ pub async fn drop_closed_siblings(
             }
             continue;
         };
-        let dropped = sp.status == "closed"
-            && !matches!(sp.closed_reason.as_deref(), Some("completed"));
+        let dropped =
+            sp.status == "closed" && !matches!(sp.closed_reason.as_deref(), Some("completed"));
         if !dropped {
             kept_sparks.push(id.clone());
             if idx < crew.owners.len() {
@@ -628,7 +628,8 @@ mod tests {
                 last_heartbeat: None,
             },
         ));
-        r.members.push(("sp-unowned".into(), MemberState::Unassigned));
+        r.members
+            .push(("sp-unowned".into(), MemberState::Unassigned));
         r.members.push((
             "sp-running".into(),
             MemberState::Running {

@@ -4,8 +4,8 @@ workshop_schema_version = 1
 auto_sync = false
 
 [layout]
-sidebar_width = 405.5586
-sparks_width = 343.21875
+sidebar_width = 452.26563
+sparks_width = 350.04688
 sidebar_split = 0.4497009
 
 [explorer]

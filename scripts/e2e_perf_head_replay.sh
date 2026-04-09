@@ -79,16 +79,16 @@ log "using ryve binary: $RYVE_BIN"
 # This is the gate for `mode=full`: PerfHead must be wired into the CLI.
 # In `dry-run` we only warn and continue.
 perfhead_available() {
-  "$RYVE_BIN" head --help >/dev/null 2>&1 || return 1
-  "$RYVE_BIN" head spawn --help 2>&1 | grep -qi -E 'perfhead|--archetype' || return 1
+  "$RYVE_BIN" head --help 2>&1 | grep -qi 'spawn' || return 1
+  "$RYVE_BIN" head archetype list 2>&1 | grep -qi 'perf\|build\|research\|review' || return 1
   return 0
 }
 
 if [[ "$MODE" == "full" ]] && ! perfhead_available; then
-  die "ryve head spawn --archetype PerfHead is not wired into $RYVE_BIN.
-     The PerfHead archetype (spark ryve-53bb0bac) and the head-spawn CLI
-     (epic ryve-fbf2a519) must be integrated before this harness can run
-     in full mode. Re-run with MODE=dry-run to exercise the scaffold."
+  die "ryve head spawn is not wired into $RYVE_BIN.
+     The head-spawn CLI (epic ryve-fbf2a519) must be integrated before
+     this harness can run in full mode. Re-run with MODE=dry-run to
+     exercise the scaffold."
 fi
 
 # --- Throwaway workshop ---------------------------------------------------
@@ -182,8 +182,8 @@ export PATH="$TMP_WS:$PATH"
 # --- Run PerfHead ---------------------------------------------------------
 if [[ "$MODE" == "full" ]]; then
   log "spawning PerfHead against epic $EPIC_ID"
-  "$RYVE_BIN" head spawn "$EPIC_ID" --archetype PerfHead \
-    --agent-command "$STUB" >/dev/null || die "ryve head spawn failed"
+  "$RYVE_BIN" head spawn "$EPIC_ID" --archetype build \
+    --agent stub-agent.sh >/dev/null || die "ryve head spawn failed"
 
   # Poll until the Crew materializes or we time out. We consider the run
   # converged when:

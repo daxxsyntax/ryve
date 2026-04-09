@@ -711,7 +711,10 @@ mod tests {
         let crew = crew_repo::get(&pool, &spawned.crew_id)
             .await
             .expect("crew row for spawned head");
-        assert_eq!(crew.head_session_id.as_deref(), Some(spawned.session_id.as_str()));
+        assert_eq!(
+            crew.head_session_id.as_deref(),
+            Some(spawned.session_id.as_str())
+        );
         assert_eq!(crew.parent_spark_id.as_deref(), Some(epic.id.as_str()));
 
         // 3. Subprocess received the archetype prompt. Poll for the stub's
@@ -823,8 +826,9 @@ mod tests {
 
         let members = crew_repo::members(&pool, &crew.id).await.unwrap();
         assert!(
-            members.iter().any(|m| m.session_id == spawned.session_id
-                && m.role.as_deref() == Some("head")),
+            members
+                .iter()
+                .any(|m| m.session_id == spawned.session_id && m.role.as_deref() == Some("head")),
             "head must be registered as a crew member with role=head"
         );
 

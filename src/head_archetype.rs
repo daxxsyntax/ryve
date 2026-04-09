@@ -11,11 +11,11 @@
 //! write discipline its Crew operates under.
 //!
 //! Archetypes are declared once, here, in a data-driven registry. The CLI
-//! (`ryve head archetype list`) and, eventually, `ryve head spawn
-//! --archetype <name>` look archetypes up by name — neither the CLI parser
-//! nor the spawn path hardcodes archetype identifiers. Adding a new
-//! archetype is a matter of extending [`Registry::builtins`] (or dropping
-//! a future TOML overlay into `.ryve/`); no CLI-parser edit is required.
+//! (`ryve head archetype list`) lists them from this registry, while
+//! `ryve head spawn --archetype <name>` currently validates against a
+//! hardcoded set in `agent_prompts::HeadArchetype::from_str` (`build`,
+//! `research`, `review`). Adding a new archetype requires extending both
+//! [`Registry::builtins`] and the `HeadArchetype` enum in `agent_prompts`.
 //!
 //! ## Invariants
 //!
@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn get_by_name_finds_registered_and_rejects_unknown() {
         let reg = Registry::builtins();
-        assert_eq!(reg.get_by_name("build").map(|a| a.name.as_str()), Some("build"));
+        assert_eq!(
+            reg.get_by_name("build").map(|a| a.name.as_str()),
+            Some("build")
+        );
         assert!(reg.get_by_name("nonexistent").is_none());
         // Case-sensitive on purpose: "Build" is not the same as "build".
         assert!(reg.get_by_name("Build").is_none());

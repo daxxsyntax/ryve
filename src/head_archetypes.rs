@@ -24,24 +24,24 @@
 /// A registered Head archetype: a named specialization of the Head role
 /// backed by a checked-in prompt template.
 #[derive(Debug, Clone, Copy)]
-pub struct HeadArchetype {
+pub struct HeadArchetypeTemplate {
     /// Short, stable identifier used on the CLI (e.g. `perf`).
     pub id: &'static str,
     /// Human-readable name (e.g. `PerfHead`).
     pub display_name: &'static str,
-    /// One-line summary shown in `ryve head list`.
+    /// One-line summary shown in `ryve head archetype list`.
     pub description: &'static str,
     /// Workspace-relative path of the template file the archetype points
     /// at. Kept for documentation / tooling; the actual bytes are embedded
-    /// in [`HeadArchetype::template`] via `include_str!`.
+    /// in [`HeadArchetypeTemplate::template`] via `include_str!`.
     pub template_path: &'static str,
     /// The prompt template, embedded at compile time. Contains
-    /// `{{epic_id}}` placeholders that [`HeadArchetype::render`] will
+    /// `{{epic_id}}` placeholders that [`HeadArchetypeTemplate::render`] will
     /// substitute.
     pub template: &'static str,
 }
 
-impl HeadArchetype {
+impl HeadArchetypeTemplate {
     /// Render the archetype's prompt template for a concrete epic.
     ///
     /// Replaces every occurrence of `{{epic_id}}` with the supplied id.
@@ -54,7 +54,7 @@ impl HeadArchetype {
 }
 
 /// PerfHead: performance-remediation Head archetype.
-pub const PERF_HEAD: HeadArchetype = HeadArchetype {
+pub const PERF_HEAD: HeadArchetypeTemplate = HeadArchetypeTemplate {
     id: "perf",
     display_name: "PerfHead",
     description: "Performance remediation: decompose a perf epic into \
@@ -65,11 +65,11 @@ pub const PERF_HEAD: HeadArchetype = HeadArchetype {
 };
 
 /// All registered Head archetypes. Add new entries here and they become
-/// visible to `ryve head list` and to any selection UI.
-pub const ARCHETYPES: &[&HeadArchetype] = &[&PERF_HEAD];
+/// visible to `ryve head archetype list` and to any selection UI.
+pub const ARCHETYPES: &[&HeadArchetypeTemplate] = &[&PERF_HEAD];
 
 /// Look up an archetype by its short id.
-pub fn find(id: &str) -> Option<&'static HeadArchetype> {
+pub fn find(id: &str) -> Option<&'static HeadArchetypeTemplate> {
     ARCHETYPES.iter().copied().find(|a| a.id == id)
 }
 

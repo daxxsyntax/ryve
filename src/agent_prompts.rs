@@ -404,7 +404,7 @@ pub fn compose_perf_head_prompt(epic_id: Option<&str>, epic_title: Option<&str>)
         "WORKFLOW — IMPORTANT: do NOT re-implement the poll / reassign / merger loop \
          in this prompt. The policy lives in the shared orchestration module \
          (`src/head/orchestrator.rs`) and is exposed to you via a single CLI command:\n\
-         \n    ryve head orchestrate <crew_id> [--stall-seconds N] [--poll-seconds M]\n\n\
+         \n    ryve head orchestrate <parent_spark_id> [--stall-seconds N] [--poll-seconds M]\n\n\
          That command runs `spawn_crew` / `poll_crew` / `reassign_stalled` / \
          `finalize_with_merger` for you, including automatic release of \
          heartbeat-stalled Hands and automatic respawn up to the configured cap. Your \
