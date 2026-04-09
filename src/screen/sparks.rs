@@ -96,10 +96,10 @@ impl SparksFilter {
         if !self.priorities.is_empty() && !self.priorities.contains(&spark.priority) {
             return false;
         }
-        if let Some(ref assignee) = self.assignee {
-            if spark.assignee.as_deref() != Some(assignee.as_str()) {
-                return false;
-            }
+        if let Some(ref assignee) = self.assignee
+            && spark.assignee.as_deref() != Some(assignee.as_str())
+        {
+            return false;
         }
         if !self.search.is_empty() {
             let search_lower = self.search.to_lowercase();
@@ -253,10 +253,10 @@ pub use crate::sparks_filter::SortMode;
 pub fn collect_assignees(sparks: &[Spark], agent_session_names: &[String]) -> Vec<String> {
     let mut set = BTreeSet::new();
     for s in sparks {
-        if let Some(ref a) = s.assignee {
-            if !a.is_empty() {
-                set.insert(a.clone());
-            }
+        if let Some(ref a) = s.assignee
+            && !a.is_empty()
+        {
+            set.insert(a.clone());
         }
     }
     for name in agent_session_names {
@@ -482,6 +482,9 @@ pub enum Message {
     /// log tab if applicable). Spark ryve-dba4b8c4.
     FocusAgentSession(String),
     /// The sparks filter changed — persist to `.ryve/ui_state.json`.
+    /// Not yet emitted by filter widgets; will be wired once all filter
+    /// UI is integrated. Spark ryve-27e33825.
+    #[allow(dead_code)]
     SparksFilterChanged,
 }
 
@@ -1087,6 +1090,7 @@ fn status_symbol(status: &str) -> &'static str {
 /// epics recurse once so `epic > epic > task` renders the inner epic as
 /// its own collapsible group; beyond two levels deep we flatten the
 /// remaining rows (per the spark non-goal).
+#[allow(clippy::too_many_arguments)]
 fn view_epic_group<'a>(
     group: &EpicGroup<'a>,
     all_groups: &[EpicGroup<'a>],
