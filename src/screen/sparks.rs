@@ -13,6 +13,36 @@ use crate::style::{
     self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_ICON_SM, FONT_LABEL, FONT_SMALL, Palette,
 };
 
+// ── Filter ──────────────────────────────────────────
+
+/// UI-level filter state for the sparks panel. Held on the Workshop so
+/// it survives re-renders. Currently only carries a free-text search
+/// query; future filters (status, type, priority) will be added here.
+#[derive(Debug, Clone, Default)]
+pub struct SparksFilter {
+    /// Free-text search query. Empty string means "no search constraint".
+    pub search: String,
+}
+
+impl SparksFilter {
+    /// Return only sparks whose title or description contains the search
+    /// query as a case-insensitive substring. When the search field is
+    /// empty every spark passes through unchanged.
+    pub fn apply_filter<'a>(&self, sparks: &'a [Spark]) -> Vec<&'a Spark> {
+        if self.search.is_empty() {
+            return sparks.iter().collect();
+        }
+        let query = self.search.to_lowercase();
+        sparks
+            .iter()
+            .filter(|s| {
+                s.title.to_lowercase().contains(&query)
+                    || s.description.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+}
+
 // ── State ────────────────────────────────────────────
 
 /// Inline create form state, held on the Workshop. The form enforces a
@@ -301,6 +331,11 @@ pub enum Message {
     /// `.ryve/ui_state.json` so the decision survives restart.
     /// Sparks ryve-8be256a8 / ryve-926870a9.
     ToggleEpicCollapse(String),
+    /// User typed in the search input; updates SparksFilter.search on
+    /// every keystroke. Spark ryve-2017d26e.
+    SearchChanged(String),
+    /// Clear the search input (×-button or Esc). Spark ryve-2017d26e.
+    ClearSearch,
 }
 
 // ── Refresh button glyph ─────────────────────────────
@@ -331,6 +366,7 @@ pub struct ViewCtx<'a> {
     pub status_menu: &'a StatusMenu,
     pub collapsed: &'a HashSet<String>,
     pub refreshing: bool,
+    pub filter: &'a SparksFilter,
 }
 
 pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
@@ -343,6 +379,7 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         status_menu,
         collapsed,
         refreshing,
+        filter,
     } = ctx;
 
     // Refresh button: dim the glyph and swap it for an ellipsis while a
@@ -373,6 +410,43 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
     .spacing(4)
     .padding([8, 10]);
 
+    // ── Search bar ──
+    let search_input = text_input("Search sparks...", &filter.search)
+        .size(FONT_BODY)
+        .padding([6, 8])
+        .on_input(Message::SearchChanged);
+
+    let search_row = if filter.search.is_empty() {
+        row![search_input]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+    } else {
+        let clear_btn = button(
+            text("\u{00D7}")
+                .size(FONT_ICON_SM)
+                .color(pal.text_secondary),
+        )
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::ClearSearch);
+        row![search_input, clear_btn]
+            .spacing(4)
+            .align_y(iced::Alignment::Center)
+    };
+
+    // Build the set of spark IDs that match the search filter so we
+    // can skip non-matching rows without cloning or changing lifetimes.
+    let search_ids: Option<HashSet<&str>> = if filter.search.is_empty() {
+        None
+    } else {
+        Some(
+            filter
+                .apply_filter(sparks)
+                .into_iter()
+                .map(|s| s.id.as_str())
+                .collect(),
+        )
+    };
     let mut list = column![].spacing(2).padding([0, 10]);
 
     // Inline create form
@@ -380,12 +454,18 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
         list = list.push(view_create_form(sparks, create_form, &pal));
     }
 
-    if sparks.is_empty() && !create_form.visible {
-        list = list.push(
-            text("No sparks yet")
-                .size(FONT_BODY)
-                .color(pal.text_tertiary),
-        );
+    let has_visible = search_ids
+        .as_ref()
+        .map(|ids| !ids.is_empty())
+        .unwrap_or(!sparks.is_empty());
+
+    if !has_visible && !create_form.visible {
+        let msg = if filter.search.is_empty() {
+            "No sparks yet"
+        } else {
+            "No matching sparks"
+        };
+        list = list.push(text(msg).size(FONT_BODY).color(pal.text_tertiary));
     } else {
         let groups = group_by_epic(sparks);
         let epic_ids: HashSet<&str> = groups.iter().map(|g| g.epic.id.as_str()).collect();
@@ -401,6 +481,15 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
             if is_nested {
                 continue;
             }
+            // When a search is active, skip epic groups where neither
+            // the epic itself nor any child matches.
+            if let Some(ref ids) = search_ids {
+                let group_has_match = ids.contains(g.epic.id.as_str())
+                    || g.children.iter().any(|c| ids.contains(c.id.as_str()));
+                if !group_has_match {
+                    continue;
+                }
+            }
             list = list.push(view_epic_group(
                 g,
                 &groups,
@@ -409,11 +498,13 @@ pub fn view(ctx: ViewCtx<'_>) -> Element<'_, Message> {
                 &pal,
                 status_menu,
                 collapsed,
+                search_ids.as_ref(),
             ));
         }
     }
 
-    let content = column![header, scrollable(list).height(Length::Fill)]
+    let search_bar = container(search_row).padding([0, 10]);
+    let content = column![header, search_bar, scrollable(list).height(Length::Fill)]
         .width(Length::Fill)
         .height(Length::Fill);
 
@@ -612,6 +703,7 @@ fn view_epic_group<'a>(
     pal: &Palette,
     status_menu: &'a StatusMenu,
     collapsed: &'a HashSet<String>,
+    search_ids: Option<&HashSet<&str>>,
 ) -> Element<'a, Message> {
     let pal = *pal;
     let epic = group.epic;
@@ -629,6 +721,12 @@ fn view_epic_group<'a>(
 
     if !is_collapsed {
         for child in &group.children {
+            // Skip children that don't match the active search.
+            if let Some(ids) = search_ids {
+                if !ids.contains(child.id.as_str()) {
+                    continue;
+                }
+            }
             if child.spark_type == "epic"
                 && depth < 1
                 && let Some(nested) = all_groups.iter().find(|g| g.epic.id == child.id)
@@ -641,6 +739,7 @@ fn view_epic_group<'a>(
                     &pal,
                     status_menu,
                     collapsed,
+                    search_ids,
                 ));
                 continue;
             }
@@ -1309,5 +1408,85 @@ mod tests {
         assert_ne!(status_symbol("open"), status_symbol("in_progress"));
         assert_ne!(status_symbol("blocked"), status_symbol("deferred"));
         assert_ne!(status_symbol("closed"), status_symbol("open"));
+    }
+
+    // ── SparksFilter / apply_filter tests ───────────────
+
+    fn mk_spark_with_desc(id: &str, title: &str, description: &str) -> Spark {
+        let mut s = mk_spark(id, "task", Some("e1"));
+        s.title = title.to_string();
+        s.description = description.to_string();
+        s
+    }
+
+    #[test]
+    fn apply_filter_empty_search_passes_all() {
+        let sparks = vec![
+            mk_spark_with_desc("a", "Alpha", ""),
+            mk_spark_with_desc("b", "Beta", ""),
+        ];
+        let f = SparksFilter::default();
+        assert_eq!(f.apply_filter(&sparks).len(), 2);
+    }
+
+    #[test]
+    fn apply_filter_matches_title_case_insensitive() {
+        let sparks = vec![
+            mk_spark_with_desc("a", "Auth middleware", ""),
+            mk_spark_with_desc("b", "Database migration", ""),
+            mk_spark_with_desc("c", "OAuth login", ""),
+        ];
+        let f = SparksFilter {
+            search: "auth".to_string(),
+        };
+        let ids: Vec<&str> = f
+            .apply_filter(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn apply_filter_matches_description_case_insensitive() {
+        let sparks = vec![
+            mk_spark_with_desc("a", "Setup", "install the database driver"),
+            mk_spark_with_desc("b", "Cleanup", "remove old logs"),
+        ];
+        let f = SparksFilter {
+            search: "DATABASE".to_string(),
+        };
+        let ids: Vec<&str> = f
+            .apply_filter(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a"]);
+    }
+
+    #[test]
+    fn apply_filter_no_matches_returns_empty() {
+        let sparks = vec![mk_spark_with_desc("a", "Alpha", "first")];
+        let f = SparksFilter {
+            search: "zzz".to_string(),
+        };
+        assert!(f.apply_filter(&sparks).is_empty());
+    }
+
+    #[test]
+    fn apply_filter_matches_title_and_description_union() {
+        let sparks = vec![
+            mk_spark_with_desc("a", "widget", "builds UI"),
+            mk_spark_with_desc("b", "parser", "widget tokenizer"),
+        ];
+        let f = SparksFilter {
+            search: "widget".to_string(),
+        };
+        let ids: Vec<&str> = f
+            .apply_filter(&sparks)
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a", "b"]);
     }
 }

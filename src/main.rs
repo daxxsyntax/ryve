@@ -3532,6 +3532,16 @@ impl App {
                             });
                         }
                     }
+                    screen::sparks::Message::SearchChanged(query) => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search = query;
+                        }
+                    }
+                    screen::sparks::Message::ClearSearch => {
+                        if let Some(ws) = self.workshops.get_mut(idx) {
+                            ws.sparks_filter.search.clear();
+                        }
+                    }
                     screen::sparks::Message::CloseSparkWithReason(spark_id, reason) => {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.spark_status_menu.dismiss();
@@ -5959,6 +5969,7 @@ impl App {
                     status_menu: &ws.spark_status_menu,
                     collapsed: &ws.collapsed_epics,
                     refreshing: ws.sparks_refreshing,
+                    filter: &ws.sparks_filter,
                 })
                 .map(Message::Sparks)
             }
@@ -5972,6 +5983,7 @@ impl App {
                 status_menu: &ws.spark_status_menu,
                 collapsed: &ws.collapsed_epics,
                 refreshing: ws.sparks_refreshing,
+                filter: &ws.sparks_filter,
             })
             .map(Message::Sparks)
         };

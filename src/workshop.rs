@@ -284,6 +284,8 @@ pub struct Workshop {
     pub background_picker: PickerState,
     /// Inline spark create form state.
     pub spark_create_form: crate::screen::sparks::CreateForm,
+    /// Free-text search filter for the workgraph panel. Spark ryve-2017d26e.
+    pub sparks_filter: crate::screen::sparks::SparksFilter,
     /// Inline status popover state for the workgraph panel.
     pub spark_status_menu: crate::screen::sparks::StatusMenu,
     /// Currently selected spark ID (for detail view).
@@ -398,6 +400,7 @@ impl Workshop {
             background_handle: None,
             background_picker: PickerState::new(),
             spark_create_form: Default::default(),
+            sparks_filter: Default::default(),
             spark_status_menu: Default::default(),
             selected_spark: None,
             selected_spark_contracts: Vec::new(),
