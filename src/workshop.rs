@@ -90,6 +90,10 @@ pub struct SparkPatch {
     pub owner: Option<Option<String>>,
     pub risk_level: Option<Option<String>>,
     pub scope_boundary: Option<Option<String>>,
+    /// Structured intent: problem statement (lives in metadata JSON under
+    /// `intent.problem_statement`). `None` = don't touch; `Some("")` =
+    /// clear the field. Spark ryve-a5997352.
+    pub problem_statement: Option<String>,
 }
 
 impl SparkPatch {
@@ -104,6 +108,7 @@ impl SparkPatch {
             && self.owner.is_none()
             && self.risk_level.is_none()
             && self.scope_boundary.is_none()
+            && self.problem_statement.is_none()
     }
 
     /// Convert the patch into a `data::sparks::types::UpdateSpark` suitable
@@ -251,6 +256,12 @@ pub struct Workshop {
     /// time — see [`Workshop::change_selected_spark`]. Spark
     /// ryve-1d8c2847.
     pub spark_edit: Option<crate::screen::spark_detail::SparkEdit>,
+    /// Active multi-line problem-statement editor, if any. Holds the
+    /// stateful `text_editor::Content` (cursor, selection) that iced
+    /// needs to persist across view frames, plus the pre-edit snapshot
+    /// used by the Escape-revert path. `None` when no problem statement
+    /// is being edited. Spark ryve-a5997352.
+    pub problem_edit: Option<crate::screen::spark_detail::ProblemEditState>,
     /// Whether the background image is dark (for adaptive font color).
     /// `None` means no background or not yet computed.
     pub bg_is_dark: Option<bool>,
@@ -329,6 +340,7 @@ impl Workshop {
             blocked_spark_ids: HashSet::new(),
             contract_create_form: Default::default(),
             spark_edit: None,
+            problem_edit: None,
             bg_is_dark: None,
             pending_agent_spawn: None,
             pending_head_spawn: None,
@@ -383,6 +395,13 @@ impl Workshop {
             .spark_edit
             .take()
             .filter(crate::screen::spark_detail::SparkEdit::is_dirty);
+        // Problem editor is bound to a specific spark; clear it unless
+        // the caller re-selected the same spark. A dirty editor is
+        // dropped silently here — the same "discard unsaved changes?"
+        // prompt flow for SparkEdit will cover it once that lands.
+        if self.problem_edit.as_ref().map(|e| &e.spark_id) != new.as_ref() {
+            self.problem_edit = None;
+        }
         self.selected_spark = new;
         discarded
     }
@@ -936,6 +955,45 @@ impl Workshop {
             prior.scope_boundary =
                 Some(std::mem::replace(&mut spark.scope_boundary, new.clone()));
         }
+        if let Some(new_problem) = patch.problem_statement.as_ref() {
+            // Problem statement lives in metadata JSON under
+            // `intent.problem_statement`. Merge it in without clobbering
+            // sibling intent fields (invariants, non_goals, etc.).
+            let old_problem = spark
+                .intent()
+                .problem_statement
+                .unwrap_or_default();
+            if *new_problem != old_problem {
+                let mut metadata_json: serde_json::Value =
+                    serde_json::from_str(&spark.metadata)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                if !metadata_json.is_object() {
+                    metadata_json = serde_json::json!({});
+                }
+                let obj = metadata_json
+                    .as_object_mut()
+                    .expect("metadata normalized to object above");
+                let intent_entry = obj
+                    .entry("intent".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if !intent_entry.is_object() {
+                    *intent_entry = serde_json::json!({});
+                }
+                let intent_obj = intent_entry
+                    .as_object_mut()
+                    .expect("intent normalized to object above");
+                if new_problem.is_empty() {
+                    intent_obj.remove("problem_statement");
+                } else {
+                    intent_obj.insert(
+                        "problem_statement".to_string(),
+                        serde_json::Value::String(new_problem.clone()),
+                    );
+                }
+                spark.metadata = metadata_json.to_string();
+                prior.problem_statement = Some(old_problem);
+            }
+        }
         Some(prior)
     }
 }
@@ -1427,6 +1485,7 @@ mod tests {
             scope_boundary: Some(Some("src/main.rs".to_string())),
             risk_level: Some(Some("critical".to_string())),
             status: Some("blocked".to_string()),
+            problem_statement: None,
         };
         let prior = ws.apply_spark_patch("sp-1", &patch).expect("spark exists");
         ws.apply_spark_patch("sp-1", &prior).expect("spark exists");
@@ -1509,6 +1568,146 @@ mod tests {
                 ..Default::default()
             }
             .is_empty()
+        );
+        assert!(
+            !SparkPatch {
+                problem_statement: Some("why".to_string()),
+                ..Default::default()
+            }
+            .is_empty()
+        );
+    }
+
+    // ── problem_statement metadata merging (ryve-a5997352) ───────────────
+
+    #[test]
+    fn apply_spark_patch_sets_problem_statement_from_empty_metadata() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        ws.sparks.push(test_spark("sp-1"));
+        // starts with "{}" metadata — no intent at all
+        let patch = SparkPatch {
+            problem_statement: Some("line one\nline two".to_string()),
+            ..Default::default()
+        };
+        let prior = ws.apply_spark_patch("sp-1", &patch).expect("exists");
+        let spark = &ws.sparks[0];
+        // New intent block exists with the multiline problem_statement.
+        assert_eq!(
+            spark.intent().problem_statement.as_deref(),
+            Some("line one\nline two")
+        );
+        // Prior carries the old (empty) value so rollback works.
+        assert_eq!(prior.problem_statement.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn apply_spark_patch_problem_statement_preserves_sibling_intent() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        let mut s = test_spark("sp-1");
+        s.metadata = serde_json::json!({
+            "intent": {
+                "problem_statement": "old",
+                "invariants": ["never panic"],
+                "non_goals": ["rewrites"],
+                "acceptance_criteria": ["it builds"]
+            },
+            "other": "untouched"
+        })
+        .to_string();
+        ws.sparks.push(s);
+
+        let patch = SparkPatch {
+            problem_statement: Some("new".to_string()),
+            ..Default::default()
+        };
+        let _ = ws.apply_spark_patch("sp-1", &patch).expect("exists");
+
+        let spark = &ws.sparks[0];
+        let intent = spark.intent();
+        assert_eq!(intent.problem_statement.as_deref(), Some("new"));
+        assert_eq!(intent.invariants, vec!["never panic".to_string()]);
+        assert_eq!(intent.non_goals, vec!["rewrites".to_string()]);
+        assert_eq!(
+            intent.acceptance_criteria,
+            vec!["it builds".to_string()]
+        );
+        // Sibling top-level keys survive the merge.
+        let v: serde_json::Value =
+            serde_json::from_str(&spark.metadata).unwrap();
+        assert_eq!(v["other"], serde_json::json!("untouched"));
+    }
+
+    #[test]
+    fn apply_spark_patch_problem_statement_empty_clears_field() {
+        // Empty string = cleared (the acceptance criterion allows
+        // "no problem statement yet").
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        let mut s = test_spark("sp-1");
+        s.metadata =
+            serde_json::json!({ "intent": { "problem_statement": "x" } })
+                .to_string();
+        ws.sparks.push(s);
+
+        let patch = SparkPatch {
+            problem_statement: Some(String::new()),
+            ..Default::default()
+        };
+        let _ = ws.apply_spark_patch("sp-1", &patch).expect("exists");
+        assert_eq!(ws.sparks[0].intent().problem_statement, None);
+    }
+
+    #[test]
+    fn apply_spark_patch_problem_statement_skips_no_op_edit() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        let mut s = test_spark("sp-1");
+        s.metadata =
+            serde_json::json!({ "intent": { "problem_statement": "x" } })
+                .to_string();
+        ws.sparks.push(s);
+
+        let patch = SparkPatch {
+            problem_statement: Some("x".to_string()),
+            ..Default::default()
+        };
+        let prior = ws.apply_spark_patch("sp-1", &patch).expect("exists");
+        // Unchanged → absent from prior → is_empty → no DB write.
+        assert!(prior.problem_statement.is_none());
+        assert!(prior.is_empty());
+    }
+
+    #[test]
+    fn apply_spark_patch_problem_statement_rollback_restores_prior() {
+        // Rollback invariant: patch ∘ prior restores problem_statement
+        // exactly, including its metadata JSON shape.
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        let mut s = test_spark("sp-1");
+        s.metadata = serde_json::json!({
+            "intent": {
+                "problem_statement": "original",
+                "invariants": ["stay consistent"]
+            }
+        })
+        .to_string();
+        ws.sparks.push(s);
+
+        let patch = SparkPatch {
+            problem_statement: Some("drafted".to_string()),
+            ..Default::default()
+        };
+        let prior =
+            ws.apply_spark_patch("sp-1", &patch).expect("forward apply");
+        assert_eq!(
+            ws.sparks[0].intent().problem_statement.as_deref(),
+            Some("drafted")
+        );
+        ws.apply_spark_patch("sp-1", &prior).expect("rollback apply");
+        assert_eq!(
+            ws.sparks[0].intent().problem_statement.as_deref(),
+            Some("original")
+        );
+        assert_eq!(
+            ws.sparks[0].intent().invariants,
+            vec!["stay consistent".to_string()]
         );
     }
 
