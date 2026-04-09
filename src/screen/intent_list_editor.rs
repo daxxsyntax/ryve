@@ -32,23 +32,23 @@ use crate::style::{FONT_BODY, FONT_ICON, FONT_LABEL, FONT_SMALL, Palette};
 
 // ── Types ────────────────────────────────────────────
 
-/// Which of the three intent lists a message refers to.
+/// Which intent list a message refers to. Acceptance criteria have their
+/// own dedicated edit path (`AcceptanceCriteriaEdit`), so only invariants
+/// and non-goals are routed through the shared row-list widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListKind {
-    Acceptance,
     Invariants,
     NonGoals,
 }
 
 impl ListKind {
-    /// Iteration order for the three lists — used by tests and any
-    /// future caller that wants to render "all three".
+    /// Iteration order — used by tests and any caller that wants to
+    /// render both lists.
     #[cfg(test)]
-    pub const ALL: [ListKind; 3] = [Self::Acceptance, Self::Invariants, Self::NonGoals];
+    pub const ALL: [ListKind; 2] = [Self::Invariants, Self::NonGoals];
 
     pub fn section_title(self) -> &'static str {
         match self {
-            Self::Acceptance => "Acceptance Criteria",
             Self::Invariants => "Invariants",
             Self::NonGoals => "Non-Goals",
         }
@@ -56,7 +56,6 @@ impl ListKind {
 
     pub fn add_label(self) -> &'static str {
         match self {
-            Self::Acceptance => "+ Add criterion",
             Self::Invariants => "+ Add invariant",
             Self::NonGoals => "+ Add non-goal",
         }
@@ -64,7 +63,6 @@ impl ListKind {
 
     pub fn placeholder(self) -> &'static str {
         match self {
-            Self::Acceptance => "Acceptance criterion",
             Self::Invariants => "Invariant",
             Self::NonGoals => "Non-goal",
         }
@@ -105,7 +103,6 @@ impl IntentListDrafts {
 
     pub fn list_mut(&mut self, kind: ListKind) -> &mut Vec<String> {
         match kind {
-            ListKind::Acceptance => &mut self.acceptance,
             ListKind::Invariants => &mut self.invariants,
             ListKind::NonGoals => &mut self.non_goals,
         }
@@ -155,7 +152,7 @@ pub fn delete_at(list: &mut Vec<String>, index: usize) -> bool {
 
 /// Swap the row at `index` with the one above it. No-op if already at the
 /// top. Returns true if a swap happened.
-pub fn move_up(list: &mut Vec<String>, index: usize) -> bool {
+pub fn move_up(list: &mut [String], index: usize) -> bool {
     if index == 0 || index >= list.len() {
         return false;
     }
@@ -165,7 +162,7 @@ pub fn move_up(list: &mut Vec<String>, index: usize) -> bool {
 
 /// Swap the row at `index` with the one below it. No-op if already at the
 /// bottom. Returns true if a swap happened.
-pub fn move_down(list: &mut Vec<String>, index: usize) -> bool {
+pub fn move_down(list: &mut [String], index: usize) -> bool {
     if index + 1 >= list.len() {
         return false;
     }
@@ -203,8 +200,8 @@ pub fn rebuild_metadata(
             .collect()
     };
 
-    let mut root: Value = serde_json::from_str(current_metadata)
-        .unwrap_or_else(|_| Value::Object(Map::new()));
+    let mut root: Value =
+        serde_json::from_str(current_metadata).unwrap_or_else(|_| Value::Object(Map::new()));
     if !root.is_object() {
         root = Value::Object(Map::new());
     }
@@ -263,14 +260,10 @@ pub fn view<'a>(kind: ListKind, draft: &'a [String], pal: &Palette) -> Element<'
         col = col.push(view_row(kind, idx, value, draft.len(), &pal));
     }
 
-    let add_btn = button(
-        text(kind.add_label())
-            .size(FONT_LABEL)
-            .color(pal.accent),
-    )
-    .style(button::text)
-    .padding([3, 8])
-    .on_press(Message::Add { kind });
+    let add_btn = button(text(kind.add_label()).size(FONT_LABEL).color(pal.accent))
+        .style(button::text)
+        .padding([3, 8])
+        .on_press(Message::Add { kind });
 
     col = col.push(add_btn);
     col.into()
@@ -319,7 +312,11 @@ fn view_row<'a>(
     let input = text_input(kind.placeholder(), value)
         .size(FONT_BODY)
         .padding([4, 6])
-        .on_input(move |v| Message::Edit { kind, index, value: v })
+        .on_input(move |v| Message::Edit {
+            kind,
+            index,
+            value: v,
+        })
         .on_submit(Message::Submit { kind });
 
     let delete_btn = button(text("\u{00D7}").size(FONT_ICON).color(pal.text_tertiary))
@@ -448,15 +445,18 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["other"], serde_json::json!("keep"));
         assert_eq!(v["intent"]["verification_summary"], serde_json::json!("vs"));
-        assert_eq!(v["intent"]["acceptance_criteria"], serde_json::json!(["ac"]));
+        assert_eq!(
+            v["intent"]["acceptance_criteria"],
+            serde_json::json!(["ac"])
+        );
     }
 
     #[test]
     fn list_kind_add_labels_are_distinct_per_kind() {
-        // All three kinds must surface a distinct '+ Add ...' button so
+        // Both kinds must surface a distinct '+ Add ...' button so
         // the UI is unambiguous — invariant for spark ryve-212c63aa.
         let labels: Vec<&str> = ListKind::ALL.iter().map(|k| k.add_label()).collect();
-        assert_eq!(labels, vec!["+ Add criterion", "+ Add invariant", "+ Add non-goal"]);
+        assert_eq!(labels, vec!["+ Add invariant", "+ Add non-goal"]);
     }
 
     #[test]

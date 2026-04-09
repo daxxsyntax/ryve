@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use data::sparks::types::{Bond, Contract, ContractEnforcement, ContractKind, Spark};
 use iced::widget::{
-    Id, Space, button, column, combo_box, container, mouse_area, pick_list, row, scrollable,
-    stack, text, text_editor, text_input, tooltip,
+    Id, Space, button, column, combo_box, container, mouse_area, pick_list, row, scrollable, stack,
+    text, text_editor, text_input, tooltip,
 };
 use iced::{Background, Border, Element, Length, Theme};
 
@@ -256,10 +256,7 @@ pub enum BeginEditOutcome {
     /// acknowledged it for this edit session. The caller should render
     /// the confirmation modal with the carried status string and stash
     /// the pending field so `confirm_closed_edit` can release it.
-    NeedsConfirmation {
-        status: String,
-        field: EditField,
-    },
+    NeedsConfirmation { status: String, field: EditField },
 }
 
 /// Per-edit-session state for the closed/completed confirmation gate.
@@ -407,10 +404,7 @@ pub fn validation_error_border(pal: &Palette) -> iced::widget::container::Style 
 /// standalone helper so the detail view can overlay it without
 /// rebuilding the modal every frame. Callers are responsible for the
 /// backdrop/dimming layer.
-pub fn view_closed_edit_modal<'a>(
-    status: &str,
-    pal: &Palette,
-) -> Element<'a, Message> {
+pub fn view_closed_edit_modal<'a>(status: &str, pal: &Palette) -> Element<'a, Message> {
     let pal = *pal;
 
     let title = text("Edit finished spark?")
@@ -426,23 +420,19 @@ pub fn view_closed_edit_modal<'a>(
         .padding([6, 14])
         .on_press(Message::CancelClosedEdit);
 
-    let confirm_btn = button(
-        text("Edit anyway")
-            .size(FONT_LABEL)
-            .color(pal.window_bg),
-    )
-    .style(move |_t: &Theme, _s| button::Style {
-        background: Some(iced::Background::Color(pal.danger)),
-        text_color: pal.window_bg,
-        border: iced::Border {
-            color: pal.danger,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..Default::default()
-    })
-    .padding([6, 14])
-    .on_press(Message::ConfirmClosedEdit);
+    let confirm_btn = button(text("Edit anyway").size(FONT_LABEL).color(pal.window_bg))
+        .style(move |_t: &Theme, _s| button::Style {
+            background: Some(iced::Background::Color(pal.danger)),
+            text_color: pal.window_bg,
+            border: iced::Border {
+                color: pal.danger,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding([6, 14])
+        .on_press(Message::ConfirmClosedEdit);
 
     let actions = row![Space::new().width(Length::Fill), cancel_btn, confirm_btn].spacing(8);
 
@@ -583,8 +573,8 @@ pub fn merge_acceptance_criteria_into_metadata(
     existing_metadata: &str,
     new_criteria: &[String],
 ) -> String {
-    let mut root: serde_json::Value = serde_json::from_str(existing_metadata)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let mut root: serde_json::Value =
+        serde_json::from_str(existing_metadata).unwrap_or_else(|_| serde_json::json!({}));
     if !root.is_object() {
         root = serde_json::json!({});
     }
@@ -815,9 +805,6 @@ pub enum Message {
     CancelClosedEdit,
 
     // ── Title inline editing (spark ryve-f58d0492) ───────
-    /// User clicked the title text — enter edit mode and seed the draft
-    /// from the on-disk value.
-    TitleBeginEdit,
     /// Keystroke in the title text_input: replace the draft.
     TitleChanged(String),
     /// Enter pressed in the title text_input — commit.
@@ -937,8 +924,7 @@ pub fn view<'a>(
     // Keeping this binding local means the view can ignore a stale editor
     // (e.g. selection change mid-flight) without panicking on a mismatched
     // spark_id.
-    let active_problem_edit =
-        problem_edit.filter(|e| e.spark_id == spark.id);
+    let active_problem_edit = problem_edit.filter(|e| e.spark_id == spark.id);
     let pal = *pal;
 
     // Back button + header row
@@ -985,11 +971,9 @@ pub fn view<'a>(
     let priority_spark_id = spark.id.clone();
     let priority_options: Vec<String> = PRIORITY_OPTIONS.iter().map(|s| (*s).to_string()).collect();
     let priority_selected = Some(format!("P{}", spark.priority));
-    let priority_dropdown = pick_list(
-        priority_options,
-        priority_selected,
-        move |label: String| Message::SetPriority(priority_spark_id.clone(), label),
-    )
+    let priority_dropdown = pick_list(priority_options, priority_selected, move |label: String| {
+        Message::SetPriority(priority_spark_id.clone(), label)
+    })
     .text_size(FONT_LABEL)
     .padding([2, 6]);
 
@@ -997,11 +981,9 @@ pub fn view<'a>(
     let type_spark_id = spark.id.clone();
     let type_options: Vec<String> = TYPE_OPTIONS.iter().map(|s| (*s).to_string()).collect();
     let type_selected = Some(spark.spark_type.clone());
-    let type_dropdown = pick_list(
-        type_options,
-        type_selected,
-        move |label: String| Message::SetType(type_spark_id.clone(), label),
-    )
+    let type_dropdown = pick_list(type_options, type_selected, move |label: String| {
+        Message::SetType(type_spark_id.clone(), label)
+    })
     .text_size(FONT_LABEL)
     .padding([2, 6]);
 
@@ -1172,9 +1154,7 @@ pub fn view<'a>(
     let base: Element<'a, Message> = if nav_prompt.is_some() {
         detail_body.into()
     } else if editing_title {
-        mouse_area(detail_body)
-            .on_press(Message::TitleBlur)
-            .into()
+        mouse_area(detail_body).on_press(Message::TitleBlur).into()
     } else if description_editor.is_some() {
         mouse_area(detail_body)
             .on_press(Message::DescriptionBlur)
@@ -1243,7 +1223,7 @@ fn view_title<'a>(
         let btn = button(title_text)
             .style(button::text)
             .padding([4, 10])
-            .on_press(Message::TitleBeginEdit);
+            .on_press(Message::BeginEditField(EditField::Title));
         return container(btn).into();
     }
 
@@ -1253,7 +1233,10 @@ fn view_title<'a>(
     // value only reaches `in_flight` through a draft rollback — in
     // which case we still show it so the user can fix it.
     let showing_in_flight = in_flight.is_some() && draft.is_none();
-    let value: &str = draft.map(String::as_str).or(in_flight.map(String::as_str)).unwrap_or("");
+    let value: &str = draft
+        .map(String::as_str)
+        .or(in_flight.map(String::as_str))
+        .unwrap_or("");
     let is_empty = value.trim().is_empty();
 
     let mut input = text_input("Title", value)
@@ -1264,16 +1247,13 @@ fn view_title<'a>(
         // In-flight: leave `on_input`/`on_submit` unset so the widget
         // renders disabled — the user can't type over an optimistic
         // save mid-flight.
-        input = input.style(move |_theme: &Theme, status| {
-            title_input_style(status, &pal, false, true)
-        });
+        input =
+            input.style(move |_theme: &Theme, status| title_input_style(status, &pal, false, true));
     } else {
         input = input
             .on_input(Message::TitleChanged)
             .on_submit(Message::TitleSubmit)
-            .style(move |_theme: &Theme, status| {
-                title_input_style(status, &pal, is_empty, false)
-            });
+            .style(move |_theme: &Theme, status| title_input_style(status, &pal, is_empty, false));
     }
 
     // Right-side adornment: spinner while the save is in flight.
@@ -1288,7 +1268,10 @@ fn view_title<'a>(
         .align_y(iced::Alignment::Center)
         .into()
     } else {
-        row![input].spacing(8).align_y(iced::Alignment::Center).into()
+        row![input]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into()
     };
 
     // Empty-title validation: show a tooltip on the row so the user
@@ -1296,7 +1279,9 @@ fn view_title<'a>(
     let framed: Element<'a, Message> = if is_empty && !showing_in_flight {
         tooltip(
             input_row,
-            text("Title cannot be empty").size(FONT_SMALL).color(pal.danger),
+            text("Title cannot be empty")
+                .size(FONT_SMALL)
+                .color(pal.danger),
             tooltip::Position::Bottom,
         )
         .into()
@@ -1425,24 +1410,20 @@ fn view_description_section<'a>(
     .align_y(iced::Alignment::Center);
     if is_dirty {
         header = header.push(
-            container(
-                text("unsaved changes")
-                    .size(FONT_SMALL)
-                    .color(pal.accent),
-            )
-            .padding([1, 6])
-            .style(move |_t: &Theme| iced::widget::container::Style {
-                background: Some(iced::Background::Color(iced::Color {
-                    a: 0.10,
-                    ..pal.accent
-                })),
-                border: iced::Border {
-                    radius: 4.0.into(),
-                    width: 0.0,
-                    color: iced::Color::TRANSPARENT,
-                },
-                ..Default::default()
-            }),
+            container(text("unsaved changes").size(FONT_SMALL).color(pal.accent))
+                .padding([1, 6])
+                .style(move |_t: &Theme| iced::widget::container::Style {
+                    background: Some(iced::Background::Color(iced::Color {
+                        a: 0.10,
+                        ..pal.accent
+                    })),
+                    border: iced::Border {
+                        radius: 4.0.into(),
+                        width: 0.0,
+                        color: iced::Color::TRANSPARENT,
+                    },
+                    ..Default::default()
+                }),
         );
     }
 
@@ -1487,12 +1468,8 @@ fn view_description_section<'a>(
             .into()
     };
 
-    let clickable = mouse_area(
-        container(body_text)
-            .padding([4, 0])
-            .width(Length::Fill),
-    )
-    .on_press(Message::DescriptionClicked);
+    let clickable = mouse_area(container(body_text).padding([4, 0]).width(Length::Fill))
+        .on_press(Message::DescriptionClicked);
 
     column![header, clickable].spacing(4).into()
 }
@@ -1523,14 +1500,10 @@ fn view_nav_prompt_dialog<'a>(
         .padding([6, 14])
         .style(button::text)
         .on_press(Message::NavPromptDiscard);
-    let cancel_btn = button(
-        text("Cancel")
-            .size(FONT_LABEL)
-            .color(pal.text_secondary),
-    )
-    .padding([6, 14])
-    .style(button::text)
-    .on_press(Message::NavPromptCancel);
+    let cancel_btn = button(text("Cancel").size(FONT_LABEL).color(pal.text_secondary))
+        .padding([6, 14])
+        .style(button::text)
+        .on_press(Message::NavPromptCancel);
 
     let actions = row![
         Space::new().width(Length::Fill),
@@ -1623,9 +1596,7 @@ fn view_problem_statement_section<'a>(
 
 /// Escape → cancel (revert); everything else falls through to the
 /// default iced text_editor bindings (Enter inserts newline, etc.).
-fn problem_editor_key_binding(
-    kp: text_editor::KeyPress,
-) -> Option<text_editor::Binding<Message>> {
+fn problem_editor_key_binding(kp: text_editor::KeyPress) -> Option<text_editor::Binding<Message>> {
     use iced::keyboard::Key;
     use iced::keyboard::key::Named;
     if matches!(kp.key, Key::Named(Named::Escape)) {
@@ -1843,9 +1814,7 @@ fn view_acceptance_criteria_section<'a>(
     .padding([2, 6])
     .on_press(Message::AcceptanceCriterionAdd);
 
-    let mut footer = row![add_btn]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
+    let mut footer = row![add_btn].spacing(8).align_y(iced::Alignment::Center);
     if edit.last_deleted.is_some() {
         footer = footer.push(
             button(
@@ -2435,7 +2404,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn add_criterion_appends_empty_row_and_returns_index() {
         let mut e = edit_with(vec!["a", "b"]);
@@ -2530,8 +2498,7 @@ mod tests {
 
     #[test]
     fn merge_into_empty_metadata_creates_intent_shell() {
-        let merged =
-            merge_acceptance_criteria_into_metadata("{}", &["only".to_string()]);
+        let merged = merge_acceptance_criteria_into_metadata("{}", &["only".to_string()]);
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(v["intent"]["acceptance_criteria"][0], "only");
     }
@@ -2539,10 +2506,8 @@ mod tests {
     #[test]
     fn merge_into_malformed_metadata_falls_back_to_fresh_object() {
         // Malformed input shouldn't panic or lose the new criteria.
-        let merged = merge_acceptance_criteria_into_metadata(
-            "not json at all",
-            &["rescued".to_string()],
-        );
+        let merged =
+            merge_acceptance_criteria_into_metadata("not json at all", &["rescued".to_string()]);
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         assert_eq!(v["intent"]["acceptance_criteria"][0], "rescued");
     }
@@ -2696,7 +2661,10 @@ mod tests {
         let mut session = SparkEditSession::new();
         let spark = make_spark("sp-x", "completed");
         let outcome = session.begin_edit(&spark, EditField::Description);
-        assert!(matches!(outcome, BeginEditOutcome::NeedsConfirmation { .. }));
+        assert!(matches!(
+            outcome,
+            BeginEditOutcome::NeedsConfirmation { .. }
+        ));
     }
 
     #[test]
@@ -2862,10 +2830,7 @@ mod tests {
     fn assignee_edit_begins_and_ends() {
         let mut st = AssigneeEditState::default();
         assert!(!st.is_active());
-        st.begin(
-            Some("alice"),
-            vec!["alice".to_string(), "bob".to_string()],
-        );
+        st.begin(Some("alice"), vec!["alice".to_string(), "bob".to_string()]);
         assert!(st.is_active());
         assert_eq!(st.input, "alice");
         assert!(!st.cancelled);
@@ -2889,7 +2854,10 @@ mod tests {
         // whitespace-only is skipped.
         let agents = ["alice", "Carol", "   "];
         let out = build_assignee_suggestions(&agents, &sparks);
-        assert_eq!(out, vec!["alice".to_string(), "Bob".to_string(), "Carol".to_string()]);
+        assert_eq!(
+            out,
+            vec!["alice".to_string(), "Bob".to_string(), "Carol".to_string()]
+        );
     }
 
     #[test]

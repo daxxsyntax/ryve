@@ -111,6 +111,34 @@ impl SparkPatch {
             && self.problem_statement.is_none()
     }
 
+    /// Return the set of [`Field`](crate::screen::spark_detail::Field)s
+    /// affected by this patch. Used by `SparkUpdateApplied` /
+    /// `SparkUpdateFailed` to scope in-flight bookkeeping to just the
+    /// fields that were part of a specific write.
+    pub fn affected_fields(&self) -> Vec<crate::screen::spark_detail::Field> {
+        use crate::screen::spark_detail::Field;
+        let mut out = Vec::new();
+        if self.title.is_some() {
+            out.push(Field::Title);
+        }
+        if self.description.is_some() {
+            out.push(Field::Description);
+        }
+        if self.priority.is_some() {
+            out.push(Field::Priority);
+        }
+        if self.spark_type.is_some() {
+            out.push(Field::Type);
+        }
+        if self.assignee.is_some() {
+            out.push(Field::Assignee);
+        }
+        if self.problem_statement.is_some() {
+            out.push(Field::Problem);
+        }
+        out
+    }
+
     /// Convert the patch into a `data::sparks::types::UpdateSpark` suitable
     /// for `spark_repo::update`. Unknown enum values (a status string that
     /// does not match any `SparkStatus`, a spark_type string that does not
@@ -459,17 +487,24 @@ impl Workshop {
         discarded
     }
 
-    /// Attempt to change the selected spark. If the current spark has a
-    /// dirty description draft, the change is deferred and a
-    /// [`PendingNavPrompt`] is stashed so the UI can render a
+    /// Attempt to change the selected spark. If the current spark has
+    /// any dirty draft (description, title, etc.) the change is deferred
+    /// and a [`PendingNavPrompt`] is stashed so the UI can render a
     /// save/discard/cancel dialog. Returns `true` if the navigation
     /// happened immediately, `false` if the dialog is now blocking.
     /// Spark ryve-4742d98b.
     pub fn try_change_selected_spark(&mut self, new: Option<String>) -> bool {
-        if let Some(dirty_id) = self.dirty_description_spark_id() {
+        // Guard on any dirty field, not just description. In-flight
+        // writes always count as dirty. For drafts, only count those
+        // whose value actually differs from the persisted spark so
+        // that opening an editor without typing anything does not
+        // trap the user.
+        if let Some(ref edit) = self.spark_edit
+            && self.has_unsaved_edits(edit)
+        {
             self.pending_nav_prompt = Some(PendingNavPrompt {
                 target: new,
-                dirty_spark_id: dirty_id,
+                dirty_spark_id: edit.spark_id.clone(),
             });
             return false;
         }
@@ -477,11 +512,44 @@ impl Workshop {
         true
     }
 
+    /// Check whether `edit` has any in-flight writes or drafts that
+    /// differ from the persisted spark. A draft whose value matches
+    /// the persisted field is not considered unsaved — the user
+    /// merely opened the editor without typing.
+    fn has_unsaved_edits(&self, edit: &crate::screen::spark_detail::SparkEdit) -> bool {
+        use crate::screen::spark_detail::Field;
+
+        if !edit.in_flight.is_empty() {
+            return true;
+        }
+        let Some(spark) = self.sparks.iter().find(|s| s.id == edit.spark_id) else {
+            // Spark not in cache — treat as clean to avoid blocking nav.
+            return false;
+        };
+        for (field, draft) in &edit.drafts {
+            let persisted = match field {
+                Field::Title => &spark.title,
+                Field::Description => &spark.description,
+                _ => {
+                    // For fields without a simple string comparison
+                    // (e.g. Priority, Type), a draft entry means a
+                    // user-initiated edit — conservatively treat as dirty.
+                    return true;
+                }
+            };
+            if draft != persisted {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Return the id of the currently selected spark **if** it has a
     /// description draft that differs from the persisted value. The
     /// "differs from persisted" check is what makes the navigation
     /// guard Free of false positives: opening the editor and typing
     /// nothing should not trap the user. Spark ryve-4742d98b.
+    #[cfg(test)]
     pub fn dirty_description_spark_id(&self) -> Option<String> {
         let edit = self.spark_edit.as_ref()?;
         let draft = edit
@@ -516,7 +584,9 @@ impl Workshop {
             .as_ref()
             .is_none_or(|e| e.spark_id != selected);
         if need_new {
-            self.spark_edit = Some(crate::screen::spark_detail::SparkEdit::new(selected.clone()));
+            self.spark_edit = Some(crate::screen::spark_detail::SparkEdit::new(
+                selected.clone(),
+            ));
         }
         let edit = self.spark_edit.as_mut().expect("just inserted");
 
@@ -1110,21 +1180,16 @@ impl Workshop {
         if let Some(new) = patch.scope_boundary.as_ref()
             && *new != spark.scope_boundary
         {
-            prior.scope_boundary =
-                Some(std::mem::replace(&mut spark.scope_boundary, new.clone()));
+            prior.scope_boundary = Some(std::mem::replace(&mut spark.scope_boundary, new.clone()));
         }
         if let Some(new_problem) = patch.problem_statement.as_ref() {
             // Problem statement lives in metadata JSON under
             // `intent.problem_statement`. Merge it in without clobbering
             // sibling intent fields (invariants, non_goals, etc.).
-            let old_problem = spark
-                .intent()
-                .problem_statement
-                .unwrap_or_default();
+            let old_problem = spark.intent().problem_statement.unwrap_or_default();
             if *new_problem != old_problem {
                 let mut metadata_json: serde_json::Value =
-                    serde_json::from_str(&spark.metadata)
-                        .unwrap_or_else(|_| serde_json::json!({}));
+                    serde_json::from_str(&spark.metadata).unwrap_or_else(|_| serde_json::json!({}));
                 if !metadata_json.is_object() {
                     metadata_json = serde_json::json!({});
                 }
@@ -1604,9 +1669,7 @@ mod tests {
             ..Default::default()
         };
 
-        let prior = ws
-            .apply_spark_patch("sp-1", &patch)
-            .expect("spark exists");
+        let prior = ws.apply_spark_patch("sp-1", &patch).expect("spark exists");
 
         // Cache reflects the new values.
         let spark = &ws.sparks[0];
@@ -1785,13 +1848,9 @@ mod tests {
         assert_eq!(intent.problem_statement.as_deref(), Some("new"));
         assert_eq!(intent.invariants, vec!["never panic".to_string()]);
         assert_eq!(intent.non_goals, vec!["rewrites".to_string()]);
-        assert_eq!(
-            intent.acceptance_criteria,
-            vec!["it builds".to_string()]
-        );
+        assert_eq!(intent.acceptance_criteria, vec!["it builds".to_string()]);
         // Sibling top-level keys survive the merge.
-        let v: serde_json::Value =
-            serde_json::from_str(&spark.metadata).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&spark.metadata).unwrap();
         assert_eq!(v["other"], serde_json::json!("untouched"));
     }
 
@@ -1801,9 +1860,7 @@ mod tests {
         // "no problem statement yet").
         let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
         let mut s = test_spark("sp-1");
-        s.metadata =
-            serde_json::json!({ "intent": { "problem_statement": "x" } })
-                .to_string();
+        s.metadata = serde_json::json!({ "intent": { "problem_statement": "x" } }).to_string();
         ws.sparks.push(s);
 
         let patch = SparkPatch {
@@ -1818,9 +1875,7 @@ mod tests {
     fn apply_spark_patch_problem_statement_skips_no_op_edit() {
         let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
         let mut s = test_spark("sp-1");
-        s.metadata =
-            serde_json::json!({ "intent": { "problem_statement": "x" } })
-                .to_string();
+        s.metadata = serde_json::json!({ "intent": { "problem_statement": "x" } }).to_string();
         ws.sparks.push(s);
 
         let patch = SparkPatch {
@@ -1852,13 +1907,13 @@ mod tests {
             problem_statement: Some("drafted".to_string()),
             ..Default::default()
         };
-        let prior =
-            ws.apply_spark_patch("sp-1", &patch).expect("forward apply");
+        let prior = ws.apply_spark_patch("sp-1", &patch).expect("forward apply");
         assert_eq!(
             ws.sparks[0].intent().problem_statement.as_deref(),
             Some("drafted")
         );
-        ws.apply_spark_patch("sp-1", &prior).expect("rollback apply");
+        ws.apply_spark_patch("sp-1", &prior)
+            .expect("rollback apply");
         assert_eq!(
             ws.sparks[0].intent().problem_statement.as_deref(),
             Some("original")
@@ -1890,7 +1945,10 @@ mod tests {
         // SparkEdit exists and carries the persisted value as the draft.
         let edit = ws.spark_edit.as_ref().expect("edit created");
         assert_eq!(edit.spark_id, "sp-1");
-        assert_eq!(edit.drafts.get(&Field::Description).map(String::as_str), Some("old body"));
+        assert_eq!(
+            edit.drafts.get(&Field::Description).map(String::as_str),
+            Some("old body")
+        );
         // Editor content is seeded with the same value.
         assert!(ws.description_editor.is_some());
     }
@@ -1947,8 +2005,7 @@ mod tests {
         ws.selected_spark = Some("sp-1".to_string());
         ws.begin_description_edit();
         if let Some(ref mut edit) = ws.spark_edit {
-            edit.drafts
-                .insert(Field::Description, "dirty".to_string());
+            edit.drafts.insert(Field::Description, "dirty".to_string());
         }
 
         let moved = ws.try_change_selected_spark(Some("sp-2".to_string()));

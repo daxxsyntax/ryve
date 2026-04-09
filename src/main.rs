@@ -475,6 +475,9 @@ enum Message {
         workshop_id: Uuid,
         #[allow(dead_code)]
         id: String,
+        /// The fields that were part of this write, so we only clear those
+        /// from `in_flight` rather than wiping all pending requests.
+        fields: Vec<screen::spark_detail::Field>,
     },
     /// Async `spark_repo::update` for spark `id` failed. `prior` is the
     /// inverse patch captured at dispatch time; re-applying it restores
@@ -486,6 +489,9 @@ enum Message {
         id: String,
         prior: SparkPatch,
         error: String,
+        /// The fields that were part of this failed write, so we only
+        /// move those from `in_flight` back to `drafts`.
+        fields: Vec<screen::spark_detail::Field>,
     },
 }
 
@@ -769,11 +775,7 @@ impl App {
     /// triggers the reseed guard in `SparksLoaded`, preserving the
     /// invariant that the editor vec matches persisted metadata after a
     /// save. Spark ryve-9b98f949.
-    fn persist_acceptance_criteria(
-        &mut self,
-        ws_idx: usize,
-        spark_id: &str,
-    ) -> Task<Message> {
+    fn persist_acceptance_criteria(&mut self, ws_idx: usize, spark_id: &str) -> Task<Message> {
         let Some(ws) = self.workshops.get(ws_idx) else {
             return Task::none();
         };
@@ -796,11 +798,21 @@ impl App {
                     metadata: Some(new_metadata),
                     ..Default::default()
                 };
-                let _ =
-                    data::sparks::spark_repo::update(&pool, &spark_id, upd, "user").await;
-                load_sparks(pool, ws_id).await
+                if let Err(e) =
+                    data::sparks::spark_repo::update(&pool, &spark_id, upd, "user").await
+                {
+                    return Err(e.to_string());
+                }
+                Ok(load_sparks(pool, ws_id).await)
             },
-            move |sparks| Message::SparksLoaded(id, sparks),
+            move |res: Result<Vec<_>, String>| match res {
+                Ok(sparks) => Message::SparksLoaded(id, sparks),
+                Err(error) => Message::ShowToast {
+                    title: "Could not save acceptance criteria".into(),
+                    body: error,
+                    kind: ToastKind::Error,
+                },
+            },
         )
     }
 
@@ -2192,26 +2204,17 @@ impl App {
                                 // keystroke or Submit will persist.
                             }
                             ile::Message::Delete { kind, index } => {
-                                if ile::delete_at(
-                                    ws.intent_list_drafts.list_mut(kind),
-                                    index,
-                                ) {
+                                if ile::delete_at(ws.intent_list_drafts.list_mut(kind), index) {
                                     persist = true;
                                 }
                             }
                             ile::Message::MoveUp { kind, index } => {
-                                if ile::move_up(
-                                    ws.intent_list_drafts.list_mut(kind),
-                                    index,
-                                ) {
+                                if ile::move_up(ws.intent_list_drafts.list_mut(kind), index) {
                                     persist = true;
                                 }
                             }
                             ile::Message::MoveDown { kind, index } => {
-                                if ile::move_down(
-                                    ws.intent_list_drafts.list_mut(kind),
-                                    index,
-                                ) {
+                                if ile::move_down(ws.intent_list_drafts.list_mut(kind), index) {
                                     persist = true;
                                 }
                             }
@@ -2253,10 +2256,8 @@ impl App {
                                     metadata: Some(new_metadata),
                                     ..Default::default()
                                 };
-                                let _ = data::sparks::spark_repo::update(
-                                    &pool, &sid, upd, "ui",
-                                )
-                                .await;
+                                let _ =
+                                    data::sparks::spark_repo::update(&pool, &sid, upd, "ui").await;
                                 load_sparks(pool, ws_id).await
                             },
                             move |sparks| Message::SparksLoaded(id, sparks),
@@ -2411,8 +2412,7 @@ impl App {
                         // layer stores. Anything outside P0..P4 is rejected
                         // with a toast — that should be impossible from the
                         // pick_list, but we're at a trust boundary.
-                        let Some(new_priority) =
-                            screen::spark_detail::parse_priority_label(&label)
+                        let Some(new_priority) = screen::spark_detail::parse_priority_label(&label)
                         else {
                             return self.push_toast(
                                 "Invalid priority",
@@ -2423,8 +2423,7 @@ impl App {
                         let Some(ws) = self.workshops.get_mut(idx) else {
                             return Task::none();
                         };
-                        // No-op if the value didn't actually change. Avoids
-                        // a pointless write/event.
+                        // No-op if the value didn't actually change.
                         if ws
                             .sparks
                             .iter()
@@ -2433,50 +2432,28 @@ impl App {
                         {
                             return Task::none();
                         }
-                        // Optimistic local update so the dropdown reflects
-                        // the choice immediately even before the DB ack.
-                        if let Some(s) = ws.sparks.iter_mut().find(|s| s.id == spark_id) {
-                            s.priority = new_priority;
-                        }
-                        let Some(ref pool) = ws.sparks_db else {
-                            return Task::none();
-                        };
-                        let pool = pool.clone();
-                        let ws_id = ws.workshop_id();
-                        let id = ws.id;
-                        return Task::perform(
-                            async move {
-                                let upd = data::sparks::types::UpdateSpark {
-                                    priority: Some(new_priority),
-                                    ..Default::default()
-                                };
-                                let _ = data::sparks::spark_repo::update(
-                                    &pool, &spark_id, upd, "user",
-                                )
-                                .await;
-                                load_sparks(pool, ws_id).await
+                        let workshop_id = ws.id;
+                        return self.update(Message::SparkUpdate {
+                            workshop_id,
+                            id: spark_id,
+                            patch: SparkPatch {
+                                priority: Some(new_priority),
+                                ..Default::default()
                             },
-                            move |sparks| Message::SparksLoaded(id, sparks),
-                        );
+                        });
                     }
                     screen::spark_detail::Message::SetType(spark_id, new_type_label) => {
-                        // Translate label → enum, rejecting unknown values.
-                        let new_type = match new_type_label.as_str() {
-                            "bug" => data::sparks::types::SparkType::Bug,
-                            "feature" => data::sparks::types::SparkType::Feature,
-                            "task" => data::sparks::types::SparkType::Task,
-                            "epic" => data::sparks::types::SparkType::Epic,
-                            "chore" => data::sparks::types::SparkType::Chore,
-                            "spike" => data::sparks::types::SparkType::Spike,
-                            "milestone" => data::sparks::types::SparkType::Milestone,
-                            _ => {
-                                return self.push_toast(
-                                    "Invalid type",
-                                    format!("'{new_type_label}' is not a valid spark type"),
-                                    ToastKind::Error,
-                                );
-                            }
-                        };
+                        // Validate the label is a known type.
+                        if !matches!(
+                            new_type_label.as_str(),
+                            "bug" | "feature" | "task" | "epic" | "chore" | "spike" | "milestone"
+                        ) {
+                            return self.push_toast(
+                                "Invalid type",
+                                format!("'{new_type_label}' is not a valid spark type"),
+                                ToastKind::Error,
+                            );
+                        }
                         let Some(ws) = self.workshops.get_mut(idx) else {
                             return Task::none();
                         };
@@ -2520,30 +2497,15 @@ impl App {
                                 );
                             }
                         }
-                        // Optimistic local update.
-                        if let Some(s) = ws.sparks.iter_mut().find(|s| s.id == spark_id) {
-                            s.spark_type = new_type_label.clone();
-                        }
-                        let Some(ref pool) = ws.sparks_db else {
-                            return Task::none();
-                        };
-                        let pool = pool.clone();
-                        let ws_id = ws.workshop_id();
-                        let id = ws.id;
-                        return Task::perform(
-                            async move {
-                                let upd = data::sparks::types::UpdateSpark {
-                                    spark_type: Some(new_type),
-                                    ..Default::default()
-                                };
-                                let _ = data::sparks::spark_repo::update(
-                                    &pool, &spark_id, upd, "user",
-                                )
-                                .await;
-                                load_sparks(pool, ws_id).await
+                        let workshop_id = ws.id;
+                        return self.update(Message::SparkUpdate {
+                            workshop_id,
+                            id: spark_id,
+                            patch: SparkPatch {
+                                spark_type: Some(new_type_label),
+                                ..Default::default()
                             },
-                            move |sparks| Message::SparksLoaded(id, sparks),
-                        );
+                        });
                     }
                     screen::spark_detail::Message::AcceptanceCriterionChanged(i, val) => {
                         // Draft-only: update the in-memory row without
@@ -2590,9 +2552,8 @@ impl App {
                                 .map(screen::spark_detail::AcceptanceCriteriaEdit::load)
                                 .unwrap_or_default();
                         }
-                        let new_index = screen::spark_detail::add_criterion(
-                            &mut ws.acceptance_criteria_edit,
-                        );
+                        let new_index =
+                            screen::spark_detail::add_criterion(&mut ws.acceptance_criteria_edit);
                         // Focus the freshly-added row for immediate typing.
                         // No DB write yet — the empty row only persists once
                         // the user types and submits (or gets auto-deleted).
@@ -2675,18 +2636,44 @@ impl App {
                         // not yet acknowledged for this session, the
                         // session stashes the field and the modal pops;
                         // otherwise the gate returns Proceed and the
-                        // field-specific handler (from the sibling
-                        // editable-<field> sparks) can flip into edit
-                        // mode on the next frame. See ryve-8ad372cf.
-                        if let Some(ws) = self.workshops.get_mut(idx)
-                            && let Some(ref sid) = ws.selected_spark
-                            && let Some(spark) =
-                                ws.sparks.iter().find(|s| &s.id == sid).cloned()
-                        {
-                            let _ = ws.spark_edit_session.begin_edit(&spark, field);
-                            // The view re-renders from the session state
-                            // and will overlay the modal when needed;
-                            // no follow-up Task is required here.
+                        // field-specific handler seeds the draft for the
+                        // requested field. See ryve-8ad372cf.
+                        let Some(ws) = self.workshops.get_mut(idx) else {
+                            return Task::none();
+                        };
+                        let Some(ref sid) = ws.selected_spark else {
+                            return Task::none();
+                        };
+                        let Some(spark) = ws.sparks.iter().find(|s| &s.id == sid).cloned() else {
+                            return Task::none();
+                        };
+                        let outcome = ws.spark_edit_session.begin_edit(&spark, field);
+                        if outcome != screen::spark_detail::BeginEditOutcome::Proceed {
+                            // Modal is now showing; wait for user action.
+                            return Task::none();
+                        }
+                        // Gate passed — seed the draft for the requested
+                        // field so the UI flips into edit mode.
+                        match field {
+                            screen::spark_detail::EditField::Title => {
+                                let seed = spark.title.clone();
+                                let edit = ws.spark_edit.get_or_insert_with(|| {
+                                    screen::spark_detail::SparkEdit::new(spark.id.clone())
+                                });
+                                if !edit
+                                    .in_flight
+                                    .contains_key(&screen::spark_detail::Field::Title)
+                                    && !edit
+                                        .drafts
+                                        .contains_key(&screen::spark_detail::Field::Title)
+                                {
+                                    edit.update_draft(screen::spark_detail::Field::Title, seed);
+                                }
+                            }
+                            _ => {
+                                // Other fields will be wired up by
+                                // follow-up sparks as they land.
+                            }
                         }
                     }
                     screen::spark_detail::Message::ConfirmClosedEdit => {
@@ -2723,11 +2710,10 @@ impl App {
                                 .filter(|a| a.active)
                                 .map(|a| a.name.as_str())
                                 .collect();
-                            let suggestions =
-                                screen::spark_detail::build_assignee_suggestions(
-                                    &agent_names,
-                                    &ws.sparks,
-                                );
+                            let suggestions = screen::spark_detail::build_assignee_suggestions(
+                                &agent_names,
+                                &ws.sparks,
+                            );
                             ws.assignee_edit.begin(current.as_deref(), suggestions);
                         }
                     }
@@ -2783,13 +2769,10 @@ impl App {
                                 // trailing newline that wasn't in the
                                 // source — strip it so round-tripping
                                 // an unchanged draft stays "clean".
-                                let stripped =
-                                    text.strip_suffix('\n').unwrap_or(&text).to_string();
+                                let stripped = text.strip_suffix('\n').unwrap_or(&text).to_string();
                                 if let Some(ref mut edit) = ws.spark_edit {
-                                    edit.drafts.insert(
-                                        screen::spark_detail::Field::Description,
-                                        stripped,
-                                    );
+                                    edit.drafts
+                                        .insert(screen::spark_detail::Field::Description, stripped);
                                 }
                             }
                         }
@@ -2905,11 +2888,9 @@ impl App {
                             .find(|s| s.id == spark_id)
                             .and_then(|s| s.intent().problem_statement)
                             .unwrap_or_default();
-                        ws.problem_edit = Some(
-                            screen::spark_detail::ProblemEditState::new(
-                                spark_id, &current,
-                            ),
-                        );
+                        ws.problem_edit = Some(screen::spark_detail::ProblemEditState::new(
+                            spark_id, &current,
+                        ));
                     }
                     screen::spark_detail::Message::ProblemAction(action) => {
                         if let Some(ws) = self.workshops.get_mut(idx)
@@ -2991,34 +2972,6 @@ impl App {
                         }
                     }
                     // ── Title inline edit (spark ryve-f58d0492) ─────────
-                    screen::spark_detail::Message::TitleBeginEdit => {
-                        let Some(ws) = self.workshops.get_mut(idx) else {
-                            return Task::none();
-                        };
-                        let Some(spark_id) = ws.selected_spark.clone() else {
-                            return Task::none();
-                        };
-                        let seed = ws
-                            .sparks
-                            .iter()
-                            .find(|s| s.id == spark_id)
-                            .map(|s| s.title.clone())
-                            .unwrap_or_default();
-                        // A save in flight for this field is authoritative;
-                        // don't clobber it by re-opening a draft.
-                        let edit = ws.spark_edit.get_or_insert_with(|| {
-                            screen::spark_detail::SparkEdit::new(spark_id.clone())
-                        });
-                        if !edit
-                            .in_flight
-                            .contains_key(&screen::spark_detail::Field::Title)
-                            && !edit
-                                .drafts
-                                .contains_key(&screen::spark_detail::Field::Title)
-                        {
-                            edit.update_draft(screen::spark_detail::Field::Title, seed);
-                        }
-                    }
                     screen::spark_detail::Message::TitleChanged(val) => {
                         if let Some(ws) = self.workshops.get_mut(idx)
                             && let Some(ref mut edit) = ws.spark_edit
@@ -3067,12 +3020,8 @@ impl App {
                         // Move draft into in_flight and emit SparkUpdate.
                         // We overwrite the draft with the trimmed value so
                         // `commit` captures the trimmed string.
-                        edit.update_draft(
-                            screen::spark_detail::Field::Title,
-                            trimmed.clone(),
-                        );
-                        let Some(write) = edit.commit(screen::spark_detail::Field::Title)
-                        else {
+                        edit.update_draft(screen::spark_detail::Field::Title, trimmed.clone());
+                        let Some(write) = edit.commit(screen::spark_detail::Field::Title) else {
                             return Task::none();
                         };
                         let patch = SparkPatch {
@@ -3989,6 +3938,7 @@ impl App {
                     upd.metadata = Some(s.metadata.clone());
                 }
                 let id_for_task = id.clone();
+                let affected = patch.affected_fields();
                 Task::perform(
                     async move {
                         data::sparks::spark_repo::update(&pool, &id_for_task, upd, "user")
@@ -4000,26 +3950,34 @@ impl App {
                         Ok(()) => Message::SparkUpdateApplied {
                             workshop_id,
                             id: id.clone(),
+                            fields: affected.clone(),
                         },
                         Err(error) => Message::SparkUpdateFailed {
                             workshop_id,
                             id: id.clone(),
                             prior: prior.clone(),
                             error,
+                            fields: affected.clone(),
                         },
                     },
                 )
             }
-            Message::SparkUpdateApplied { workshop_id, id } => {
+            Message::SparkUpdateApplied {
+                workshop_id,
+                id,
+                fields,
+            } => {
                 // Durable write succeeded; the optimistic cache is now the
-                // source of truth. Clear any per-field in-flight slots on
-                // the matching SparkEdit so the UI drops the disabled
-                // spinner treatment and re-enables input.
+                // source of truth. Clear only the in-flight slots that were
+                // part of *this* write so concurrent requests for other
+                // fields keep their in-flight state intact.
                 if let Some(idx) = self.workshops.iter().position(|ws| ws.id == workshop_id)
                     && let Some(ref mut edit) = self.workshops[idx].spark_edit
                     && edit.spark_id == id
                 {
-                    edit.in_flight.clear();
+                    for field in &fields {
+                        edit.in_flight.remove(field);
+                    }
                     if !edit.is_dirty() {
                         self.workshops[idx].spark_edit = None;
                     }
@@ -4031,6 +3989,7 @@ impl App {
                 id,
                 prior,
                 error,
+                fields,
             } => {
                 // Restore the pre-edit values. If the spark has since
                 // disappeared from the cache (e.g. workshop closed mid-flight)
@@ -4039,24 +3998,21 @@ impl App {
                 if let Some(idx) = self.workshops.iter().position(|ws| ws.id == workshop_id) {
                     let ws = &mut self.workshops[idx];
                     ws.apply_spark_patch(&id, &prior);
-                    // Move any in-flight slots back into drafts so the user
-                    // can see what they tried to save and either fix it or
-                    // re-submit. Spark ryve-f58d0492 requires the field to
-                    // return to the draft value on failure.
+                    // Move only the failed request's in-flight slots back
+                    // into drafts so the user can see what they tried to
+                    // save and either fix it or re-submit. Other in-flight
+                    // fields from concurrent requests are left alone.
                     if let Some(ref mut edit) = ws.spark_edit
                         && edit.spark_id == id
                     {
-                        let in_flight: Vec<_> = edit.in_flight.drain().collect();
-                        for (field, value) in in_flight {
-                            edit.drafts.insert(field, value);
+                        for field in &fields {
+                            if let Some(value) = edit.in_flight.remove(field) {
+                                edit.drafts.insert(field.clone(), value);
+                            }
                         }
                     }
                 }
-                self.push_toast(
-                    format!("Could not save {id}"),
-                    error,
-                    ToastKind::Error,
-                )
+                self.push_toast(format!("Could not save {id}"), error, ToastKind::Error)
             }
         }
     }
@@ -4101,11 +4057,21 @@ impl App {
                     assignee: Some(new_value),
                     ..Default::default()
                 };
-                let _ =
-                    data::sparks::spark_repo::update(&pool, &spark_id, upd, "user").await;
-                load_sparks(pool, ws_id_str).await
+                if let Err(e) =
+                    data::sparks::spark_repo::update(&pool, &spark_id, upd, "user").await
+                {
+                    return Err(e.to_string());
+                }
+                Ok(load_sparks(pool, ws_id_str).await)
             },
-            move |sparks| Message::SparksLoaded(id, sparks),
+            move |res: Result<Vec<_>, String>| match res {
+                Ok(sparks) => Message::SparksLoaded(id, sparks),
+                Err(error) => Message::ShowToast {
+                    title: "Could not save assignee".into(),
+                    body: error,
+                    kind: ToastKind::Error,
+                },
+            },
         ))
     }
 
@@ -5763,10 +5729,7 @@ impl App {
                 let description_draft = ws
                     .spark_edit
                     .as_ref()
-                    .and_then(|e| {
-                        e.drafts
-                            .get(&screen::spark_detail::Field::Description)
-                    })
+                    .and_then(|e| e.drafts.get(&screen::spark_detail::Field::Description))
                     .map(|s| s.as_str());
                 screen::spark_detail::view(
                     spark,
