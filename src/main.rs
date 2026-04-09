@@ -683,6 +683,23 @@ impl App {
             tasks.push(app.push_toast(format!("Upgrade {name} CLI"), reason, ToastKind::Warning));
         }
 
+        // Spark ryve-f65077f4: if no compatible coding agent is available,
+        // notify the user that Atlas cannot start. The app remains fully
+        // functional for all other features — only the Atlas entry point is
+        // disabled.
+        let has_compatible_agent = app
+            .available_agents
+            .iter()
+            .any(|a| !a.compatibility.is_unsupported());
+        if !has_compatible_agent {
+            tasks.push(app.push_toast(
+                "Atlas unavailable",
+                "No compatible coding agent found. Install Claude Code, \
+                 Codex, or OpenCode to enable Atlas.",
+                ToastKind::Info,
+            ));
+        }
+
         (app, Task::batch(tasks))
     }
 
@@ -6634,6 +6651,44 @@ mod tests {
     // end to end by `perf_core/tests/sparks_poll_smoke.rs`, which drives
     // the same `perf_core::classify_key_event` classifier the live
     // subscription uses.
+
+    /// Spark ryve-f65077f4: verify the predicate that gates Atlas
+    /// availability — it should be false when the agent list is empty or
+    /// every agent is unsupported.
+    #[test]
+    fn no_compatible_agent_when_all_unsupported_or_empty() {
+        use coding_agents::{CodingAgent, CompatStatus, ResumeStrategy};
+
+        let make = |compat: CompatStatus| CodingAgent {
+            display_name: "test".into(),
+            command: "test".into(),
+            args: vec![],
+            resume: ResumeStrategy::None,
+            compatibility: compat,
+        };
+
+        // Empty list → no compatible agent.
+        let agents: Vec<CodingAgent> = vec![];
+        assert!(!agents.iter().any(|a| !a.compatibility.is_unsupported()));
+
+        // All unsupported → no compatible agent.
+        let agents = vec![make(CompatStatus::Unsupported {
+            version: "0.1".into(),
+            reason: "old".into(),
+        })];
+        assert!(!agents.iter().any(|a| !a.compatibility.is_unsupported()));
+
+        // One compatible → has compatible agent.
+        let agents = vec![make(CompatStatus::Compatible {
+            version: "1.0".into(),
+        })];
+        assert!(agents.iter().any(|a| !a.compatibility.is_unsupported()));
+
+        // Unknown counts as "not unsupported" — we give the benefit of
+        // the doubt when the version probe couldn't run.
+        let agents = vec![make(CompatStatus::Unknown)];
+        assert!(agents.iter().any(|a| !a.compatibility.is_unsupported()));
+    }
 
     #[test]
     fn attribution_label_absent_for_blank_photographer() {
