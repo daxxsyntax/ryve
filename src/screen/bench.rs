@@ -39,6 +39,14 @@ pub enum TabKind {
         session_id: String,
         log_path: PathBuf,
     },
+    /// Live interactive tmux attach session. The PTY runs
+    /// `tmux -S <socket> attach -t <session>` via the bundled binary.
+    /// Closing the tab only detaches — the tmux session survives so the
+    /// user can re-attach later. Spark ryve-8ba40d83.
+    TmuxAttach {
+        session_id: String,
+        tmux_session_name: String,
+    },
 }
 
 /// Per-terminal-tab Cmd+F search state. Lives in [`BenchState`] keyed
@@ -176,6 +184,9 @@ impl BenchState {
                 TabKind::LogTail { log_path, .. } => {
                     ("\u{1F441}", format!("spy: {}", log_path.display()))
                 }
+                TabKind::TmuxAttach {
+                    tmux_session_name, ..
+                } => ("\u{2318}", format!("tmux: {tmux_session_name}")),
             };
 
             let tab_content = row![
@@ -563,5 +574,45 @@ mod tests {
         // Switch to tab 1 — now the overlay appears.
         bench.active_tab = Some(1);
         assert!(bench.view_terminal_search(&pal).is_some());
+    }
+
+    /// Spark ryve-8ba40d83: TmuxAttach tabs render in the tab bar
+    /// without panics and show a distinctive icon / tooltip.
+    #[test]
+    fn tmux_attach_tab_renders_in_tab_bar() {
+        let mut bench = BenchState::new();
+        bench.create_tab(
+            100,
+            "hand session".into(),
+            TabKind::TmuxAttach {
+                session_id: "sess-abc".into(),
+                tmux_session_name: "hand-sess-abc".into(),
+            },
+        );
+        assert_eq!(bench.tabs.len(), 1);
+        assert_eq!(bench.active_tab, Some(100));
+        let pal = Palette::dark();
+        let _element = bench.view_tab_bar(&pal);
+    }
+
+    /// Spark ryve-8ba40d83: closing a TmuxAttach tab removes it from
+    /// the bench like any other tab. The invariant is that no
+    /// kill-session logic fires — only detach happens when the PTY child
+    /// (the `tmux attach` process) is reaped by iced_term.
+    #[test]
+    fn closing_tmux_attach_tab_removes_it() {
+        let mut bench = BenchState::new();
+        bench.create_tab(
+            200,
+            "head session".into(),
+            TabKind::TmuxAttach {
+                session_id: "sess-xyz".into(),
+                tmux_session_name: "head-sess-xyz".into(),
+            },
+        );
+        assert_eq!(bench.tabs.len(), 1);
+        bench.close_tab(200);
+        assert_eq!(bench.tabs.len(), 0);
+        assert_eq!(bench.active_tab, None);
     }
 }

@@ -15,6 +15,7 @@ mod process_snapshot;
 mod release_artifact;
 mod screen;
 mod style;
+mod tmux;
 mod widget;
 mod workshop;
 mod worktree_cleanup;
@@ -1444,6 +1445,12 @@ impl App {
                                     display_state == screen::agents::SessionDisplayState::Active;
                                 s.stale =
                                     display_state == screen::agents::SessionDisplayState::Stale;
+                                // Refresh tmux liveness for the Attach button.
+                                // Spark ryve-8ba40d83.
+                                let label = s.session_label.as_deref().unwrap_or("hand");
+                                let tmux_name = tmux::session_name_for(label, &s.id);
+                                s.tmux_session_live =
+                                    s.active && tmux::has_session(&ws.directory, &tmux_name);
                             }
                             continue;
                         }
@@ -1458,18 +1465,31 @@ impl App {
                                 resume: coding_agents::ResumeStrategy::None,
                                 compatibility: coding_agents::CompatStatus::Unknown,
                             });
+                        let is_active =
+                            display_state == screen::agents::SessionDisplayState::Active;
+                        // Check tmux liveness for the Attach button.
+                        // Spark ryve-8ba40d83.
+                        let tmux_live = if is_active {
+                            let label = p.session_label.as_deref().unwrap_or("hand");
+                            let tmux_name = tmux::session_name_for(label, &p.id);
+                            tmux::has_session(&ws.directory, &tmux_name)
+                        } else {
+                            false
+                        };
                         ws.agent_sessions.push(AgentSession {
                             id: p.id,
                             name: p.agent_name,
                             agent,
                             tab_id: existing_tab_id,
-                            active: display_state == screen::agents::SessionDisplayState::Active,
+                            active: is_active,
                             stale: display_state == screen::agents::SessionDisplayState::Stale,
                             resume_id: p.resume_id,
                             started_at: p.started_at,
                             log_path: p.log_path.map(PathBuf::from),
                             last_output_at: None,
                             parent_session_id: p.parent_session_id,
+                            session_label: p.session_label.clone(),
+                            tmux_session_live: tmux_live,
                         });
                     }
 
@@ -2227,6 +2247,73 @@ impl App {
                     screen::agents::Message::ToggleCrewExpanded(crew_id) => {
                         if !ws.agents_panel.collapsed_crews.remove(&crew_id) {
                             ws.agents_panel.collapsed_crews.insert(crew_id);
+                        }
+                    }
+                    screen::agents::Message::AttachSession(session_id, label) => {
+                        // Spark ryve-8ba40d83: open a bench tab running
+                        // `tmux attach` on the Ryve-private socket. If a
+                        // TmuxAttach tab for this session already exists,
+                        // focus it instead of creating a duplicate.
+                        let tmux_name = tmux::session_name_for(&label, &session_id);
+                        if let Some(existing) = ws.bench.tabs.iter().find(|t| {
+                            matches!(
+                                &t.kind,
+                                screen::bench::TabKind::TmuxAttach { session_id: sid, .. }
+                                if *sid == session_id
+                            )
+                        }) {
+                            ws.bench.active_tab = Some(existing.id);
+                        } else {
+                            // Derive the tab title from the spark title if the
+                            // session has an owner assignment, else fall back to
+                            // the tmux session name.
+                            let title = ws
+                                .agent_sessions
+                                .iter()
+                                .find(|s| s.id == session_id)
+                                .and_then(|s| {
+                                    screen::agents::owner_spark_for_session(
+                                        &s.id,
+                                        &ws.hand_assignments,
+                                    )
+                                    .and_then(|sid| ws.sparks.iter().find(|sp| sp.id == sid))
+                                    .map(|sp| sp.title.clone())
+                                    .or_else(|| Some(s.name.clone()))
+                                })
+                                .unwrap_or_else(|| tmux_name.clone());
+
+                            let tab_id = self.next_terminal_id;
+                            self.next_terminal_id += 1;
+                            ws.bench.create_tab(
+                                tab_id,
+                                title,
+                                screen::bench::TabKind::TmuxAttach {
+                                    session_id: session_id.clone(),
+                                    tmux_session_name: tmux_name.clone(),
+                                },
+                            );
+
+                            // Create the iced_term::Terminal with the tmux
+                            // attach command as the backend program.
+                            let (program, args) = tmux::attach_command(&ws.directory, &tmux_name);
+                            let (shell, shell_args) =
+                                workshop::wrap_command_with_bottom_pin(&program, &args);
+
+                            let mut settings = iced_term::settings::Settings {
+                                font: ws.terminal_font_settings(),
+                                ..iced_term::settings::Settings::default()
+                            };
+                            settings.theme.color_pallete.background = ws.terminal_bg_hex();
+                            settings.backend.working_directory = Some(ws.directory.clone());
+                            settings.backend.program = shell;
+                            settings.backend.args = shell_args;
+
+                            if let Ok(term) = iced_term::Terminal::new(tab_id, settings) {
+                                let focus =
+                                    iced_term::TerminalView::focus(term.widget_id().clone());
+                                ws.terminals.insert(tab_id, term);
+                                return focus;
+                            }
                         }
                     }
                 }
@@ -3198,7 +3285,8 @@ impl App {
                         }
                         Some(
                             screen::bench::TabKind::Terminal
-                            | screen::bench::TabKind::CodingAgent(_),
+                            | screen::bench::TabKind::CodingAgent(_)
+                            | screen::bench::TabKind::TmuxAttach { .. },
                         ) => self.handle_bench_message(screen::bench::Message::OpenTerminalSearch),
                         _ => Task::none(),
                     }
@@ -3830,6 +3918,8 @@ impl App {
                             log_path: None,
                             last_output_at: None,
                             parent_session_id: None,
+                            session_label: None,
+                            tmux_session_live: false,
                         });
 
                         if let Some(ref pool) = ws.sparks_db {
@@ -4643,6 +4733,7 @@ impl App {
                             t.kind,
                             screen::bench::TabKind::Terminal
                                 | screen::bench::TabKind::CodingAgent(_)
+                                | screen::bench::TabKind::TmuxAttach { .. }
                         )
                 });
                 if !is_terminal_kind || !ws.terminals.contains_key(&active_id) {
@@ -4888,6 +4979,8 @@ impl App {
             log_path: None,
             last_output_at: None,
             parent_session_id: None,
+            session_label: None,
+            tmux_session_live: false,
         });
 
         // Persist session to DB + optional spark assignment
@@ -4997,6 +5090,8 @@ impl App {
             log_path: None,
             last_output_at: None,
             parent_session_id: None,
+            session_label: Some("head".to_string()),
+            tmux_session_live: false,
         });
 
         let mut tasks: Vec<Task<Message>> = Vec::new();
@@ -5095,6 +5190,8 @@ impl App {
             last_output_at: None,
             // Atlas is the top of the hierarchy — no parent.
             parent_session_id: None,
+            session_label: Some("atlas".to_string()),
+            tmux_session_live: false,
         });
 
         let mut tasks: Vec<Task<Message>> = Vec::new();
