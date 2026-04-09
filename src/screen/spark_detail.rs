@@ -4,8 +4,19 @@
 //! Spark detail view — shown when a spark is selected in the workgraph panel.
 
 use data::sparks::types::{Bond, Contract, ContractEnforcement, ContractKind, Spark};
-use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
+use iced::widget::{Id, Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Length, Theme};
+
+/// Prefix used to build stable widget `Id`s for acceptance criterion rows.
+/// Building the id from the row index lets the update handler issue the
+/// focus operation to move focus to a freshly inserted row (used by the
+/// "+ Add criterion" button to drop the caret straight into the new row).
+const ACCEPTANCE_ROW_ID_PREFIX: &str = "ac-row-";
+
+/// Build a stable widget `Id` for the Nth acceptance criterion row.
+pub fn acceptance_row_id(index: usize) -> Id {
+    Id::from(format!("{ACCEPTANCE_ROW_ID_PREFIX}{index}"))
+}
 
 use crate::screen::delegation_trace::DelegationTrace;
 use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_ICON, FONT_LABEL, FONT_SMALL, Palette};
@@ -82,6 +93,147 @@ fn enforcement_label(e: ContractEnforcement) -> &'static str {
     }
 }
 
+// ── Acceptance criteria edit state ───────────────────
+
+/// In-memory draft of a spark's acceptance criteria while the user is
+/// editing them in the detail view. Held on the Workshop so edits and
+/// the one-level undo buffer survive cross-message updates.
+///
+/// Invariant for the caller: after a successful save, `items` must equal
+/// the `metadata.intent.acceptance_criteria` on the reloaded spark. The
+/// easiest way to honour that is to call [`AcceptanceCriteriaEdit::load`]
+/// whenever a fresh spark comes back from the DB.
+#[derive(Debug, Clone, Default)]
+pub struct AcceptanceCriteriaEdit {
+    /// Spark id this editor is bound to — used to guard against stale state
+    /// when the selection changes.
+    pub spark_id: String,
+    /// Current draft rows, one entry per criterion.
+    pub items: Vec<String>,
+    /// One-level undo buffer for the most recent deletion: `(index, text)`.
+    /// Populated by [`delete_criterion`] and consumed by [`undo_delete`].
+    pub last_deleted: Option<(usize, String)>,
+}
+
+impl AcceptanceCriteriaEdit {
+    /// Seed the editor from the spark's current intent. Call this whenever
+    /// the selection changes or a save reloads the spark — it keeps the
+    /// in-memory vec in sync with persisted state.
+    pub fn load(spark: &Spark) -> Self {
+        Self {
+            spark_id: spark.id.clone(),
+            items: spark.intent().acceptance_criteria,
+            last_deleted: None,
+        }
+    }
+
+    /// Returns true if this editor is bound to the given spark id.
+    pub fn is_for(&self, spark_id: &str) -> bool {
+        self.spark_id == spark_id
+    }
+}
+
+/// Merge a new acceptance-criteria vec into a spark's existing metadata
+/// JSON, preserving every other field under `intent` and every sibling of
+/// `intent`. Returns the serialized JSON string ready for
+/// `UpdateSpark { metadata: Some(..) }`.
+///
+/// If the existing metadata is missing or malformed we fall back to a
+/// freshly constructed `{ "intent": { "acceptance_criteria": [...] } }`.
+pub fn merge_acceptance_criteria_into_metadata(
+    existing_metadata: &str,
+    new_criteria: &[String],
+) -> String {
+    let mut root: serde_json::Value = serde_json::from_str(existing_metadata)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let obj = root.as_object_mut().expect("root is object");
+    let intent_entry = obj
+        .entry("intent".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !intent_entry.is_object() {
+        *intent_entry = serde_json::json!({});
+    }
+    let intent_obj = intent_entry.as_object_mut().expect("intent is object");
+    intent_obj.insert(
+        "acceptance_criteria".to_string(),
+        serde_json::Value::Array(
+            new_criteria
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        ),
+    );
+    serde_json::to_string(&root).unwrap_or_else(|_| existing_metadata.to_string())
+}
+
+/// Append a new empty row and return its index so the caller can focus it.
+pub fn add_criterion(edit: &mut AcceptanceCriteriaEdit) -> usize {
+    edit.items.push(String::new());
+    edit.last_deleted = None;
+    edit.items.len() - 1
+}
+
+/// Delete the row at `index`, stashing it in the undo buffer. Returns
+/// `true` if the row existed.
+pub fn delete_criterion(edit: &mut AcceptanceCriteriaEdit, index: usize) -> bool {
+    if index >= edit.items.len() {
+        return false;
+    }
+    let text = edit.items.remove(index);
+    edit.last_deleted = Some((index, text));
+    true
+}
+
+/// Restore the last deleted row if one is in the undo buffer. Returns
+/// `true` if anything was restored.
+pub fn undo_delete(edit: &mut AcceptanceCriteriaEdit) -> bool {
+    let Some((index, text)) = edit.last_deleted.take() else {
+        return false;
+    };
+    let clamped = index.min(edit.items.len());
+    edit.items.insert(clamped, text);
+    true
+}
+
+/// Move the row at `index` one slot up. No-op at position 0.
+pub fn move_up(edit: &mut AcceptanceCriteriaEdit, index: usize) -> bool {
+    if index == 0 || index >= edit.items.len() {
+        return false;
+    }
+    edit.items.swap(index, index - 1);
+    edit.last_deleted = None;
+    true
+}
+
+/// Move the row at `index` one slot down. No-op at the last position.
+pub fn move_down(edit: &mut AcceptanceCriteriaEdit, index: usize) -> bool {
+    if index + 1 >= edit.items.len() {
+        return false;
+    }
+    edit.items.swap(index, index + 1);
+    edit.last_deleted = None;
+    true
+}
+
+/// On-blur commit for the row at `index`. If the row is blank we drop it
+/// so stray empties never land on disk (matches the "empty row on blur is
+/// auto-deleted" acceptance criterion). Returns `true` if a row was
+/// removed, so the caller can skip focusing into a gone-away index.
+pub fn trim_blank_on_blur(edit: &mut AcceptanceCriteriaEdit, index: usize) -> bool {
+    if index >= edit.items.len() {
+        return false;
+    }
+    if edit.items[index].trim().is_empty() {
+        edit.items.remove(index);
+        // A blank row removal isn't undo-worthy — the user never typed anything.
+        return true;
+    }
+    false
+}
+
 // ── Messages ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -111,6 +263,23 @@ pub enum Message {
         spark_id: String,
         contract_id: i64,
     },
+
+    // ── Acceptance criteria editing ──────────────────
+    /// Text in the Nth row changed (keystroke). Draft-only — no DB write.
+    AcceptanceCriterionChanged(usize, String),
+    /// Nth row was submitted / blurred. If blank, auto-delete it.
+    /// Otherwise persist the full vec through `update_spark`.
+    AcceptanceCriterionSubmit(usize),
+    /// "+ Add criterion" pressed: append an empty row and focus it.
+    AcceptanceCriterionAdd,
+    /// Delete the Nth row, persist, and show an undo toast.
+    AcceptanceCriterionDelete(usize),
+    /// Restore the most recently deleted row and persist.
+    AcceptanceCriterionUndoDelete,
+    /// Reorder: move the Nth row up by one (persist on change).
+    AcceptanceCriterionMoveUp(usize),
+    /// Reorder: move the Nth row down by one (persist on change).
+    AcceptanceCriterionMoveDown(usize),
 }
 
 // ── View ─────────────────────────────────────────────
@@ -123,6 +292,7 @@ pub fn view<'a>(
     all_sparks: &'a [Spark],
     delegation: &DelegationTrace,
     create_form: &'a ContractCreateForm,
+    acceptance_edit: &'a AcceptanceCriteriaEdit,
     pal: &Palette,
     has_bg: bool,
 ) -> Element<'a, Message> {
@@ -261,22 +431,12 @@ pub fn view<'a>(
         body = body.push(items);
     }
 
-    if !intent.acceptance_criteria.is_empty() {
-        let mut items = column![
-            text("Acceptance Criteria")
-                .size(FONT_LABEL)
-                .color(pal.text_tertiary),
-        ]
-        .spacing(2);
-        for ac in intent.acceptance_criteria {
-            items = items.push(
-                text(format!("\u{2022} {ac}"))
-                    .size(FONT_BODY)
-                    .color(pal.text_primary),
-            );
-        }
-        body = body.push(items);
-    }
+    // Acceptance criteria are always editable — even when empty, we
+    // render the header and the "+ Add criterion" button so users can
+    // seed a brand-new list. The editor reads from `acceptance_edit`
+    // (the draft vec) rather than `intent.acceptance_criteria` so
+    // in-flight keystrokes are visible before a save round-trips.
+    body = body.push(view_acceptance_criteria_section(acceptance_edit, &pal));
 
     // ── Delegation trace section ─────────────────────
     // Surface the Atlas → Head → Hand chain so users can see who is
@@ -528,6 +688,117 @@ fn view_bond_row_typed<'a>(
     .padding([2, 8])
     .align_y(iced::Alignment::Center)
     .into()
+}
+
+// ── Acceptance criteria section ──────────────────────
+
+fn view_acceptance_criteria_section<'a>(
+    edit: &'a AcceptanceCriteriaEdit,
+    pal: &Palette,
+) -> Element<'a, Message> {
+    let pal = *pal;
+
+    let header = text("Acceptance Criteria")
+        .size(FONT_LABEL)
+        .color(pal.text_tertiary);
+
+    let mut col = column![header].spacing(4);
+
+    if edit.items.is_empty() {
+        col = col.push(
+            text("No acceptance criteria yet")
+                .size(FONT_SMALL)
+                .color(pal.text_tertiary),
+        );
+    } else {
+        let last = edit.items.len() - 1;
+        for (i, item) in edit.items.iter().enumerate() {
+            col = col.push(view_acceptance_row(i, item, last, &pal));
+        }
+    }
+
+    // "+ Add criterion" + optional inline undo for the most recent delete.
+    let add_btn = button(
+        row![
+            text("+").size(FONT_ICON).color(pal.accent),
+            text("Add criterion").size(FONT_LABEL).color(pal.accent),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .style(button::text)
+    .padding([2, 6])
+    .on_press(Message::AcceptanceCriterionAdd);
+
+    let mut footer = row![add_btn]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    if edit.last_deleted.is_some() {
+        footer = footer.push(
+            button(
+                text("\u{21B6} Undo delete")
+                    .size(FONT_LABEL)
+                    .color(pal.text_secondary),
+            )
+            .style(button::text)
+            .padding([2, 6])
+            .on_press(Message::AcceptanceCriterionUndoDelete),
+        );
+    }
+    col = col.push(footer);
+
+    col.into()
+}
+
+fn view_acceptance_row<'a>(
+    index: usize,
+    value: &'a str,
+    last_index: usize,
+    pal: &Palette,
+) -> Element<'a, Message> {
+    let pal = *pal;
+
+    // Reorder handle: two stacked arrows. Iced 0.14 doesn't give us a
+    // first-class drag affordance so we expose the reorder operation as
+    // an up/down pair. Functionally this is the "drag handle" — it
+    // updates the vec order and persists on click. Using the unicode
+    // vertical double arrow glyph keeps it visually compact.
+    let up_btn = {
+        let mut b = button(text("\u{25B4}").size(FONT_SMALL).color(pal.text_tertiary))
+            .style(button::text)
+            .padding([0, 4]);
+        if index > 0 {
+            b = b.on_press(Message::AcceptanceCriterionMoveUp(index));
+        }
+        b
+    };
+    let down_btn = {
+        let mut b = button(text("\u{25BE}").size(FONT_SMALL).color(pal.text_tertiary))
+            .style(button::text)
+            .padding([0, 4]);
+        if index < last_index {
+            b = b.on_press(Message::AcceptanceCriterionMoveDown(index));
+        }
+        b
+    };
+    let handle = column![up_btn, down_btn].spacing(0).width(Length::Shrink);
+
+    let input = text_input("New criterion…", value)
+        .id(acceptance_row_id(index))
+        .size(FONT_BODY)
+        .padding([4, 6])
+        .on_input(move |s| Message::AcceptanceCriterionChanged(index, s))
+        .on_submit(Message::AcceptanceCriterionSubmit(index));
+
+    let delete_btn = button(text("\u{00D7}").size(FONT_ICON).color(pal.text_tertiary))
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::AcceptanceCriterionDelete(index));
+
+    row![handle, input, delete_btn]
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .into()
 }
 
 // ── Contracts section ────────────────────────────────
@@ -948,6 +1219,141 @@ mod tests {
         let bonds = vec![make_bond(1, "sp-b", "sp-me", "conditional_blocks")];
         let (_, blocked_by, _) = classify_bonds(&me, &bonds, &all);
         assert_eq!(blocked_by.len(), 1);
+    }
+
+    // ── Acceptance criteria editor tests ─────────────
+
+    fn edit_with(items: Vec<&str>) -> AcceptanceCriteriaEdit {
+        AcceptanceCriteriaEdit {
+            spark_id: "sp-me".to_string(),
+            items: items.into_iter().map(String::from).collect(),
+            last_deleted: None,
+        }
+    }
+
+    #[test]
+    fn add_criterion_appends_empty_row_and_returns_index() {
+        let mut e = edit_with(vec!["a", "b"]);
+        let idx = add_criterion(&mut e);
+        assert_eq!(idx, 2);
+        assert_eq!(e.items, vec!["a", "b", ""]);
+    }
+
+    #[test]
+    fn delete_criterion_removes_and_stashes_for_undo() {
+        let mut e = edit_with(vec!["a", "b", "c"]);
+        assert!(delete_criterion(&mut e, 1));
+        assert_eq!(e.items, vec!["a", "c"]);
+        assert_eq!(e.last_deleted, Some((1, "b".to_string())));
+    }
+
+    #[test]
+    fn delete_criterion_out_of_range_is_noop() {
+        let mut e = edit_with(vec!["a"]);
+        assert!(!delete_criterion(&mut e, 5));
+        assert_eq!(e.items, vec!["a"]);
+        assert!(e.last_deleted.is_none());
+    }
+
+    #[test]
+    fn undo_delete_restores_at_original_index() {
+        let mut e = edit_with(vec!["a", "b", "c"]);
+        delete_criterion(&mut e, 1);
+        assert!(undo_delete(&mut e));
+        assert_eq!(e.items, vec!["a", "b", "c"]);
+        assert!(e.last_deleted.is_none());
+    }
+
+    #[test]
+    fn undo_delete_without_buffer_is_noop() {
+        let mut e = edit_with(vec!["a"]);
+        assert!(!undo_delete(&mut e));
+        assert_eq!(e.items, vec!["a"]);
+    }
+
+    #[test]
+    fn move_up_and_down_reorder_vec() {
+        let mut e = edit_with(vec!["a", "b", "c"]);
+        assert!(move_up(&mut e, 2));
+        assert_eq!(e.items, vec!["a", "c", "b"]);
+        assert!(move_down(&mut e, 0));
+        assert_eq!(e.items, vec!["c", "a", "b"]);
+        // edges
+        assert!(!move_up(&mut e, 0));
+        assert!(!move_down(&mut e, 2));
+    }
+
+    #[test]
+    fn trim_blank_on_blur_removes_whitespace_only_row() {
+        let mut e = edit_with(vec!["a", "   ", "c"]);
+        assert!(trim_blank_on_blur(&mut e, 1));
+        assert_eq!(e.items, vec!["a", "c"]);
+        // Blank trim should NOT populate the undo buffer — there's
+        // nothing to undo since the user never typed anything real.
+        assert!(e.last_deleted.is_none());
+    }
+
+    #[test]
+    fn trim_blank_on_blur_keeps_nonempty_row() {
+        let mut e = edit_with(vec!["real"]);
+        assert!(!trim_blank_on_blur(&mut e, 0));
+        assert_eq!(e.items, vec!["real"]);
+    }
+
+    #[test]
+    fn merge_into_existing_metadata_preserves_other_intent_fields() {
+        let existing = serde_json::json!({
+            "intent": {
+                "problem_statement": "keep me",
+                "invariants": ["x"],
+                "acceptance_criteria": ["old"],
+            },
+            "unrelated": 42,
+        })
+        .to_string();
+        let merged = merge_acceptance_criteria_into_metadata(
+            &existing,
+            &["new1".to_string(), "new2".to_string()],
+        );
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["intent"]["problem_statement"], "keep me");
+        assert_eq!(v["intent"]["invariants"][0], "x");
+        assert_eq!(v["intent"]["acceptance_criteria"][0], "new1");
+        assert_eq!(v["intent"]["acceptance_criteria"][1], "new2");
+        assert_eq!(v["unrelated"], 42);
+    }
+
+    #[test]
+    fn merge_into_empty_metadata_creates_intent_shell() {
+        let merged =
+            merge_acceptance_criteria_into_metadata("{}", &["only".to_string()]);
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["intent"]["acceptance_criteria"][0], "only");
+    }
+
+    #[test]
+    fn merge_into_malformed_metadata_falls_back_to_fresh_object() {
+        // Malformed input shouldn't panic or lose the new criteria.
+        let merged = merge_acceptance_criteria_into_metadata(
+            "not json at all",
+            &["rescued".to_string()],
+        );
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["intent"]["acceptance_criteria"][0], "rescued");
+    }
+
+    #[test]
+    fn load_reads_acceptance_criteria_from_spark_metadata() {
+        let mut s = make_spark("sp-me", "open");
+        s.metadata = serde_json::json!({
+            "intent": { "acceptance_criteria": ["one", "two"] }
+        })
+        .to_string();
+        let e = AcceptanceCriteriaEdit::load(&s);
+        assert_eq!(e.spark_id, "sp-me");
+        assert_eq!(e.items, vec!["one", "two"]);
+        assert!(e.is_for("sp-me"));
+        assert!(!e.is_for("sp-other"));
     }
 
     #[test]
