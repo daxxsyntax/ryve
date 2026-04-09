@@ -2,8 +2,8 @@
 // Spark ryve-af58f359 [sp-2a82fee7].
 
 use data::sparks::error::SparksError;
-use data::sparks::{release_repo, spark_repo};
 use data::sparks::types::*;
+use data::sparks::{release_repo, spark_repo};
 
 fn new_release(version: &str) -> NewRelease {
     NewRelease {
@@ -58,14 +58,9 @@ async fn release_lifecycle_create_add_epic_close(pool: sqlx::SqlitePool) {
     assert!(rel.cut_at.is_some(), "cut_at should be stamped");
 
     // Record close metadata (simulates what the CLI does after tagging + building)
-    release_repo::record_close_metadata(
-        &pool,
-        &rel.id,
-        "v1.0.0",
-        "/path/to/artifact",
-    )
-    .await
-    .unwrap();
+    release_repo::record_close_metadata(&pool, &rel.id, "v1.0.0", "/path/to/artifact")
+        .await
+        .unwrap();
 
     let rel = release_repo::set_status(&pool, &rel.id, ReleaseStatus::Closed)
         .await
@@ -75,7 +70,10 @@ async fn release_lifecycle_create_add_epic_close(pool: sqlx::SqlitePool) {
     // Verify metadata was persisted
     let final_rel = release_repo::get(&pool, &rel.id).await.unwrap();
     assert_eq!(final_rel.tag.as_deref(), Some("v1.0.0"));
-    assert_eq!(final_rel.artifact_path.as_deref(), Some("/path/to/artifact"));
+    assert_eq!(
+        final_rel.artifact_path.as_deref(),
+        Some("/path/to/artifact")
+    );
 }
 
 /// Adding an open epic to a release should succeed, but the close gate in the
@@ -110,10 +108,16 @@ async fn close_gate_rejects_open_epics(pool: sqlx::SqlitePool) {
 /// first release is no longer open.
 #[sqlx::test(fixtures("seed_sparks"))]
 async fn remove_epic_allows_reassignment(pool: sqlx::SqlitePool) {
-    let a = release_repo::create(&pool, new_release("3.0.0")).await.unwrap();
-    let b = release_repo::create(&pool, new_release("3.1.0")).await.unwrap();
+    let a = release_repo::create(&pool, new_release("3.0.0"))
+        .await
+        .unwrap();
+    let b = release_repo::create(&pool, new_release("3.1.0"))
+        .await
+        .unwrap();
 
-    release_repo::add_epic(&pool, &a.id, "sp-0005").await.unwrap();
+    release_repo::add_epic(&pool, &a.id, "sp-0005")
+        .await
+        .unwrap();
 
     // Can't add to b while a is open
     let err = release_repo::add_epic(&pool, &b.id, "sp-0005")
@@ -122,8 +126,12 @@ async fn remove_epic_allows_reassignment(pool: sqlx::SqlitePool) {
     assert!(matches!(err, SparksError::EpicAlreadyInOpenRelease { .. }));
 
     // Remove from a, then add to b succeeds
-    release_repo::remove_epic(&pool, &a.id, "sp-0005").await.unwrap();
-    release_repo::add_epic(&pool, &b.id, "sp-0005").await.unwrap();
+    release_repo::remove_epic(&pool, &a.id, "sp-0005")
+        .await
+        .unwrap();
+    release_repo::add_epic(&pool, &b.id, "sp-0005")
+        .await
+        .unwrap();
 
     let b_members = release_repo::list_member_epics(&pool, &b.id).await.unwrap();
     assert_eq!(b_members, vec!["sp-0005"]);

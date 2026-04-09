@@ -231,7 +231,10 @@ mod tests {
     #[test]
     fn get_by_name_finds_registered_and_rejects_unknown() {
         let reg = Registry::builtins();
-        assert_eq!(reg.get_by_name("build").map(|a| a.name.as_str()), Some("build"));
+        assert_eq!(
+            reg.get_by_name("build").map(|a| a.name.as_str()),
+            Some("build")
+        );
         assert!(reg.get_by_name("nonexistent").is_none());
         // Case-sensitive on purpose: "Build" is not the same as "build".
         assert!(reg.get_by_name("Build").is_none());

@@ -7,7 +7,7 @@
 //! Spark ryve-0c7c4715 [sp-2a82fee7].
 
 use data::sparks::types::{Release, ReleaseStatus, Spark};
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Element, Length, Theme};
 
 use crate::style::{self, FONT_BODY, FONT_HEADER, FONT_LABEL, FONT_SMALL, Palette};
@@ -85,10 +85,14 @@ pub fn view<'a>(
     let current = all_releases.iter().find(|d| d.status().is_open());
 
     let header = row![
-        button(text("\u{2190}").size(style::FONT_ICON).color(pal.text_secondary))
-            .style(button::text)
-            .padding([2, 6])
-            .on_press(Message::Back),
+        button(
+            text("\u{2190}")
+                .size(style::FONT_ICON)
+                .color(pal.text_secondary)
+        )
+        .style(button::text)
+        .padding([2, 6])
+        .on_press(Message::Back),
         text("Releases").size(FONT_HEADER).color(pal.text_primary),
     ]
     .spacing(6)
@@ -112,7 +116,10 @@ pub fn view<'a>(
     }
 
     // Past releases section
-    let past: Vec<_> = all_releases.iter().filter(|d| !d.status().is_open()).collect();
+    let past: Vec<_> = all_releases
+        .iter()
+        .filter(|d| !d.status().is_open())
+        .collect();
     if !past.is_empty() {
         content = content.push(view_past_releases(&past, state.past_expanded, &pal));
     }
@@ -142,11 +149,7 @@ fn view_current_release<'a>(data: &'a ReleaseViewData, pal: &Palette) -> Element
     .align_y(iced::Alignment::Center);
 
     if let Some(ref branch) = data.release.branch_name {
-        header_row = header_row.push(
-            text(branch)
-                .size(FONT_LABEL)
-                .color(pal.text_secondary),
-        );
+        header_row = header_row.push(text(branch).size(FONT_LABEL).color(pal.text_secondary));
     }
 
     // Progress bar
@@ -168,28 +171,24 @@ fn view_current_release<'a>(data: &'a ReleaseViewData, pal: &Palette) -> Element
     // Request close action — only available for open releases
     let mut col = column![
         header_row,
-        text(progress_label).size(FONT_SMALL).color(pal.text_secondary),
+        text(progress_label)
+            .size(FONT_SMALL)
+            .color(pal.text_secondary),
         progress_bar,
     ]
     .spacing(4);
 
     if !data.member_epics.is_empty() {
-        col = col.push(
-            container(epic_list).padding([4, 0]),
-        );
+        col = col.push(container(epic_list).padding([4, 0]));
     }
 
     if status.is_open() {
         let release_id = data.release.id.clone();
         col = col.push(
-            button(
-                text("Request close")
-                    .size(FONT_BODY)
-                    .color(pal.accent),
-            )
-            .style(button::text)
-            .padding([4, 8])
-            .on_press(Message::RequestClose(release_id)),
+            button(text("Request close").size(FONT_BODY).color(pal.accent))
+                .style(button::text)
+                .padding([4, 8])
+                .on_press(Message::RequestClose(release_id)),
         );
     }
 
@@ -199,7 +198,7 @@ fn view_current_release<'a>(data: &'a ReleaseViewData, pal: &Palette) -> Element
 /// Renders a visual progress bar using container widths.
 fn view_progress_bar<'a>(ratio: f32, pal: &Palette) -> Element<'a, Message> {
     let pal = *pal;
-    let fill_pct = (ratio * 100.0).round().max(0.0).min(100.0) as u16;
+    let fill_pct = (ratio * 100.0).round().clamp(0.0, 100.0) as u16;
     let empty_pct = 100 - fill_pct;
 
     let filled = container(Space::new())
@@ -259,10 +258,14 @@ fn view_past_releases<'a>(
     let toggle_icon = if expanded { "\u{25BC}" } else { "\u{25B6}" };
     let toggle_label = format!("{toggle_icon} Past releases ({count})", count = past.len());
 
-    let toggle_btn = button(text(toggle_label).size(FONT_LABEL).color(pal.text_secondary))
-        .style(button::text)
-        .padding([4, 0])
-        .on_press(Message::TogglePastReleases);
+    let toggle_btn = button(
+        text(toggle_label)
+            .size(FONT_LABEL)
+            .color(pal.text_secondary),
+    )
+    .style(button::text)
+    .padding([4, 0])
+    .on_press(Message::TogglePastReleases);
 
     if !expanded {
         return toggle_btn.into();
@@ -281,11 +284,7 @@ fn view_past_release_row<'a>(data: &'a ReleaseViewData, pal: &Palette) -> Elemen
     let pal = *pal;
     let status = data.status();
 
-    let info = format!(
-        "{}/{} epics",
-        data.closed_count(),
-        data.total_count(),
-    );
+    let info = format!("{}/{} epics", data.closed_count(), data.total_count(),);
 
     row![
         text(format!("v{}", data.release.version))
@@ -316,10 +315,7 @@ fn status_chip<'a>(status: ReleaseStatus, pal: &Palette) -> Element<'a, Message>
     container(text(label).size(FONT_SMALL).color(color))
         .padding([1, 6])
         .style(move |_theme: &Theme| container::Style {
-            background: Some(iced::Background::Color(iced::Color {
-                a: 0.15,
-                ..color
-            })),
+            background: Some(iced::Background::Color(iced::Color { a: 0.15, ..color })),
             border: iced::Border {
                 radius: 4.0.into(),
                 ..Default::default()
@@ -332,11 +328,11 @@ fn status_chip<'a>(status: ReleaseStatus, pal: &Palette) -> Element<'a, Message>
 /// Map spark status string to a display symbol.
 fn status_symbol(status: &str) -> &'static str {
     match status {
-        "open" => "\u{25CB}",       // ○
+        "open" => "\u{25CB}",        // ○
         "in_progress" => "\u{25D4}", // ◔
-        "blocked" => "\u{25A0}",    // ■
-        "deferred" => "\u{25CC}",   // ◌
-        "closed" => "\u{25CF}",     // ●
+        "blocked" => "\u{25A0}",     // ■
+        "deferred" => "\u{25CC}",    // ◌
+        "closed" => "\u{25CF}",      // ●
         _ => "\u{25CB}",
     }
 }
@@ -438,7 +434,9 @@ mod tests {
                 make_spark("sp-c", "Docs refresh", "open"),
             ],
         };
-        let state = ReleasesState { past_expanded: false };
+        let state = ReleasesState {
+            past_expanded: false,
+        };
         let pal = Palette::dark();
 
         // Build the view — must not panic and must produce an element.

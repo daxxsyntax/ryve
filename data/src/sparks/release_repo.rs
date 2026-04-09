@@ -14,54 +14,21 @@ use super::error::SparksError;
 use super::id::generate_id;
 use super::types::*;
 
-/// Validate that `s` looks like a semver string.
+/// Validate that `s` is a strict `MAJOR.MINOR.PATCH` semver string.
 ///
-/// We only store semver as text, so this is a light-weight parser that
-/// enforces the shape `MAJOR.MINOR.PATCH` with optional `-prerelease` and
-/// `+build` suffixes. It is intentionally stricter than the SQL layer can
-/// express with a CHECK constraint, and keeps the rules in Rust where
-/// callers get a typed error instead of a generic constraint violation.
+/// Pre-release tags (`-alpha`) and build metadata (`+build`) are rejected
+/// because the rest of the release pipeline (branching, tagging, artifacts)
+/// operates on strict `MAJOR.MINOR.PATCH` only.
 pub fn validate_semver(s: &str) -> Result<(), SparksError> {
     let invalid = || SparksError::InvalidSemver(s.to_string());
 
-    // Split off optional +build metadata first.
-    let (core_and_pre, build) = match s.split_once('+') {
-        Some((a, b)) => (a, Some(b)),
-        None => (s, None),
-    };
-    if let Some(b) = build {
-        if b.is_empty() {
-            return Err(invalid());
-        }
-        for part in b.split('.') {
-            if part.is_empty() || !part.chars().all(is_semver_ident_char) {
-                return Err(invalid());
-            }
-        }
+    // Reject pre-release and build metadata outright.
+    if s.contains('-') || s.contains('+') {
+        return Err(invalid());
     }
 
-    // Then split off the optional -prerelease segment.
-    let (core, pre) = match core_and_pre.split_once('-') {
-        Some((a, b)) => (a, Some(b)),
-        None => (core_and_pre, None),
-    };
-    if let Some(p) = pre {
-        if p.is_empty() {
-            return Err(invalid());
-        }
-        for part in p.split('.') {
-            if part.is_empty() || !part.chars().all(is_semver_ident_char) {
-                return Err(invalid());
-            }
-            // Numeric identifiers must not have leading zeros.
-            if part.chars().all(|c| c.is_ascii_digit()) && part.len() > 1 && part.starts_with('0') {
-                return Err(invalid());
-            }
-        }
-    }
-
-    // Core must be exactly three dotted numeric segments.
-    let parts: Vec<&str> = core.split('.').collect();
+    // Must be exactly three dotted numeric segments.
+    let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 3 {
         return Err(invalid());
     }
@@ -75,10 +42,6 @@ pub fn validate_semver(s: &str) -> Result<(), SparksError> {
     }
 
     Ok(())
-}
-
-fn is_semver_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-'
 }
 
 /// Create a new release in `planning` state.
@@ -155,14 +118,13 @@ pub async fn add_epic(
     let _ = get(pool, release_id).await?;
 
     let now = Utc::now().to_rfc3339();
-    let res = sqlx::query(
-        "INSERT INTO release_epics (release_id, spark_id, added_at) VALUES (?, ?, ?)",
-    )
-    .bind(release_id)
-    .bind(spark_id)
-    .bind(&now)
-    .execute(pool)
-    .await;
+    let res =
+        sqlx::query("INSERT INTO release_epics (release_id, spark_id, added_at) VALUES (?, ?, ?)")
+            .bind(release_id)
+            .bind(spark_id)
+            .bind(&now)
+            .execute(pool)
+            .await;
 
     match res {
         Ok(_) => Ok(()),
@@ -249,7 +211,6 @@ pub async fn record_close_metadata(
     Ok(())
 }
 
-
 /// Translate a raw sqlx error into a typed epic-conflict error when the
 /// message matches one of our triggers' ABORT strings.
 fn map_epic_conflict(err: sqlx::Error, spark_id: &str) -> SparksError {
@@ -268,18 +229,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_semver_accepts_common_shapes() {
-        for v in [
-            "0.0.0",
-            "1.2.3",
-            "10.20.30",
-            "1.0.0-alpha",
-            "1.0.0-alpha.1",
-            "1.0.0-0.3.7",
-            "1.0.0-x-y-z.-",
-            "1.0.0+build",
-            "1.0.0-rc.1+build.2",
-        ] {
+    fn validate_semver_accepts_strict_triples() {
+        for v in ["0.0.0", "1.2.3", "10.20.30"] {
             assert!(validate_semver(v).is_ok(), "expected {v} to parse");
         }
     }
@@ -287,7 +238,18 @@ mod tests {
     #[test]
     fn validate_semver_rejects_bad_input() {
         for v in [
-            "", "1", "1.2", "1.2.3.4", "1.2.a", "01.2.3", "1.2.3-", "1.2.3+", "1.2.3-α",
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.a",
+            "01.2.3",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0+build",
+            "1.0.0-rc.1+build.2",
         ] {
             assert!(validate_semver(v).is_err(), "expected {v} to be rejected");
         }

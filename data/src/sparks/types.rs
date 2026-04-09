@@ -1065,7 +1065,8 @@ pub struct Release {
 impl Release {
     /// Parse the stored `acceptance_json` blob into a vector of criteria.
     /// Returns an empty vec on any parse error — callers that care should
-    /// validate on write via `NewRelease::acceptance`.
+    /// validate on write before persistence, as `release_repo::create`
+    /// serializes `NewRelease.acceptance` directly.
     pub fn acceptance(&self) -> Vec<String> {
         serde_json::from_str(&self.acceptance_json).unwrap_or_default()
     }

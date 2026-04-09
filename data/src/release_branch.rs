@@ -97,11 +97,7 @@ impl ReleaseBranch {
             return Err(ReleaseBranchError::BranchAlreadyExists(branch));
         }
 
-        run_git(
-            &self.repo.path,
-            &["checkout", "-b", &branch, "main"],
-        )
-        .await?;
+        run_git(&self.repo.path, &["checkout", "-b", &branch, "main"]).await?;
 
         Ok(branch)
     }
@@ -152,20 +148,13 @@ impl ReleaseBranch {
 
         let tag = format!("v{version}");
         let message = format!("Release {version} (artifact: {})", artifact_path.display());
-        run_git(
-            &self.repo.path,
-            &["tag", "-a", &tag, "-m", &message],
-        )
-        .await?;
+        run_git(&self.repo.path, &["tag", "-a", &tag, "-m", &message]).await?;
 
         Ok(())
     }
 
     /// Returns `true` if a local `release/<version>` branch exists.
-    pub async fn release_branch_exists(
-        &self,
-        version: &str,
-    ) -> Result<bool, ReleaseBranchError> {
+    pub async fn release_branch_exists(&self, version: &str) -> Result<bool, ReleaseBranchError> {
         validate_version(version)?;
         let branch = release_branch_name(version);
         let refname = format!("refs/heads/{branch}");
@@ -277,7 +266,15 @@ mod tests {
     #[test]
     fn validate_version_rejects_non_semver() {
         for bad in [
-            "", "1", "1.2", "1.2.3.4", "1.2.x", "v1.2.3", "1.2.3-rc1", "1.2.3+build", "01.2.3",
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.x",
+            "v1.2.3",
+            "1.2.3-rc1",
+            "1.2.3+build",
+            "01.2.3",
         ] {
             assert!(
                 validate_version(bad).is_err(),

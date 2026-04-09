@@ -279,7 +279,7 @@ fn print_usage() {
     eprintln!("                                       Spawn a Hand subprocess on a spark");
     eprintln!("  hand list                            List active hand assignments");
     eprintln!();
-    eprintln!("  head spawn <epic_id> --archetype <build|research|review> \\");
+    eprintln!("  head spawn <epic_id> [--archetype <build|research|review>] \\");
     eprintln!("            [--agent <name>] [--crew <id>]");
     eprintln!("                                       Spawn a Head subprocess on an epic");
     eprintln!("  head list                            List active Head sessions");
@@ -292,7 +292,9 @@ fn print_usage() {
     eprintln!("  release add-epic <id> <epic_id>      Add an epic to a release");
     eprintln!("  release remove-epic <id> <epic_id>   Remove an epic from a release");
     eprintln!("  release status <id> <status>         Transition release status");
-    eprintln!("  release close <id>                   Close a release (verify, tag, build, record)");
+    eprintln!(
+        "  release close <id>                   Close a release (verify, tag, build, record)"
+    );
     eprintln!();
     eprintln!(
         "  worktree prune [--yes]               Prune stale hand worktrees (dry-run by default)"
@@ -1935,21 +1937,26 @@ ARGUMENTS:
                spawning).
 
 OPTIONS:
-  --agent <name>   Coding agent to run as the Head (claude, codex, aider,
-                   opencode, …). Defaults to the first detected agent.
-  --crew <id>      Attach the Head to an existing crew. Optional: most
-                   workflows create the crew from inside the Head itself
-                   via `ryve crew create --head-session $RYVE_SESSION_ID`.
+  --archetype <name>  Head archetype: build, research, or review.
+                      Defaults to build. See `ryve head archetype list`.
+  --agent <name>      Coding agent to run as the Head (claude, codex, aider,
+                      opencode, …). Defaults to the first detected agent.
+  --crew <id>         Attach the Head to an existing crew. Optional: most
+                      workflows create the crew from inside the Head itself
+                      via `ryve crew create --head-session $RYVE_SESSION_ID`.
 
 EFFECTS:
   1. Creates a git worktree for the Head at `.ryve/worktrees/<short>/`.
   2. Persists an `agent_sessions` row with `session_label = \"head\"`.
-  3. Persists a `hand_assignments` row claiming the epic with role Owner
-     (the Head \"owns\" the epic for the lifetime of its crew).
+  3. Creates or reuses a Crew (via `--crew`), registers the Head as a
+     crew member with role \"head\", and sets `head_session_id` on the
+     Crew row. No `hand_assignments` row is created — the Head's
+     relationship to the workgraph is carried by the Crew, not a spark
+     claim.
   4. Writes the Head system prompt (composed via `compose_head_prompt`,
-     injecting the epic id + title) to `.ryve/prompts/hand-<id>.md`.
+     injecting the epic id + title + archetype) to `.ryve/prompts/head-<id>.md`.
   5. Launches the agent in full-auto, detached, with stdout/stderr going
-     to `.ryve/logs/hand-<id>.log`.
+     to `.ryve/logs/head-<id>.log`.
 
 WORKED EXAMPLE:
   # 1. Create an epic capturing the goal:
@@ -1984,9 +1991,10 @@ WORKED EXAMPLE:
 /// `ryve head` — spawn and inspect Head crew orchestrators.
 ///
 /// A Head is mechanically a Hand (same worktree, same session machinery),
-/// distinguished by `session_label = \"head\"` and the Head system prompt.
-/// `ryve head spawn` delegates to the same `hand_spawn::spawn_hand`
-/// helper as `ryve hand spawn`, just with `HandKind::Head`.
+/// distinguished by `session_label = "head"` and the Head system prompt.
+/// `ryve head spawn` delegates to `hand_spawn::spawn_head`, which creates
+/// a Crew (or reuses one) and registers the Head as a crew member rather
+/// than creating a `hand_assignments` row.
 async fn handle_head(
     pool: &sqlx::SqlitePool,
     workshop_root: &Path,
@@ -2015,6 +2023,7 @@ async fn handle_head(
             let epic_id = args[1].clone();
             let mut agent_name: Option<String> = None;
             let mut crew_id: Option<String> = None;
+            let mut archetype_name: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -2030,6 +2039,12 @@ async fn handle_head(
                             crew_id = Some(args[i].clone());
                         }
                     }
+                    "--archetype" => {
+                        i += 1;
+                        if i < args.len() {
+                            archetype_name = Some(args[i].clone());
+                        }
+                    }
                     other => die(&format!(
                         "unknown head spawn flag '{other}'. Try `ryve head spawn --help`."
                     )),
@@ -2037,15 +2052,25 @@ async fn handle_head(
                 i += 1;
             }
 
+            let archetype = match archetype_name.as_deref() {
+                Some(name) => match HeadArchetype::from_str(name) {
+                    Some(a) => a,
+                    None => die(&format!(
+                        "unknown archetype '{name}': expected build, research, or review"
+                    )),
+                },
+                None => HeadArchetype::Build,
+            };
+
             let agent = resolve_agent(agent_name.as_deref());
             let parent_session_id = std::env::var("RYVE_HAND_SESSION_ID").ok();
 
-            match hand_spawn::spawn_hand(
+            match hand_spawn::spawn_head(
                 workshop_root,
                 pool,
                 &agent,
                 &epic_id,
-                HandKind::Head,
+                archetype,
                 crew_id.as_deref(),
                 parent_session_id.as_deref(),
             )
@@ -2055,7 +2080,9 @@ async fn handle_head(
                     if json_mode {
                         let payload = serde_json::json!({
                             "session_id": spawned.session_id,
-                            "epic_id": spawned.spark_id,
+                            "epic_id": spawned.epic_id,
+                            "crew_id": spawned.crew_id,
+                            "archetype": spawned.archetype.as_str(),
                             "worktree": spawned.worktree_path,
                             "log": spawned.log_path,
                             "pid": spawned.child_pid,
@@ -2068,8 +2095,10 @@ async fn handle_head(
                     } else {
                         println!(
                             "spawned head {} on epic {} (pid {:?})",
-                            spawned.session_id, spawned.spark_id, spawned.child_pid
+                            spawned.session_id, spawned.epic_id, spawned.child_pid
                         );
+                        println!("  archetype: {}", spawned.archetype.as_str());
+                        println!("  crew:     {}", spawned.crew_id);
                         println!("  worktree: {}", spawned.worktree_path.display());
                         println!("  log:      {}", spawned.log_path.display());
                         println!(
@@ -2453,7 +2482,9 @@ async fn handle_release(
     json_mode: bool,
 ) {
     if args.is_empty() {
-        die("release subcommand required (create, list, show, add-epic, remove-epic, status, close)");
+        die(
+            "release subcommand required (create, list, show, add-epic, remove-epic, status, close)",
+        );
     }
     match args[0].as_str() {
         "create" => {
@@ -2469,11 +2500,14 @@ async fn handle_release(
                 )),
             };
 
-            // Find the most recent closed release version to bump from.
+            // Find the maximum semver among closed releases to bump from.
             let closed = release_repo::list(pool, Some(vec![ReleaseStatus::Closed]))
                 .await
                 .unwrap_or_default();
-            let prev = closed.first().and_then(|r| data::release_version::parse(&r.version).ok());
+            let prev = closed
+                .iter()
+                .filter_map(|r| data::release_version::parse(&r.version).ok())
+                .max();
             let version = match data::release_version::next(prev, bump) {
                 Ok(v) => data::release_version::format(v),
                 Err(e) => die(&format!("version computation failed: {e}")),
@@ -2489,10 +2523,40 @@ async fn handle_release(
             };
             match release_repo::create(pool, new).await {
                 Ok(r) => {
-                    if json_mode {
-                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
-                    } else {
-                        println!("created {} — v{} ({})", r.id, r.version, r.status);
+                    // Cut the release branch so the DB row and the git
+                    // branch are created atomically from the CLI's
+                    // perspective.
+                    let rb = data::release_branch::open(workshop_root);
+                    match rb.cut_release_branch(&r.version).await {
+                        Ok(branch) => {
+                            if json_mode {
+                                let payload = serde_json::json!({
+                                    "release": r,
+                                    "branch": branch,
+                                });
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                                );
+                            } else {
+                                println!("created {} — v{} ({})", r.id, r.version, r.status);
+                                println!("  branch: {branch}");
+                            }
+                        }
+                        Err(e) => {
+                            // The DB row was created but branch cutting
+                            // failed. Report both so the user can retry
+                            // the branch cut manually.
+                            eprintln!("warning: release row created but branch cut failed: {e}");
+                            if json_mode {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&r).unwrap_or_default()
+                                );
+                            } else {
+                                println!("created {} — v{} ({})", r.id, r.version, r.status);
+                            }
+                        }
                     }
                 }
                 Err(e) => die(&format!("{e}")),
@@ -2704,8 +2768,36 @@ async fn release_close(
         ));
     }
 
-    // 2. Tag the release branch.
+    // 2. Checkout the release branch so tag_release finds HEAD on the
+    //    expected branch. We restore the original branch afterwards.
     let rb = data::release_branch::open(workshop_root);
+    let original_branch = {
+        let out = tokio::process::Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(workshop_root)
+            .output()
+            .await;
+        out.ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let release_branch = data::release_branch::release_branch_name(&release.version);
+    let checkout_out = tokio::process::Command::new("git")
+        .args(["checkout", &release_branch])
+        .current_dir(workshop_root)
+        .output()
+        .await;
+    match checkout_out {
+        Ok(o) if !o.status.success() => {
+            die(&format!(
+                "failed to checkout release branch {release_branch}: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ));
+        }
+        Err(e) => die(&format!("failed to checkout release branch: {e}")),
+        _ => {}
+    }
+
     let tag_name = format!("v{}", release.version);
     // We need an artifact path for the tag message — use the deterministic
     // path even though the artifact doesn't exist yet. The tag message is
@@ -2714,31 +2806,33 @@ async fn release_close(
         Ok(t) => t,
         Err(e) => die(&format!("failed to determine host target triple: {e}")),
     };
-    let anticipated_artifact = crate::release_artifact::artifact_path_for(
-        workshop_root,
-        &release.version,
-        &target_triple,
-    );
-    if let Err(e) = rb.tag_release(&release.version, &anticipated_artifact).await {
+    let anticipated_artifact =
+        crate::release_artifact::artifact_path_for(workshop_root, &release.version, &target_triple);
+    if let Err(e) = rb
+        .tag_release(&release.version, &anticipated_artifact)
+        .await
+    {
         die(&format!("failed to tag release: {e}"));
     }
 
     // 3. Build the artifact.
-    let artifact_path =
-        match crate::release_artifact::build_release_artifact(workshop_root, &release.version)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                // Rollback: delete the tag we just created.
-                let _ = tokio::process::Command::new("git")
-                    .args(["tag", "-d", &tag_name])
-                    .current_dir(workshop_root)
-                    .output()
-                    .await;
-                die(&format!("artifact build failed (tag rolled back): {e}"));
-            }
-        };
+    let artifact_path = match crate::release_artifact::build_release_artifact(
+        workshop_root,
+        &release.version,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            // Rollback: delete the tag we just created.
+            let _ = tokio::process::Command::new("git")
+                .args(["tag", "-d", &tag_name])
+                .current_dir(workshop_root)
+                .output()
+                .await;
+            die(&format!("artifact build failed (tag rolled back): {e}"));
+        }
+    };
 
     // 4. Record metadata on the release row.
     if let Err(e) = release_repo::record_close_metadata(
@@ -2782,10 +2876,11 @@ async fn release_close(
         }
         Err(e) => {
             // Rollback: clear metadata, delete tag, remove artifact.
-            let _ = sqlx::query("UPDATE releases SET tag = NULL, artifact_path = NULL WHERE id = ?")
-                .bind(release_id)
-                .execute(pool)
-                .await;
+            let _ =
+                sqlx::query("UPDATE releases SET tag = NULL, artifact_path = NULL WHERE id = ?")
+                    .bind(release_id)
+                    .execute(pool)
+                    .await;
             let _ = tokio::process::Command::new("git")
                 .args(["tag", "-d", &tag_name])
                 .current_dir(workshop_root)
@@ -2796,6 +2891,16 @@ async fn release_close(
                 "failed to transition to closed (tag + artifact + metadata rolled back): {e}"
             ));
         }
+    }
+
+    // 6. Restore the original branch so the working tree is back where
+    //    the user started.
+    if let Some(ref branch) = original_branch {
+        let _ = tokio::process::Command::new("git")
+            .args(["checkout", branch])
+            .current_dir(workshop_root)
+            .output()
+            .await;
     }
 }
 

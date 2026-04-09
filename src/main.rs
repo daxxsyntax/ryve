@@ -341,7 +341,11 @@ enum Message {
     StatusBar(screen::status_bar::Message),
 
     /// Release data loaded from DB (all releases + member epic IDs).
-    ReleasesLoaded(Uuid, Vec<data::sparks::types::Release>, Vec<(String, Vec<String>)>),
+    ReleasesLoaded(
+        Uuid,
+        Vec<data::sparks::types::Release>,
+        Vec<(String, Vec<String>)>,
+    ),
 
     /// Background image loaded from disk
     BackgroundLoaded(Uuid, Option<Vec<u8>>),
@@ -2636,12 +2640,15 @@ impl App {
             }
             Message::ReleasesLoaded(id, releases, epic_ids_per_release) => {
                 if let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == id) {
+                    // Build a HashMap keyed by release_id for robust
+                    // joining instead of fragile index correlation.
+                    let epic_map: std::collections::HashMap<&str, &[String]> = epic_ids_per_release
+                        .iter()
+                        .map(|(rid, ids)| (rid.as_str(), ids.as_slice()))
+                        .collect();
                     let mut view_data = Vec::new();
-                    for (i, release) in releases.into_iter().enumerate() {
-                        let epic_ids = epic_ids_per_release
-                            .get(i)
-                            .map(|(_, ids)| ids.as_slice())
-                            .unwrap_or(&[]);
+                    for release in releases.into_iter() {
+                        let epic_ids = epic_map.get(release.id.as_str()).copied().unwrap_or(&[]);
                         let member_epics: Vec<_> = epic_ids
                             .iter()
                             .filter_map(|eid| ws.sparks.iter().find(|s| s.id == *eid).cloned())
@@ -4764,13 +4771,8 @@ impl App {
             })
             .unwrap_or_default();
         let sparks_panel = if ws.show_releases {
-            screen::releases::view(
-                &ws.release_view_data,
-                &ws.releases_state,
-                &pal,
-                has_bg,
-            )
-            .map(Message::Releases)
+            screen::releases::view(&ws.release_view_data, &ws.releases_state, &pal, has_bg)
+                .map(Message::Releases)
         } else if let Some(ref selected_id) = ws.selected_spark {
             if let Some(spark) = ws.sparks.iter().find(|s| s.id == *selected_id) {
                 screen::spark_detail::view(

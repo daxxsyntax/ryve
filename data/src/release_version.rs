@@ -221,19 +221,28 @@ mod tests {
     #[test]
     fn major_bump_resets_minor_and_patch() {
         let prev = Version::new(1, 4, 7);
-        assert_eq!(next(Some(prev), Bump::Major).unwrap(), Version::new(2, 0, 0));
+        assert_eq!(
+            next(Some(prev), Bump::Major).unwrap(),
+            Version::new(2, 0, 0)
+        );
     }
 
     #[test]
     fn minor_bump_resets_patch() {
         let prev = Version::new(1, 4, 7);
-        assert_eq!(next(Some(prev), Bump::Minor).unwrap(), Version::new(1, 5, 0));
+        assert_eq!(
+            next(Some(prev), Bump::Minor).unwrap(),
+            Version::new(1, 5, 0)
+        );
     }
 
     #[test]
     fn patch_bump_increments_patch_only() {
         let prev = Version::new(1, 4, 7);
-        assert_eq!(next(Some(prev), Bump::Patch).unwrap(), Version::new(1, 4, 8));
+        assert_eq!(
+            next(Some(prev), Bump::Patch).unwrap(),
+            Version::new(1, 4, 8)
+        );
     }
 
     #[test]
