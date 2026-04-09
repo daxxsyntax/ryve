@@ -16,16 +16,15 @@ use crate::style::{
 // ── State ────────────────────────────────────────────
 
 /// Inline create form state, held on the Workshop. The form enforces a
-/// minimum set of fields before submission: title, type, priority, problem
-/// statement, at least one acceptance criterion, and (when the type is not
-/// `epic`) a parent epic to nest the new spark under.
+/// minimum set of fields before submission: title, type, priority, and
+/// (when the type is not `epic`) a parent epic to nest the new spark
+/// under. Intent fields (problem, invariants, acceptance) are intentionally
+/// absent — they are edited from the spark detail panel after creation.
 #[derive(Debug, Clone, Default)]
 pub struct CreateForm {
     pub title: String,
     pub spark_type: String,
     pub priority: i32,
-    pub problem: String,
-    pub acceptance: String,
     pub parent_epic_id: Option<String>,
     pub error: Option<String>,
     pub visible: bool,
@@ -39,14 +38,26 @@ impl CreateForm {
         self.title.clear();
         self.spark_type = "task".to_string();
         self.priority = 2;
-        self.problem.clear();
-        self.acceptance.clear();
         self.parent_epic_id = None;
         self.error = None;
     }
 
+    /// Open the form with an optional pre-selected parent epic. Used by
+    /// the "+" button handler so that the parent picker defaults to the
+    /// focused spark's nearest epic ancestor when available.
+    pub fn open_with_default_parent(&mut self, default_parent: Option<String>) {
+        self.reset();
+        self.parent_epic_id = default_parent;
+        self.visible = true;
+    }
+
     /// Validate the form and return the first missing-field error, if
     /// any. `Ok(())` means the form is safe to submit.
+    ///
+    /// The rules here MUST mirror the data-layer `create_spark` invariant
+    /// (see spark ryve-6bc1c9cc): non-epic sparks require a parent, epics
+    /// may be top-level. If the data layer ever tightens, this must
+    /// tighten in lockstep.
     pub fn validate(&self) -> Result<(), String> {
         if self.title.trim().is_empty() {
             return Err("Title is required.".to_string());
@@ -54,17 +65,45 @@ impl CreateForm {
         if self.spark_type.is_empty() {
             return Err("Pick a spark type.".to_string());
         }
-        if self.problem.trim().is_empty() {
-            return Err("Problem statement is required.".to_string());
-        }
-        if self.acceptance.trim().is_empty() {
-            return Err("At least one acceptance criterion is required.".to_string());
-        }
         if self.spark_type != "epic" && self.parent_epic_id.is_none() {
             return Err("Pick a parent epic (only epics may be top-level).".to_string());
         }
         Ok(())
     }
+
+    /// Cheap wrapper used by the view to decide whether the Submit button
+    /// should be enabled. Kept in sync with `validate` — any rule added
+    /// there automatically gates the button.
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+}
+
+/// Resolve the parent epic id to pre-fill when the "+" button is clicked.
+///
+/// - If nothing is focused, return `None` (user must pick, unless creating
+///   an epic).
+/// - If the focused spark is itself an epic, return its id (new spark
+///   nests directly under it).
+/// - Otherwise walk `parent_id` links upward until we find an epic and
+///   return it. If the chain contains no epic (shouldn't happen in a
+///   well-formed workgraph, but may during migration), return `None`.
+pub fn resolve_default_parent_epic(
+    sparks: &[Spark],
+    focused_id: Option<&str>,
+) -> Option<String> {
+    let focused_id = focused_id?;
+    // Quick index by id so the walk is O(depth) not O(n*depth).
+    let mut cursor = sparks.iter().find(|s| s.id == focused_id)?;
+    // Guard against cycles or unusually deep chains.
+    for _ in 0..64 {
+        if cursor.spark_type == "epic" {
+            return Some(cursor.id.clone());
+        }
+        let parent_id = cursor.parent_id.as_deref()?;
+        cursor = sparks.iter().find(|s| s.id == parent_id)?;
+    }
+    None
 }
 
 // ── Status menu ──────────────────────────────────────
@@ -128,8 +167,6 @@ pub enum Message {
     CreateFormTitleChanged(String),
     CreateFormTypeChanged(String),
     CreateFormPriorityChanged(i32),
-    CreateFormProblemChanged(String),
-    CreateFormAcceptanceChanged(String),
     CreateFormParentEpicChanged(Option<String>),
     SubmitNewSpark,
     CancelCreate,
@@ -281,16 +318,6 @@ fn view_create_form<'a>(
         .on_input(Message::CreateFormTitleChanged)
         .on_submit(Message::SubmitNewSpark);
 
-    let problem_input = text_input("Problem statement (required)", &form.problem)
-        .size(FONT_BODY)
-        .padding([6, 8])
-        .on_input(Message::CreateFormProblemChanged);
-
-    let acceptance_input = text_input("Acceptance criterion (required)", &form.acceptance)
-        .size(FONT_BODY)
-        .padding([6, 8])
-        .on_input(Message::CreateFormAcceptanceChanged);
-
     // ── error banner ──
     let error_banner: Element<Message> = if let Some(err) = &form.error {
         text(err.as_str()).size(FONT_SMALL).color(pal.danger).into()
@@ -298,11 +325,27 @@ fn view_create_form<'a>(
         Space::new().height(0).into()
     };
 
+    // Submit button is gated on `is_valid()` — passing `None` to
+    // `on_press_maybe` renders the button as disabled so the user cannot
+    // attempt to persist an invalid spark. This keeps the UI mirror of
+    // the data-layer invariant tight: you can't even *try* to submit an
+    // orphan non-epic from the panel.
+    let submit_msg = if form.is_valid() {
+        Some(Message::SubmitNewSpark)
+    } else {
+        None
+    };
+    let submit_color = if form.is_valid() {
+        pal.accent
+    } else {
+        pal.text_tertiary
+    };
+
     let actions = row![
-        button(text("Create").size(FONT_LABEL).color(pal.accent))
+        button(text("Create").size(FONT_LABEL).color(submit_color))
             .style(button::text)
             .padding([3, 8])
-            .on_press(Message::SubmitNewSpark),
+            .on_press_maybe(submit_msg),
         button(text("Cancel").size(FONT_LABEL).color(pal.text_tertiary))
             .style(button::text)
             .padding([3, 8])
@@ -319,10 +362,6 @@ fn view_create_form<'a>(
         prio_chips,
         section_label("Parent epic", &pal),
         parent_section,
-        section_label("Problem statement", &pal),
-        problem_input,
-        section_label("Acceptance criterion", &pal),
-        acceptance_input,
         error_banner,
         actions,
     ]
@@ -538,6 +577,133 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mk_spark(id: &str, spark_type: &str, parent: Option<&str>) -> Spark {
+        Spark {
+            id: id.to_string(),
+            title: format!("{id} title"),
+            description: String::new(),
+            status: "open".to_string(),
+            priority: 2,
+            spark_type: spark_type.to_string(),
+            assignee: None,
+            owner: None,
+            parent_id: parent.map(|p| p.to_string()),
+            workshop_id: "ws-1".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            closed_at: None,
+            due_at: None,
+            defer_until: None,
+            estimated_minutes: None,
+            metadata: "{}".to_string(),
+            closed_reason: None,
+            risk_level: Some("normal".to_string()),
+            scope_boundary: None,
+            github_issue_number: None,
+            github_repo: None,
+        }
+    }
+
+    #[test]
+    fn validate_requires_title() {
+        let mut f = CreateForm::default();
+        f.spark_type = "epic".into();
+        assert!(f.validate().is_err());
+        f.title = "hello".into();
+        assert!(f.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_orphan_non_epic() {
+        // Mirrors the data-layer invariant: non-epic without parent =>
+        // error. Epic with no parent is fine.
+        let mut f = CreateForm {
+            title: "task".into(),
+            spark_type: "task".into(),
+            priority: 2,
+            parent_epic_id: None,
+            error: None,
+            visible: true,
+        };
+        assert!(f.validate().is_err());
+        assert!(!f.is_valid());
+        f.parent_epic_id = Some("ryve-epic".into());
+        assert!(f.validate().is_ok());
+        assert!(f.is_valid());
+    }
+
+    #[test]
+    fn validate_allows_top_level_epic() {
+        let f = CreateForm {
+            title: "epic".into(),
+            spark_type: "epic".into(),
+            priority: 1,
+            parent_epic_id: None,
+            error: None,
+            visible: true,
+        };
+        assert!(f.is_valid());
+    }
+
+    #[test]
+    fn open_with_default_parent_seeds_and_shows() {
+        let mut f = CreateForm::default();
+        f.open_with_default_parent(Some("ryve-epic".into()));
+        assert!(f.visible);
+        assert_eq!(f.parent_epic_id.as_deref(), Some("ryve-epic"));
+        assert_eq!(f.spark_type, "task");
+        assert_eq!(f.priority, 2);
+    }
+
+    #[test]
+    fn open_with_no_default_parent_leaves_empty() {
+        let mut f = CreateForm::default();
+        f.open_with_default_parent(None);
+        assert!(f.visible);
+        assert!(f.parent_epic_id.is_none());
+    }
+
+    #[test]
+    fn default_parent_none_when_nothing_focused() {
+        let sparks = vec![mk_spark("a", "epic", None)];
+        assert!(resolve_default_parent_epic(&sparks, None).is_none());
+    }
+
+    #[test]
+    fn default_parent_is_focused_epic_itself() {
+        let sparks = vec![mk_spark("epic-1", "epic", None)];
+        let out = resolve_default_parent_epic(&sparks, Some("epic-1"));
+        assert_eq!(out.as_deref(), Some("epic-1"));
+    }
+
+    #[test]
+    fn default_parent_is_focused_tasks_parent_epic() {
+        let sparks = vec![
+            mk_spark("epic-1", "epic", None),
+            mk_spark("task-1", "task", Some("epic-1")),
+        ];
+        let out = resolve_default_parent_epic(&sparks, Some("task-1"));
+        assert_eq!(out.as_deref(), Some("epic-1"));
+    }
+
+    #[test]
+    fn default_parent_walks_nested_chain_to_epic() {
+        // task -> task -> epic : the closest epic ancestor is returned.
+        let sparks = vec![
+            mk_spark("epic-1", "epic", None),
+            mk_spark("mid", "task", Some("epic-1")),
+            mk_spark("leaf", "task", Some("mid")),
+        ];
+        let out = resolve_default_parent_epic(&sparks, Some("leaf"));
+        assert_eq!(out.as_deref(), Some("epic-1"));
+    }
+
+    #[test]
+    fn default_parent_none_when_focused_id_missing() {
+        let sparks = vec![mk_spark("epic-1", "epic", None)];
+        assert!(resolve_default_parent_epic(&sparks, Some("ghost")).is_none());
+    }
 
     #[test]
     fn status_menu_dismiss_clears_state() {
