@@ -161,9 +161,25 @@ fn build_tree(
                 .cmp(&b.name.to_ascii_lowercase()),
         });
 
-        for entry in raw {
+        // Spawn directory recursions in parallel, preserving sort order.
+        let mut handles: Vec<Option<tokio::task::JoinHandle<Vec<FileNode>>>> =
+            Vec::with_capacity(raw.len());
+        for entry in &raw {
             if entry.is_dir {
-                let children = build_tree(entry.path.clone(), depth + 1, ignore.clone()).await;
+                let p = entry.path.clone();
+                let d = depth + 1;
+                let ig = ignore.clone();
+                handles.push(Some(tokio::spawn(
+                    async move { build_tree(p, d, ig).await },
+                )));
+            } else {
+                handles.push(None);
+            }
+        }
+
+        for (entry, handle) in raw.into_iter().zip(handles) {
+            if entry.is_dir {
+                let children = handle.unwrap().await.unwrap_or_default();
                 nodes.push(FileNode {
                     path: entry.path,
                     name: entry.name,
