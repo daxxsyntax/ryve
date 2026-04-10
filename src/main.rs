@@ -2288,7 +2288,10 @@ impl App {
                                 started_at,
                                 can_resume,
                             } => {
-                                let when = screen::agents::format_relative_time(&started_at);
+                                let when = screen::agents::format_relative_time(
+                                    &started_at,
+                                    chrono::Utc::now(),
+                                );
                                 let body = if can_resume {
                                     format!(
                                         "Past session started {when}. Click \u{25B6} to resume."

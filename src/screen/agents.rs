@@ -487,6 +487,7 @@ pub fn view<'a>(
     pal: Palette,
 ) -> Element<'a, Message> {
     let now = Instant::now();
+    let utc_now = chrono::Utc::now();
     // Panel title is "Activity" (not "Hands") because the panel actually
     // shows the entire orchestration tree — Heads, Crews, leaf Hands,
     // and history — not just Hands. The inner section labels ("Active",
@@ -561,7 +562,13 @@ pub fn view<'a>(
         let total = history_filtered.len();
         let limit = state.history_limit.min(total);
         for session in history_filtered.iter().take(limit) {
-            content = content.push(render_history_row(session, assignments, sparks, &pal));
+            content = content.push(render_history_row(
+                session,
+                assignments,
+                sparks,
+                &pal,
+                utc_now,
+            ));
         }
 
         if total > limit {
@@ -611,7 +618,7 @@ pub fn view<'a>(
 
         if !state.stale_collapsed {
             for session in &stale {
-                content = content.push(render_stale_row(session, &pal));
+                content = content.push(render_stale_row(session, &pal, utc_now));
             }
         }
     }
@@ -957,6 +964,7 @@ fn render_history_row<'a>(
     assignments: &'a [HandAssignment],
     sparks: &'a [Spark],
     pal: &Palette,
+    utc_now: chrono::DateTime<chrono::Utc>,
 ) -> Element<'a, Message> {
     // Per product decision: history rows are read-only. Click does
     // nothing (no resume, no spy view) — the spark captures the outcome.
@@ -981,7 +989,7 @@ fn render_history_row<'a>(
         .size(FONT_BODY)
         .color(pal.text_secondary)
         .width(Length::Fill);
-    let time_label = text(format_relative_time(&session.started_at))
+    let time_label = text(format_relative_time(&session.started_at, utc_now))
         .size(FONT_SMALL)
         .color(pal.text_tertiary);
 
@@ -1024,7 +1032,11 @@ fn render_history_row<'a>(
         .into()
 }
 
-fn render_stale_row<'a>(session: &'a AgentSession, pal: &Palette) -> Element<'a, Message> {
+fn render_stale_row<'a>(
+    session: &'a AgentSession,
+    pal: &Palette,
+    utc_now: chrono::DateTime<chrono::Utc>,
+) -> Element<'a, Message> {
     let warn = text("\u{26A0}").size(FONT_ICON_SM).color(pal.danger);
     let agent_icon = svg(icons::ui_icon(icons::agent_icon_for_command(
         &session.agent.command,
@@ -1035,7 +1047,7 @@ fn render_stale_row<'a>(session: &'a AgentSession, pal: &Palette) -> Element<'a,
     let label = text(&session.name)
         .size(FONT_BODY)
         .color(pal.text_secondary);
-    let time_label = text(format_relative_time(&session.started_at))
+    let time_label = text(format_relative_time(&session.started_at, utc_now))
         .size(FONT_SMALL)
         .color(pal.text_tertiary);
     let badge = text("stale").size(FONT_SMALL).color(pal.danger);
@@ -1102,21 +1114,11 @@ fn spark_chip<'a>(spark_id: &str, pal: &Palette) -> Element<'a, Message> {
 }
 
 /// Format an RFC 3339 timestamp as a short relative time string (e.g. "2h ago", "3d ago").
-pub fn format_relative_time(rfc3339: &str) -> String {
-    let Ok(then) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
-        return String::new();
-    };
-    let duration = chrono::Utc::now().signed_duration_since(then);
-
-    if duration.num_minutes() < 1 {
-        "now".to_string()
-    } else if duration.num_minutes() < 60 {
-        format!("{}m ago", duration.num_minutes())
-    } else if duration.num_hours() < 24 {
-        format!("{}h ago", duration.num_hours())
-    } else {
-        format!("{}d ago", duration.num_days())
-    }
+///
+/// Delegates to [`perf_core::format_relative_time`] so the hot path is
+/// benchmarkable without pulling in the UI crate.
+pub fn format_relative_time(rfc3339: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    perf_core::format_relative_time(rfc3339, now)
 }
 
 #[cfg(test)]
@@ -1212,13 +1214,13 @@ mod tests {
 
     #[test]
     fn format_relative_time_handles_invalid_input() {
-        assert_eq!(format_relative_time("not a date"), "");
+        assert_eq!(format_relative_time("not a date", chrono::Utc::now()), "");
     }
 
     #[test]
     fn format_relative_time_returns_now_for_recent() {
-        let now = chrono::Utc::now().to_rfc3339();
-        assert_eq!(format_relative_time(&now), "now");
+        let now = chrono::Utc::now();
+        assert_eq!(format_relative_time(&now.to_rfc3339(), now), "now");
     }
 
     #[test]
