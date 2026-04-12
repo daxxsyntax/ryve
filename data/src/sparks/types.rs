@@ -676,72 +676,6 @@ pub enum ConstraintSeverity {
 
 // ── Assignment ───────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Assignment {
-    pub assignment_id: String,
-    pub spark_id: String,
-    pub actor_id: String,
-    pub assignment_phase: String,
-    pub source_branch: Option<String>,
-    pub target_branch: Option<String>,
-    pub event_version: i64,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-pub struct NewAssignment {
-    pub spark_id: String,
-    pub actor_id: String,
-    pub assignment_phase: AssignmentPhase,
-    pub source_branch: Option<String>,
-    pub target_branch: Option<String>,
-}
-
-pub struct UpdateAssignment {
-    pub event_version: Option<i64>,
-    pub source_branch: Option<Option<String>>,
-    pub target_branch: Option<Option<String>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssignmentPhase {
-    Claimed,
-    Working,
-    Review,
-    Merging,
-    Done,
-    Abandoned,
-}
-
-impl AssignmentPhase {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Claimed => "claimed",
-            Self::Working => "working",
-            Self::Review => "review",
-            Self::Merging => "merging",
-            Self::Done => "done",
-            Self::Abandoned => "abandoned",
-        }
-    }
-
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "claimed" => Some(Self::Claimed),
-            "working" => Some(Self::Working),
-            "review" => Some(Self::Review),
-            "merging" => Some(Self::Merging),
-            "done" => Some(Self::Done),
-            "abandoned" => Some(Self::Abandoned),
-            _ => None,
-        }
-    }
-}
-
-// ── Hand Assignment ──────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssignmentStatus {
@@ -799,12 +733,16 @@ impl AssignmentRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct HandAssignment {
+pub struct Assignment {
     pub id: i64,
     pub session_id: String,
     pub spark_id: String,
     pub status: String,
     pub role: String,
+    pub phase: String,
+    pub event_version: i64,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
     pub assigned_at: String,
     pub last_heartbeat_at: Option<String>,
     pub lease_expires_at: Option<String>,
@@ -824,10 +762,15 @@ pub struct HandAssignment {
     pub phase_event_id: Option<i64>,
 }
 
-pub struct NewHandAssignment {
+/// Backward-compatible alias for code that still references HandAssignment.
+pub type HandAssignment = Assignment;
+
+pub struct NewAssignment {
     pub session_id: String,
     pub spark_id: String,
     pub role: AssignmentRole,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
 }
 
 // ── Assignment Phase (transition state machine) ─────
@@ -926,6 +869,9 @@ impl TransitionActorRole {
         matches!(self, Self::Head | Self::Director)
     }
 }
+
+/// Backward-compatible alias for code that still references NewHandAssignment.
+pub type NewHandAssignment = NewAssignment;
 
 // ── Crew ──────────────────────────────────────────────
 
