@@ -1132,6 +1132,86 @@ pub struct ReleaseEpic {
     pub added_at: String,
 }
 
+// ── Assignment (phase-based) ────────────────────────
+//
+// A phase-lifecycle assignment linking an actor to a spark. Distinct from
+// `HandAssignment` which tracks session-level claims with heartbeats.
+// Schema version 1 — adding a phase variant requires a schema_version bump.
+
+/// Phase of an assignment's lifecycle.
+///
+/// **Invariant:** variant order is stable and versioned. Adding a new phase
+/// requires a corresponding schema_version bump in the assignments table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "TEXT", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum AssignmentPhase {
+    Assigned,
+    InProgress,
+    AwaitingReview,
+    Approved,
+    Rejected,
+    InRepair,
+    ReadyForMerge,
+    Merged,
+}
+
+impl AssignmentPhase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Assigned => "assigned",
+            Self::InProgress => "in_progress",
+            Self::AwaitingReview => "awaiting_review",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::InRepair => "in_repair",
+            Self::ReadyForMerge => "ready_for_merge",
+            Self::Merged => "merged",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "assigned" => Some(Self::Assigned),
+            "in_progress" => Some(Self::InProgress),
+            "awaiting_review" => Some(Self::AwaitingReview),
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
+            "in_repair" => Some(Self::InRepair),
+            "ready_for_merge" => Some(Self::ReadyForMerge),
+            "merged" => Some(Self::Merged),
+            _ => None,
+        }
+    }
+
+    /// All phases in lifecycle order.
+    pub const ALL: &'static [Self] = &[
+        Self::Assigned,
+        Self::InProgress,
+        Self::AwaitingReview,
+        Self::Approved,
+        Self::Rejected,
+        Self::InRepair,
+        Self::ReadyForMerge,
+        Self::Merged,
+    ];
+}
+
+/// A phase-lifecycle assignment row from the `assignments` table.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Assignment {
+    pub assignment_id: String,
+    pub spark_id: String,
+    pub actor_id: String,
+    pub assignment_phase: String,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
+    pub event_version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1190,5 +1270,29 @@ mod tests {
             let back: AgentRole = serde_json::from_str(&json).unwrap();
             assert_eq!(role, back, "round-trip mismatch for {role:?}");
         }
+    }
+
+    #[test]
+    fn assignment_phase_as_str_round_trips() {
+        for phase in AssignmentPhase::ALL {
+            let s = phase.as_str();
+            let back =
+                AssignmentPhase::from_str(s).unwrap_or_else(|| panic!("from_str failed for {s:?}"));
+            assert_eq!(*phase, back);
+        }
+    }
+
+    #[test]
+    fn assignment_phase_serde_round_trips() {
+        for phase in AssignmentPhase::ALL {
+            let json = serde_json::to_string(phase).unwrap();
+            let back: AssignmentPhase = serde_json::from_str(&json).unwrap();
+            assert_eq!(*phase, back, "serde round-trip mismatch for {phase:?}");
+        }
+    }
+
+    #[test]
+    fn assignment_phase_all_has_expected_count() {
+        assert_eq!(AssignmentPhase::ALL.len(), 8);
     }
 }
