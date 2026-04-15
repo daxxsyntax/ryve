@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use data::backup::{
-    self, DEFAULT_BACKUP_RETENTION, SNAPSHOT_PREFIX, Snapshot, apply_retention,
-    emit_backup_failure_flare, list_snapshots, parse_stamp, restore_snapshot, snapshot_and_retain,
-    take_snapshot,
+    self, DEFAULT_BACKUP_RETENTION, RetentionPolicy, SNAPSHOT_PREFIX, Snapshot, apply_retention,
+    emit_backup_failure_flare, list_snapshots, parse_stamp, restore_snapshot, retained_indices,
+    snapshot_and_retain, take_snapshot,
 };
 use data::db::open_sparks_db;
 use data::ryve_dir::RyveDir;
@@ -154,12 +154,18 @@ async fn apply_retention_prunes_oldest_snapshots() {
         .unwrap();
     }
 
-    let deleted = apply_retention(&ryve_dir, 2).await.expect("retention");
-    assert_eq!(deleted.len(), 3, "keep=2 of 5 means 3 deleted");
+    let policy = RetentionPolicy {
+        keep_recent: 2,
+        keep_daily_days: 0,
+        keep_weekly_weeks: 0,
+    };
+    let deleted = apply_retention(&ryve_dir, &policy)
+        .await
+        .expect("retention");
+    assert_eq!(deleted.len(), 3, "keep_recent=2 of 5 means 3 deleted");
 
     let remaining: Vec<Snapshot> = list_snapshots(&ryve_dir).await.unwrap();
     assert_eq!(remaining.len(), 2);
-    // The two newest ones should remain.
     let kept_names: Vec<String> = remaining.iter().map(|s| s.file_name()).collect();
     assert!(kept_names[0].contains("20260104"));
     assert!(kept_names[1].contains("20260105"));
@@ -178,7 +184,15 @@ async fn apply_retention_zero_keeps_everything() {
     .await
     .unwrap();
 
-    let deleted = apply_retention(&ryve_dir, 0).await.expect("retention");
+    let policy = RetentionPolicy {
+        keep_recent: 0,
+        keep_daily_days: 0,
+        keep_weekly_weeks: 0,
+    };
+    let deleted = apply_retention(&ryve_dir, &policy)
+        .await
+        .expect("retention");
+    // Even with all windows at zero, the most-recent snapshot is never deleted.
     assert!(deleted.is_empty());
     let remaining = list_snapshots(&ryve_dir).await.unwrap();
     assert_eq!(remaining.len(), 1);
@@ -194,16 +208,17 @@ async fn snapshot_and_retain_prunes_after_writing() {
         .join(format!("{SNAPSHOT_PREFIX}20000101T000000Z.db"));
     tokio::fs::write(&old, b"x").await.unwrap();
 
-    let new_snap = snapshot_and_retain(&pool, &ryve_dir, 1)
+    let policy = RetentionPolicy {
+        keep_recent: 1,
+        keep_daily_days: 0,
+        keep_weekly_weeks: 0,
+    };
+    let new_snap = snapshot_and_retain(&pool, &ryve_dir, &policy)
         .await
         .expect("snapshot+retain");
 
     assert!(new_snap.exists());
     assert!(!old.exists(), "old snapshot should have been pruned");
-    const _: () = assert!(
-        DEFAULT_BACKUP_RETENTION > 0,
-        "default retention must be positive"
-    );
 }
 
 #[tokio::test]
@@ -385,4 +400,122 @@ async fn backup_failure_coalesces_within_window() {
         "repeated failures must coalesce into one ember"
     );
     assert!(flares[0].content.contains("3 failures in window"));
+}
+
+#[test]
+fn retention_taper_over_60_days() {
+    use std::collections::HashSet;
+
+    use chrono::{Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
+
+    let now = Utc.with_ymd_and_hms(2026, 4, 14, 12, 0, 0).unwrap();
+    let policy = RetentionPolicy {
+        keep_recent: 5,
+        keep_daily_days: 7,
+        keep_weekly_weeks: 8,
+    };
+
+    // Generate 4 snapshots per day for the last 60 days (240 total).
+    let mut snapshots: Vec<Snapshot> = Vec::new();
+    let start = now - Duration::days(60);
+    for day_offset in 0..60 {
+        let date = (start + Duration::days(day_offset)).date_naive();
+        for hour in [6, 10, 14, 18] {
+            let ts = date.and_time(NaiveTime::from_hms_opt(hour, 0, 0).unwrap());
+            let dt = Utc.from_utc_datetime(&ts);
+            let name = format!("{SNAPSHOT_PREFIX}{}.db", data::backup::format_stamp(dt));
+            snapshots.push(Snapshot {
+                path: PathBuf::from(&name),
+                taken_at: Some(dt),
+                size: 100,
+            });
+        }
+    }
+    // Sorted oldest-first (same as list_snapshots).
+    snapshots.sort_by_key(|s| s.taken_at);
+
+    let kept = retained_indices(&snapshots, &policy, now);
+
+    // --- (a) The 5 most recent snapshots are kept ---
+    let total = snapshots.len();
+    for i in (total - 5)..total {
+        assert!(kept.contains(&i), "recent snapshot idx {i} must be kept");
+    }
+
+    // --- (b) Most-recent snapshot is always kept ---
+    assert!(kept.contains(&(total - 1)));
+
+    // --- (c) One-per-day for the last 7 days ---
+    let daily_cutoff = now - Duration::days(7);
+    let mut covered_days: HashSet<NaiveDate> = HashSet::new();
+    for &idx in &kept {
+        if let Some(ts) = snapshots[idx].taken_at {
+            if ts >= daily_cutoff {
+                covered_days.insert(ts.date_naive());
+            }
+        }
+    }
+    // All days in the last 7 that have snapshots should be covered.
+    for day_offset in 0..7 {
+        let date = (now - Duration::days(day_offset)).date_naive();
+        let has_snaps = snapshots
+            .iter()
+            .any(|s| s.taken_at.map(|t| t.date_naive()) == Some(date));
+        if has_snaps {
+            assert!(
+                covered_days.contains(&date),
+                "day {date} should have a representative kept"
+            );
+        }
+    }
+
+    // --- (d) One-per-week for the last 8 weeks ---
+    let weekly_cutoff = now - Duration::weeks(8);
+    let mut covered_weeks: HashSet<chrono::IsoWeek> = HashSet::new();
+    for &idx in &kept {
+        if let Some(ts) = snapshots[idx].taken_at {
+            if ts >= weekly_cutoff {
+                covered_weeks.insert(ts.date_naive().iso_week());
+            }
+        }
+    }
+    let mut expected_weeks: HashSet<chrono::IsoWeek> = HashSet::new();
+    for s in &snapshots {
+        if let Some(ts) = s.taken_at {
+            if ts >= weekly_cutoff {
+                expected_weeks.insert(ts.date_naive().iso_week());
+            }
+        }
+    }
+    for week in &expected_weeks {
+        assert!(
+            covered_weeks.contains(week),
+            "week {week:?} should have a representative kept"
+        );
+    }
+
+    // --- (e) Old snapshots outside all windows are deleted ---
+    let oldest_window = weekly_cutoff;
+    let outside_all: Vec<usize> = (0..total)
+        .filter(|&i| {
+            let ts = snapshots[i].taken_at.unwrap();
+            ts < oldest_window && i < total - policy.keep_recent
+        })
+        .collect();
+    // Among those, only weekly representatives should survive.
+    for &idx in &outside_all {
+        if kept.contains(&idx) {
+            panic!(
+                "snapshot at {:?} is outside all retention windows but was kept",
+                snapshots[idx].taken_at
+            );
+        }
+    }
+
+    // Sanity: we should be pruning a significant number.
+    let deleted = total - kept.len();
+    assert!(
+        deleted > 100,
+        "expected to prune >100 of {total} snapshots, got {deleted}"
+    );
 }

@@ -358,7 +358,7 @@ async fn handle_backup(
             match data::backup::snapshot_and_retain(
                 pool,
                 &ryve_dir,
-                data::backup::DEFAULT_BACKUP_RETENTION,
+                &data::backup::RetentionPolicy::default(),
             )
             .await
             {
@@ -414,16 +414,22 @@ async fn handle_backup(
                 .iter()
                 .skip(1)
                 .find_map(|a| a.strip_prefix("--keep="))
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(data::backup::DEFAULT_BACKUP_RETENTION);
-            match data::backup::apply_retention(&ryve_dir, keep).await {
+                .and_then(|v| v.parse::<usize>().ok());
+            let policy = match keep {
+                Some(k) => data::backup::RetentionPolicy {
+                    keep_recent: k,
+                    ..Default::default()
+                },
+                None => data::backup::RetentionPolicy::default(),
+            };
+            match data::backup::apply_retention(&ryve_dir, &policy).await {
                 Ok(deleted) => {
                     if json_mode {
                         let json: Vec<_> =
                             deleted.iter().map(|p| p.display().to_string()).collect();
                         println!("{}", serde_json::to_string(&json).unwrap_or_default());
                     } else {
-                        println!("pruned {} snapshot(s) (keep={keep})", deleted.len());
+                        println!("pruned {} snapshot(s)", deleted.len());
                     }
                 }
                 Err(e) => die(&format!("prune failed: {e}")),
@@ -434,8 +440,8 @@ async fn handle_backup(
             eprintln!("  backup create                Take a snapshot now + prune to retention");
             eprintln!("  backup list                  List all snapshots in .ryve/backups/");
             eprintln!(
-                "  backup prune [--keep=N]      Prune old snapshots (default keep={})",
-                data::backup::DEFAULT_BACKUP_RETENTION
+                "  backup prune [--keep=N]      Prune old snapshots (default keep_recent={})",
+                data::backup::KEEP_RECENT
             );
         }
         other => die(&format!("unknown backup subcommand '{other}'")),

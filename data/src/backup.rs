@@ -26,17 +26,20 @@
 //!
 //! ## Retention
 //!
-//! [`apply_retention`] keeps the `keep` most recent snapshots and deletes
-//! the rest. The UI calls this after every successful snapshot.
+//! [`apply_retention`] uses a daily/weekly taper: it keeps the newest N
+//! snapshots, the newest-per-day for the last D days, and the
+//! newest-per-week for the last W weeks. The UI calls this after every
+//! successful snapshot.
 //!
 //! ## Recovery
 //!
 //! See `docs/RECOVERY.md` and the `ryve restore` CLI subcommand.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Duration, IsoWeek, Utc};
 use sqlx::SqlitePool;
 
 use crate::ryve_dir::RyveDir;
@@ -46,10 +49,35 @@ use crate::ryve_dir::RyveDir;
 /// short enough that at most a few minutes of work is ever lost.
 pub const DEFAULT_BACKUP_INTERVAL_SECS: u64 = 600; // 10 minutes
 
-/// Default number of snapshots to retain per workshop. The oldest
-/// snapshots beyond this count are pruned after each successful backup.
-/// 48 × 10 min ≈ 8 hours of coverage plus the daily tail.
-pub const DEFAULT_BACKUP_RETENTION: usize = 48;
+/// Number of most-recent snapshots to always keep regardless of age.
+/// 48 × 10 min ≈ 8 hours of continuous coverage.
+pub const KEEP_RECENT: usize = 48;
+
+/// Number of days for which the newest-per-day snapshot is preserved
+/// beyond the KEEP_RECENT window.
+pub const KEEP_DAILY_DAYS: u32 = 30;
+
+/// Number of weeks for which the newest-per-week snapshot is preserved
+/// beyond the KEEP_RECENT and daily windows.
+pub const KEEP_WEEKLY_WEEKS: u32 = 12;
+
+/// Retention policy controlling which snapshots survive pruning.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    pub keep_recent: usize,
+    pub keep_daily_days: u32,
+    pub keep_weekly_weeks: u32,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            keep_recent: KEEP_RECENT,
+            keep_daily_days: KEEP_DAILY_DAYS,
+            keep_weekly_weeks: KEEP_WEEKLY_WEEKS,
+        }
+    }
+}
 
 /// Prefix used for snapshot file names: `sparks-<ISO8601>.db`. Anything
 /// in `.ryve/backups/` not matching this prefix is ignored by listing and
@@ -242,20 +270,82 @@ pub async fn list_snapshots(ryve_dir: &RyveDir) -> Result<Vec<Snapshot>, BackupE
     Ok(out)
 }
 
-/// Prune all but the newest `keep` snapshots in `.ryve/backups/`.
-/// Returns the paths that were deleted so callers can log them. A
-/// `keep` of `0` deletes nothing (to prevent accidents).
-pub async fn apply_retention(ryve_dir: &RyveDir, keep: usize) -> Result<Vec<PathBuf>, BackupError> {
-    if keep == 0 {
-        return Ok(Vec::new());
+/// Compute the set of snapshot indices (into a newest-first slice) that
+/// the retention policy preserves. Exposed for testability.
+pub fn retained_indices(
+    snapshots: &[Snapshot],
+    policy: &RetentionPolicy,
+    now: DateTime<Utc>,
+) -> HashSet<usize> {
+    let mut keep_set = HashSet::new();
+    if snapshots.is_empty() {
+        return keep_set;
     }
+
+    // snapshots arrive oldest-first from list_snapshots; work newest-first.
+    let newest_first: Vec<_> = snapshots.iter().enumerate().rev().collect();
+
+    // (a) Always keep the most recent snapshot.
+    keep_set.insert(newest_first[0].0);
+
+    // (b) Keep the newest KEEP_RECENT snapshots.
+    for &(idx, _) in newest_first.iter().take(policy.keep_recent) {
+        keep_set.insert(idx);
+    }
+
+    // (c) Newest-per-day for the last keep_daily_days days.
+    let daily_cutoff = now - Duration::days(i64::from(policy.keep_daily_days));
+    let mut seen_days: HashSet<chrono::NaiveDate> = HashSet::new();
+    for &(idx, snap) in &newest_first {
+        if let Some(ts) = snap.taken_at {
+            if ts < daily_cutoff {
+                continue;
+            }
+            let day = ts.date_naive();
+            if seen_days.insert(day) {
+                keep_set.insert(idx);
+            }
+        }
+    }
+
+    // (d) Newest-per-week for the last keep_weekly_weeks weeks.
+    let weekly_cutoff = now - Duration::weeks(i64::from(policy.keep_weekly_weeks));
+    let mut seen_weeks: HashSet<IsoWeek> = HashSet::new();
+    for &(idx, snap) in &newest_first {
+        if let Some(ts) = snap.taken_at {
+            if ts < weekly_cutoff {
+                continue;
+            }
+            let week = ts.date_naive().iso_week();
+            if seen_weeks.insert(week) {
+                keep_set.insert(idx);
+            }
+        }
+    }
+
+    keep_set
+}
+
+/// Prune snapshots according to the taper retention policy: keep the
+/// newest `keep_recent`, plus one-per-day for `keep_daily_days`, plus
+/// one-per-week for `keep_weekly_weeks`. The most recent snapshot is
+/// never deleted. Returns the paths that were removed.
+pub async fn apply_retention(
+    ryve_dir: &RyveDir,
+    policy: &RetentionPolicy,
+) -> Result<Vec<PathBuf>, BackupError> {
     let snapshots = list_snapshots(ryve_dir).await?;
-    if snapshots.len() <= keep {
+    if snapshots.is_empty() {
         return Ok(Vec::new());
     }
-    let to_delete = snapshots.len() - keep;
-    let mut deleted = Vec::with_capacity(to_delete);
-    for snap in snapshots.into_iter().take(to_delete) {
+
+    let keep_set = retained_indices(&snapshots, policy, Utc::now());
+
+    let mut deleted = Vec::new();
+    for (idx, snap) in snapshots.into_iter().enumerate() {
+        if keep_set.contains(&idx) {
+            continue;
+        }
         match tokio::fs::remove_file(&snap.path).await {
             Ok(()) => deleted.push(snap.path),
             Err(e) => {
@@ -266,15 +356,15 @@ pub async fn apply_retention(ryve_dir: &RyveDir, keep: usize) -> Result<Vec<Path
     Ok(deleted)
 }
 
-/// Convenience: take a snapshot, then prune to `keep` retained files.
-/// This is what the UI timer and shutdown hook call.
+/// Convenience: take a snapshot, then prune according to the retention
+/// policy. This is what the UI timer and shutdown hook call.
 pub async fn snapshot_and_retain(
     pool: &SqlitePool,
     ryve_dir: &RyveDir,
-    keep: usize,
+    policy: &RetentionPolicy,
 ) -> Result<PathBuf, BackupError> {
     let path = take_snapshot(pool, ryve_dir).await?;
-    let _ = apply_retention(ryve_dir, keep).await?;
+    let _ = apply_retention(ryve_dir, policy).await?;
     Ok(path)
 }
 

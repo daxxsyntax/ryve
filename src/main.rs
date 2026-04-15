@@ -747,7 +747,7 @@ impl App {
                 data::backup::snapshot_and_retain(
                     &pool,
                     &ryve_dir,
-                    data::backup::DEFAULT_BACKUP_RETENTION,
+                    &data::backup::RetentionPolicy::default(),
                 )
                 .await
                 .map_err(|e| e.to_string())
