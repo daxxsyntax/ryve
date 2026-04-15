@@ -17,7 +17,6 @@ pub async fn assign(
 ) -> Result<HandAssignment, SparksError> {
     let mut tx = pool.begin().await?;
 
-    // Check for existing active owner (only enforced for owner role)
     if new.role == AssignmentRole::Owner {
         let existing = sqlx::query_as::<_, HandAssignment>(
             "SELECT * FROM hand_assignments WHERE spark_id = ? AND status = 'active' AND role = 'owner' LIMIT 1",
@@ -162,7 +161,6 @@ pub async fn expire_stale_claims(
 ) -> Result<Vec<HandAssignment>, SparksError> {
     let now = Utc::now().to_rfc3339();
 
-    // Find stale claims
     let stale = sqlx::query_as::<_, HandAssignment>(
         "SELECT * FROM hand_assignments WHERE status = 'active' AND last_heartbeat_at IS NOT NULL AND datetime(last_heartbeat_at, '+' || ? || ' seconds') < datetime(?)",
     )

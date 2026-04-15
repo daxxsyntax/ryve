@@ -1345,8 +1345,9 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
             if args.len() < 3 {
                 die("assign claim requires <session_id> <spark_id>");
             }
+            let sid = &args[1];
             let new = NewHandAssignment {
-                session_id: args[1].clone(),
+                session_id: sid.clone(),
                 spark_id: args[2].clone(),
                 role: AssignmentRole::Owner,
             };
