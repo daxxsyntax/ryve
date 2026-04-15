@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use data::backup::{
-    self, DEFAULT_BACKUP_RETENTION, RetentionPolicy, SNAPSHOT_PREFIX, Snapshot, apply_retention,
-    emit_backup_failure_flare, list_snapshots, parse_stamp, restore_snapshot, retained_indices,
-    snapshot_and_retain, take_snapshot,
+    self, RetentionPolicy, SNAPSHOT_PREFIX, Snapshot, apply_retention, emit_backup_failure_flare,
+    list_snapshots, parse_stamp, restore_snapshot, retained_indices, snapshot_and_retain,
+    take_snapshot,
 };
 use data::db::open_sparks_db;
 use data::ryve_dir::RyveDir;
