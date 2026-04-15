@@ -272,6 +272,27 @@ pub fn format_relative_time(rfc3339: &str, now: chrono::DateTime<chrono::Utc>) -
     }
 }
 
+// ── Log-tail virtualization ──────────────────────────────
+
+pub const LOG_LINE_HEIGHT: f32 = 20.0;
+
+pub const LOG_OVERSCAN_LINES: usize = 5;
+
+pub fn log_tail_visible_range(
+    offset_y: f32,
+    viewport_height: f32,
+    total_lines: usize,
+) -> (usize, usize) {
+    if total_lines == 0 {
+        return (0, 0);
+    }
+    let first = (offset_y / LOG_LINE_HEIGHT).floor() as usize;
+    let visible_count = (viewport_height / LOG_LINE_HEIGHT).ceil() as usize;
+    let first = first.saturating_sub(LOG_OVERSCAN_LINES).min(total_lines);
+    let last = (first + visible_count + 2 * LOG_OVERSCAN_LINES).min(total_lines);
+    (first, last)
+}
+
 // ── Tests ────────────────────────────────────────────────
 
 #[cfg(test)]

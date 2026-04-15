@@ -2207,8 +2207,7 @@ impl App {
                         for ws in &mut self.workshops {
                             if let Some(tail) = ws.log_tails.get_mut(&tab_id) {
                                 if tail.path == path {
-                                    tail.content = content;
-                                    tail.error = None;
+                                    tail.set_content(content);
                                 }
                                 break;
                             }
@@ -2225,6 +2224,20 @@ impl App {
                                     tail.error = Some(error);
                                 }
                                 break;
+                            }
+                        }
+                    }
+                    log_tail::Message::Scrolled {
+                        offset_y,
+                        viewport_height,
+                    } => {
+                        if let Some(idx) = self.active_workshop {
+                            let ws = &mut self.workshops[idx];
+                            if let Some(active_id) = ws.bench.active_tab {
+                                if let Some(tail) = ws.log_tails.get_mut(&active_id) {
+                                    tail.scroll_offset_y = offset_y;
+                                    tail.viewport_height = viewport_height;
+                                }
                             }
                         }
                     }

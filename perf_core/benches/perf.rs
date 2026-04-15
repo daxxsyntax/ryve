@@ -14,8 +14,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use data::git::{DiffStat, FileStatus};
 use perf_core::{
     KeyDispatch, KeyKind, KeyModifiers, NodeKind, SessionLike, classify_key_event,
-    count_active_sessions, file_git_status, format_relative_time, precompute_diff_stat_map,
-    precompute_git_status_map, process_is_alive,
+    count_active_sessions, file_git_status, format_relative_time, log_tail_visible_range,
+    precompute_diff_stat_map, precompute_git_status_map, process_is_alive,
 };
 
 // ── Fixtures ─────────────────────────────────────────────
@@ -210,6 +210,31 @@ fn bench_format_relative_time_100_sessions(c: &mut Criterion) {
     });
 }
 
+fn bench_log_tail_visible_range(c: &mut Criterion) {
+    let total_lines_1mb = 1_000_000 / 20;
+    let viewport_height = 600.0_f32;
+
+    let mut group = c.benchmark_group("log_tail_visible_range");
+    for &total in &[100, 1_000, 10_000, total_lines_1mb] {
+        group.bench_with_input(
+            criterion::BenchmarkId::from_parameter(total),
+            &total,
+            |b, &total| {
+                let offset = (total as f32 / 2.0) * 20.0;
+                b.iter(|| {
+                    let range = log_tail_visible_range(
+                        std::hint::black_box(offset),
+                        std::hint::black_box(viewport_height),
+                        std::hint::black_box(total),
+                    );
+                    std::hint::black_box(range);
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_process_is_alive,
@@ -220,5 +245,6 @@ criterion_group!(
     bench_precompute_diff_stat_map,
     bench_view_workshop_status_lookups,
     bench_format_relative_time_100_sessions,
+    bench_log_tail_visible_range,
 );
 criterion_main!(benches);
