@@ -161,7 +161,14 @@ already tracks.
 - **Outputs:** An integration branch (`crew/<id>`), a single PR linking every
   member spark, a comment on the merge spark with the PR URL.
 - **Acceptance bar:** PR is open, builds, and lists every member spark.
-  Conflicts are either resolved or escalated via `spark status blocked`.
+  The Merger should rarely hit conflicts: the Head that spawned the Crew
+  is required to apply merge-clean bond discipline
+  (`docs/HEAD_ARCHETYPES.md#cross-archetype-invariants`), serialising any
+  siblings whose file scopes overlap via `blocks` bonds. An unresolvable
+  conflict is therefore a bond-discipline failure by the Head — the
+  Merger posts `bond-discipline conflict in <file> between hand/<a> and
+  hand/<b>: …` and sets `spark status blocked` rather than attempting a
+  manual resolution.
 - **Example sparks:**
   - "Merge crew `cr-136bd4e7` into a single PR"
   - "Open integration PR for the auth-rewrite Crew"

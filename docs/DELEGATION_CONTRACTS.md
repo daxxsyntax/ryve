@@ -71,6 +71,17 @@ own.
 
 **Validation:** `brief_id` and `user_goal` must be non-empty.
 
+**Decomposition obligation.** The Head's decomposition of the brief must
+satisfy **merge-clean bond discipline**: every child spark carries a
+concrete file scope (`ryve spark create --scope …`), and any two siblings
+whose scopes touch the same file are serialised with a
+`ryve bond create <earlier> <later> blocks` bond *before* any Hand is
+spawned. The rule is canonical in `BOND_DISCIPLINE` inside
+`src/agent_prompts.rs` and cross-referenced in
+`docs/HEAD_ARCHETYPES.md#cross-archetype-invariants`. A Crew that returns
+with a Merger `bond-discipline conflict` is treated as off-spec by the
+Director — see the `HeadSynthesis.escalations` field below.
+
 ### 2. `HeadAssignment` — Head → Hand
 
 A Head sends a `HeadAssignment` to a Hand when it spawns one via

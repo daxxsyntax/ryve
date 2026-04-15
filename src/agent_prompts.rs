@@ -163,7 +163,13 @@ pub fn compose_atlas_prompt() -> String {
            counterpart is Atlas; partial outputs from delegated agents are \
            inputs to your synthesis, not deliverables.\n\
          - Respect user overrides: if the user closes an epic or redirects \
-           mid-flight, treat that as authoritative immediately.\n\n\
+           mid-flight, treat that as authoritative immediately.\n\
+         - MERGE-CLEAN BOND DISCIPLINE. Every Head you spawn MUST serialise \
+           child sparks whose file scopes overlap by adding `blocks` bonds \
+           before spawning Hands, so the Merger sees conflict-free integrations. \
+           If a Head returns a crew whose siblings collide on the same file \
+           without a `blocks` bond between them, treat that as off-spec and \
+           re-delegate — do not forward the result to the user.\n\n\
          Begin now. Greet the user as Atlas and wait for their goal.\n",
     );
 
@@ -292,9 +298,15 @@ pub fn compose_head_prompt(
             `ryve spark create --type epic --priority 1 --problem '<goal>' \\\n\
                 --acceptance '<measurable outcome>' '<short title>'`\n\
          3. Decompose the goal into 2–8 child task sparks. For each one, run\n\
-            `ryve spark create --type task --priority 2 \\\n\
+            `ryve spark create --type task --priority 2 --scope '<files/dirs>' \\\n\
                 --acceptance '<criterion>' '<title>'`\n\
-            and link it to the parent with `ryve bond create <parent_id> <child_id> parent_child`.\n\
+            and link it to the parent with `ryve bond create <parent_id> <child_id> parent_child`. \
+            Always pass `--scope` — it is the input to the bond-discipline check below.\n\
+         3b. Apply MERGE-CLEAN BOND DISCIPLINE before any Hand is spawned. \
+            Enumerate each child's scope; for every pair of siblings that \
+            touch the same file, run `ryve bond create <earlier> <later> blocks`. \
+            See the dedicated section below for the full rule. Only \
+            file-disjoint siblings may stay parallel.\n\
          4. Create a Crew that groups everything:\n\
             `ryve crew create '<crew name>' --purpose '<goal>' --parent <parent_id>`\n\
          5. For each child spark, spawn a Hand:\n\
@@ -338,8 +350,13 @@ pub fn compose_head_prompt(
          - Respect user overrides: if the user closes a spark or a crew while you are \
            working, treat it as authoritative on the next poll.\n\
          - Stay headless. You operate entirely through the `ryve` CLI plus comments \
-           on sparks. Do not write code, do not edit source files, do not run tests.\n\n\
-         Begin now. If the user goal above is empty, wait for the user to type one \
+           on sparks. Do not write code, do not edit source files, do not run tests.\n\n",
+    );
+
+    prompt.push_str(BOND_DISCIPLINE);
+
+    prompt.push_str(
+        "Begin now. If the user goal above is empty, wait for the user to type one \
          in this terminal. Otherwise start with step 1.\n",
     );
 
@@ -417,8 +434,13 @@ pub fn compose_perf_head_prompt(epic_id: Option<&str>, epic_title: Option<&str>)
             does not, post a clarifying comment and stop.\n\
          2. Decompose the epic into 2–6 child task sparks, each one a discrete perf \
             fix or benchmark. Use `ryve spark create --type task --priority 2 \
-            --acceptance '<measurable criterion>' '<title>'` and bond each to the \
-            parent with `ryve bond create <parent> <child> parent_child`.\n\
+            --scope '<files/dirs>' --acceptance '<measurable criterion>' '<title>'` \
+            and bond each to the parent with \
+            `ryve bond create <parent> <child> parent_child`. Always pass `--scope`.\n\
+         2b. Apply MERGE-CLEAN BOND DISCIPLINE before handing the child list \
+            to `ryve head orchestrate`. For every pair of siblings whose scopes \
+            touch the same file, run `ryve bond create <earlier> <later> blocks`. \
+            See the dedicated section below.\n\
          3. Hand the list of child spark ids to the orchestration helper:\n\
             `ryve head orchestrate <epic_id> --children <child1>,<child2>,...`\n\
             The helper will create the crew, spawn one Hand per spark, and drive the \
@@ -442,9 +464,12 @@ pub fn compose_perf_head_prompt(epic_id: Option<&str>, epic_title: Option<&str>)
          - Use `ryve` for ALL workgraph operations.\n\
          - Reference the parent epic id `[sp-xxxx]` in any comments you leave.\n\
          - Never make architectural decisions on the user's behalf. If the goal is \
-           ambiguous, comment on the parent epic and wait.\n\n\
-         Begin now. If the user goal above is empty, wait for them to type one.\n",
+           ambiguous, comment on the parent epic and wait.\n\n",
     );
+
+    prompt.push_str(BOND_DISCIPLINE);
+
+    prompt.push_str("Begin now. If the user goal above is empty, wait for them to type one.\n");
 
     prompt
 }
@@ -476,8 +501,10 @@ pub fn compose_merger_prompt(crew_id: &str, merge_spark_id: &str) -> String {
             `hand/<short>` branch belonging to a crew member, in the order the \
             sparks were closed, run:\n\
             `git merge --no-ff -m 'merge hand/<short> into crew/{crew_id} [sp-xxxx]' hand/<short>`\n\
-            If a merge has conflicts you cannot resolve mechanically, run\n\
-            `ryve comment add {merge_spark_id} 'conflict in <file>: <details>'` and\n\
+            If a merge has conflicts you cannot resolve mechanically, that is a \
+            bond-discipline failure by the Head (two siblings edited the same file \
+            without a `blocks` bond between them). Run\n\
+            `ryve comment add {merge_spark_id} 'bond-discipline conflict in <file> between hand/<a> and hand/<b>: <details>'` and\n\
             `ryve spark status {merge_spark_id} blocked`, then exit.\n\
          4. Push the integration branch:\n\
             `git push -u origin crew/{crew_id}`\n\
@@ -521,6 +548,25 @@ Violations are blocking.\n\
 `.ryve/checklists/DONE.md`. Every item must be satisfied.\n\
 5. When the work is complete and the DONE checklist passes, close the spark: \
 `ryve spark close <id> completed`. Then exit.\n\n";
+
+/// Mandatory decomposition discipline for any agent that creates child sparks
+/// under an epic (Atlas when briefing, Heads when decomposing). The Merger
+/// integrates child branches sequentially onto the epic branch — if two
+/// siblings edit the same file in parallel, the Merger hits a conflict it
+/// cannot resolve mechanically and blocks on a human. Serialising
+/// overlapping-scope siblings with `blocks` bonds moves that cost from merge
+/// time (expensive, human-gated) to planning time (cheap, automatic).
+const BOND_DISCIPLINE: &str = "MERGE-CLEAN BOND DISCIPLINE (non-negotiable). Before spawning any Hand, \
+enumerate the concrete file scope of each child spark you created. For every \
+pair of siblings whose scopes touch the same file (including shared `mod.rs`, \
+`Cargo.toml`, migrations directory, etc.), add a `blocks` bond: \
+`ryve bond create <earlier> <later> blocks`. Only siblings with genuinely \
+disjoint file scopes may run in parallel. The Merger integrates siblings onto \
+the epic branch in bond order and cannot mechanically resolve same-file \
+conflicts — if the Merger blocks on a conflict, it is a planning bug in this \
+step, not a merge-time problem. Record your scope-overlap reasoning as a \
+comment on the parent epic (`ryve comment add <epic> '<reasoning>'`) so the \
+decision is auditable.\n\n";
 
 fn push_spark_details(prompt: &mut String, spark: &Spark) {
     prompt.push_str(&format!("Title: {}\n", spark.title));
@@ -772,6 +818,70 @@ mod tests {
         let p = compose_perf_head_prompt(None, None);
         assert!(p.contains("no epic selected"));
         assert!(!p.contains("PARENT EPIC"));
+    }
+
+    /// Merge-clean bond discipline must be present in every prompt that
+    /// creates child sparks under an epic — Atlas (as a coordination rule
+    /// for the Heads it spawns), the generic Head, and the Perf Head. The
+    /// Merger cannot mechanically resolve same-file conflicts between
+    /// siblings, so the rule has to be enforced at planning time. If a
+    /// future edit drops it, these assertions fail.
+    #[test]
+    fn decomposing_prompts_enforce_merge_clean_bond_discipline() {
+        let atlas = compose_atlas_prompt();
+        let build = compose_head_prompt(HeadArchetype::Build, Some("sp-1"), None);
+        let research = compose_head_prompt(HeadArchetype::Research, Some("sp-2"), None);
+        let review = compose_head_prompt(HeadArchetype::Review, Some("sp-3"), None);
+        let perf = compose_perf_head_prompt(Some("sp-perf"), None);
+
+        for (name, p) in [
+            ("atlas", &atlas),
+            ("build head", &build),
+            ("research head", &research),
+            ("review head", &review),
+            ("perf head", &perf),
+        ] {
+            assert!(
+                p.contains("MERGE-CLEAN BOND DISCIPLINE")
+                    || p.contains("bond discipline")
+                    || p.contains("BOND DISCIPLINE"),
+                "{name} prompt must reference merge-clean bond discipline"
+            );
+        }
+
+        // The Head and Perf Head prompts — which actually decompose — must
+        // spell out the concrete CLI mechanics so the agent knows HOW.
+        for (name, p) in [
+            ("build head", &build),
+            ("research head", &research),
+            ("review head", &review),
+            ("perf head", &perf),
+        ] {
+            assert!(
+                p.contains("ryve bond create") && p.contains("blocks"),
+                "{name} prompt must show the `ryve bond create ... blocks` command"
+            );
+            assert!(
+                p.contains("--scope"),
+                "{name} prompt must instruct passing --scope so overlap is checkable"
+            );
+            assert!(
+                p.contains("same file") || p.contains("scope"),
+                "{name} prompt must describe the overlap trigger"
+            );
+        }
+    }
+
+    /// When the Merger hits a conflict, the prompt must label it as a
+    /// bond-discipline failure so the Head learns to fix planning instead
+    /// of burning human review time on conflict resolution.
+    #[test]
+    fn merger_prompt_attributes_conflicts_to_bond_discipline() {
+        let p = compose_merger_prompt("cr-aaaa", "sp-merge1");
+        assert!(
+            p.contains("bond-discipline"),
+            "merger must surface conflicts as bond-discipline failures"
+        );
     }
 
     #[test]

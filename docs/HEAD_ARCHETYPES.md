@@ -204,6 +204,18 @@ These hold for **every** Head, regardless of archetype:
 - **Identity at boot.** A Head's system prompt must declare its
   archetype in the first paragraph so traces and the UI can label it
   correctly.
+- **Merge-clean bond discipline.** Before spawning any Hand, a Head
+  must enumerate each child spark's file scope (passed to `ryve spark
+  create --scope`). For every pair of siblings whose scopes touch the
+  same file — including shared `mod.rs`, `Cargo.toml`, or a migrations
+  directory — the Head must add a `blocks` bond
+  (`ryve bond create <earlier> <later> blocks`). Only file-disjoint
+  siblings may run in parallel. The Merger integrates siblings onto
+  the epic branch in bond order and cannot mechanically resolve
+  same-file conflicts, so any Merger conflict is treated as a
+  bond-discipline failure by the Head, not a merge-time problem.
+  The canonical rule lives in `BOND_DISCIPLINE` in
+  `src/agent_prompts.rs`.
 
 ---
 

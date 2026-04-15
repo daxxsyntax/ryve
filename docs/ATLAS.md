@@ -47,6 +47,15 @@ Heads (multi-spark goals) or Hands (single sparks) via the `ryve` CLI.
    Director system prompt and enforced by convention — Atlas only drives
    the `ryve` CLI.
 
+4. **Atlas enforces merge-clean bond discipline on every Head it spawns.**
+   Heads must serialise child sparks whose file scopes overlap by adding
+   `blocks` bonds before spawning Hands, so the Merger sees conflict-free
+   integrations. If a Head returns a crew whose siblings collide on the
+   same file without a `blocks` bond between them, Atlas treats that as
+   off-spec and re-delegates — it does not forward the result to the user.
+   Canonical rule: `BOND_DISCIPLINE` in `src/agent_prompts.rs`. Cross-Head
+   invariant: `docs/HEAD_ARCHETYPES.md#cross-archetype-invariants`.
+
 ## Bypass Paths (Advanced Flows)
 
 The bench `+` dropdown exposes three explicit bypass options under the
