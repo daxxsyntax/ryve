@@ -358,7 +358,7 @@ async fn handle_backup(
             match data::backup::snapshot_and_retain(
                 pool,
                 &ryve_dir,
-                data::backup::DEFAULT_BACKUP_RETENTION,
+                &data::backup::RetentionPolicy::default(),
             )
             .await
             {
@@ -414,16 +414,27 @@ async fn handle_backup(
                 .iter()
                 .skip(1)
                 .find_map(|a| a.strip_prefix("--keep="))
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(data::backup::DEFAULT_BACKUP_RETENTION);
-            match data::backup::apply_retention(&ryve_dir, keep).await {
+                .and_then(|v| v.parse::<usize>().ok());
+            let policy = match keep {
+                Some(k) => data::backup::RetentionPolicy {
+                    keep_recent: k,
+                    ..Default::default()
+                },
+                None => data::backup::RetentionPolicy::default(),
+            };
+            if !json_mode && let Some(k) = keep {
+                eprintln!(
+                    "note: --keep={k} sets only the recent-snapshot retention floor; default daily/weekly retention still applies, so more than {k} snapshot(s) may be kept"
+                );
+            }
+            match data::backup::apply_retention(&ryve_dir, &policy).await {
                 Ok(deleted) => {
                     if json_mode {
                         let json: Vec<_> =
                             deleted.iter().map(|p| p.display().to_string()).collect();
                         println!("{}", serde_json::to_string(&json).unwrap_or_default());
                     } else {
-                        println!("pruned {} snapshot(s) (keep={keep})", deleted.len());
+                        println!("pruned {} snapshot(s)", deleted.len());
                     }
                 }
                 Err(e) => die(&format!("prune failed: {e}")),
@@ -434,9 +445,13 @@ async fn handle_backup(
             eprintln!("  backup create                Take a snapshot now + prune to retention");
             eprintln!("  backup list                  List all snapshots in .ryve/backups/");
             eprintln!(
-                "  backup prune [--keep=N]      Prune old snapshots (default keep={})",
-                data::backup::DEFAULT_BACKUP_RETENTION
+                "  backup prune [--keep=N]      Prune old snapshots (default keep_recent={})",
+                data::backup::KEEP_RECENT
             );
+            eprintln!(
+                "                               --keep=N only sets the recent-snapshot floor;"
+            );
+            eprintln!("                               daily/weekly taper retention still applies.");
         }
         other => die(&format!("unknown backup subcommand '{other}'")),
     }
@@ -1331,13 +1346,10 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
                 die("assign claim requires <session_id> <spark_id>");
             }
             let sid = &args[1];
-            let short_id = &sid[..8.min(sid.len())];
             let new = NewHandAssignment {
                 session_id: sid.clone(),
                 spark_id: args[2].clone(),
                 role: AssignmentRole::Owner,
-                source_branch: Some(format!("hand/{short_id}")),
-                target_branch: Some("main".to_string()),
             };
             match assignment_repo::assign(pool, new).await {
                 Ok(a) => println!("{} claimed by {} ({})", a.spark_id, a.session_id, a.role),

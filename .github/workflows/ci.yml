@@ -54,7 +54,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev \
+            build-essential autoconf automake libevent-dev libncurses-dev \
+            bison pkg-config
+      # Build the vendored tmux so the hand_spawn integration tests run
+      # against the production tmux binary (the same one that ships with
+      # Ryve). Without this, those tests skip via the bundled-tmux gate
+      # in src/hand_spawn.rs because the runner's system tmux on Ubuntu
+      # exhibits behaviour the production path is not hardened against
+      # (intermittent SessionNotFound on pipe-pane immediately after
+      # new-session).
+      - name: Build vendored tmux
+        run: ./scripts/build-vendored-tmux.sh
       - run: cargo test --workspace
 
   bundled-tmux:

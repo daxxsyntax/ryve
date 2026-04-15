@@ -5,7 +5,7 @@ use data::sparks::types::*;
 async fn test_create_assignment(pool: sqlx::SqlitePool) {
     let assignment = assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0001".to_string(),
             actor_id: "actor-1".to_string(),
             assignment_phase: AssignmentPhase::Assigned,
@@ -29,7 +29,7 @@ async fn test_create_assignment(pool: sqlx::SqlitePool) {
 async fn test_get_assignment(pool: sqlx::SqlitePool) {
     let created = assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0001".to_string(),
             actor_id: "actor-1".to_string(),
             assignment_phase: AssignmentPhase::InProgress,
@@ -58,7 +58,7 @@ async fn test_list_assignments_for_spark(pool: sqlx::SqlitePool) {
     // Create two assignments for the same spark
     assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0002".to_string(),
             actor_id: "actor-1".to_string(),
             assignment_phase: AssignmentPhase::Assigned,
@@ -71,7 +71,7 @@ async fn test_list_assignments_for_spark(pool: sqlx::SqlitePool) {
 
     assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0002".to_string(),
             actor_id: "actor-2".to_string(),
             assignment_phase: AssignmentPhase::InProgress,
@@ -98,7 +98,7 @@ async fn test_list_assignments_for_spark(pool: sqlx::SqlitePool) {
 async fn test_update_assignment(pool: sqlx::SqlitePool) {
     let created = assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0001".to_string(),
             actor_id: "actor-1".to_string(),
             assignment_phase: AssignmentPhase::Assigned,
@@ -112,7 +112,7 @@ async fn test_update_assignment(pool: sqlx::SqlitePool) {
     let updated = assign_repo::update_assignment(
         &pool,
         &created.assignment_id,
-        UpdatePhaseAssignment {
+        UpdateAssignment {
             event_version: Some(2),
             source_branch: Some(Some("hand/xyz".to_string())),
             target_branch: Some(Some("main".to_string())),
@@ -132,7 +132,7 @@ async fn test_update_assignment(pool: sqlx::SqlitePool) {
 async fn test_update_assignment_partial(pool: sqlx::SqlitePool) {
     let created = assign_repo::create_assignment(
         &pool,
-        NewPhaseAssignment {
+        NewAssignment {
             spark_id: "sp-0001".to_string(),
             actor_id: "actor-1".to_string(),
             assignment_phase: AssignmentPhase::Assigned,
@@ -147,7 +147,7 @@ async fn test_update_assignment_partial(pool: sqlx::SqlitePool) {
     let updated = assign_repo::update_assignment(
         &pool,
         &created.assignment_id,
-        UpdatePhaseAssignment {
+        UpdateAssignment {
             event_version: Some(5),
             source_branch: None,
             target_branch: None,

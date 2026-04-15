@@ -4,10 +4,11 @@
 //! File explorer panel — displays project tree with git/worktree awareness.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use data::git::{DiffStat, FileStatus};
-use iced::widget::{Space, button, column, container, row, scrollable, svg, text};
+use iced::widget::{Space, button, column, container, lazy, row, scrollable, svg, text};
 use iced::{Color, Element, Length, Theme};
 
 use crate::icons;
@@ -93,6 +94,14 @@ pub struct FileExplorerState {
     pub branch: Option<String>,
     /// Currently selected file path.
     pub selected: Option<PathBuf>,
+    /// Precomputed git status map covering files (direct lookup) and
+    /// directories (aggregated). Rebuilt on every `FilesScanned` event.
+    /// Spark ryve-252c5b6e.
+    pub precomputed_git_statuses: HashMap<PathBuf, FileStatus>,
+    /// Precomputed diff stat map covering files (direct lookup) and
+    /// directories (aggregated). Rebuilt on every `FilesScanned` event.
+    /// Spark ryve-252c5b6e.
+    pub precomputed_diff_stats: HashMap<PathBuf, DiffStat>,
 }
 
 impl FileExplorerState {
@@ -104,7 +113,17 @@ impl FileExplorerState {
             diff_stats: HashMap::new(),
             branch: None,
             selected: None,
+            precomputed_git_statuses: HashMap::new(),
+            precomputed_diff_stats: HashMap::new(),
         }
+    }
+
+    /// Rebuild the precomputed status/diff maps from the raw git data.
+    /// Call after `git_statuses` or `diff_stats` are updated.
+    /// Spark ryve-252c5b6e.
+    pub fn rebuild_precomputed_maps(&mut self) {
+        self.precomputed_git_statuses = perf_core::precompute_git_status_map(&self.git_statuses);
+        self.precomputed_diff_stats = perf_core::precompute_diff_stat_map(&self.diff_stats);
     }
 }
 
@@ -193,9 +212,25 @@ fn build_tree(
                 .cmp(&b.name.to_ascii_lowercase()),
         });
 
-        for entry in raw {
+        // Spawn directory recursions in parallel, preserving sort order.
+        let mut handles: Vec<Option<tokio::task::JoinHandle<Vec<FileNode>>>> =
+            Vec::with_capacity(raw.len());
+        for entry in &raw {
             if entry.is_dir {
-                let children = build_tree(entry.path.clone(), depth + 1, ignore.clone()).await;
+                let p = entry.path.clone();
+                let d = depth + 1;
+                let ig = ignore.clone();
+                handles.push(Some(tokio::spawn(
+                    async move { build_tree(p, d, ig).await },
+                )));
+            } else {
+                handles.push(None);
+            }
+        }
+
+        for (entry, handle) in raw.into_iter().zip(handles) {
+            if entry.is_dir {
+                let children = handle.unwrap().await.unwrap_or_default();
                 nodes.push(FileNode {
                     path: entry.path,
                     name: entry.name,
@@ -216,6 +251,51 @@ fn build_tree(
     })
 }
 
+// ── Lazy key computation ─────────────────────────────
+
+/// Compute a hash key for the file explorer so `lazy()` can skip widget-tree
+/// rebuilds when the tree is unchanged (sp-78d34de4).
+fn file_explorer_hash(state: &FileExplorerState) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    fn hash_nodes(nodes: &[FileNode], h: &mut impl Hasher) {
+        nodes.len().hash(h);
+        for n in nodes {
+            n.path.hash(h);
+            n.name.hash(h);
+            hash_nodes(&n.children, h);
+        }
+    }
+    hash_nodes(&state.tree, &mut h);
+    state.expanded.len().hash(&mut h);
+    let mut exp_sorted: Vec<&PathBuf> = state.expanded.iter().collect();
+    exp_sorted.sort();
+    for p in exp_sorted {
+        p.hash(&mut h);
+    }
+    state.selected.hash(&mut h);
+    state.branch.hash(&mut h);
+    state.git_statuses.len().hash(&mut h);
+    state.diff_stats.len().hash(&mut h);
+    // Hash individual git status entries for change detection.
+    let mut gs_sorted: Vec<(&PathBuf, &FileStatus)> = state.git_statuses.iter().collect();
+    gs_sorted.sort_by_key(|(p, _)| *p);
+    for (p, s) in gs_sorted {
+        p.hash(&mut h);
+        std::mem::discriminant(s).hash(&mut h);
+    }
+    // Hash individual diff-stat entries (path + additions + deletions)
+    // deterministically so the +/- badges invalidate when a file's diff
+    // numbers change but the entry count does not (Copilot PR #23 review).
+    let mut ds_sorted: Vec<(&PathBuf, &DiffStat)> = state.diff_stats.iter().collect();
+    ds_sorted.sort_by_key(|(p, _)| *p);
+    for (p, d) in ds_sorted {
+        p.hash(&mut h);
+        d.additions.hash(&mut h);
+        d.deletions.hash(&mut h);
+    }
+    h.finish()
+}
+
 // ── View ──────────────────────────────────────────────
 
 /// Render the file explorer panel.
@@ -225,7 +305,7 @@ pub fn view<'a>(
     pal: &Palette,
 ) -> Element<'a, Message> {
     let pal = *pal;
-    let branch_label = state.branch.as_deref().unwrap_or("no branch");
+    let branch_label = state.branch.as_deref().unwrap_or("no branch").to_string();
 
     let root_icon = svg(icons::root_folder_icon(true)).width(16).height(16);
 
@@ -245,27 +325,35 @@ pub fn view<'a>(
     .align_y(iced::Alignment::Center)
     .padding([8, 10]);
 
-    let mut items: Vec<Element<'a, Message>> = Vec::new();
+    // Wrap the file tree list in `lazy()` so iced reuses the cached widget
+    // tree when the file explorer state is unchanged (sp-78d34de4).
+    let key = file_explorer_hash(state);
+    let st = state.clone();
+    let root_owned = root.to_path_buf();
 
-    if state.tree.is_empty() {
-        items.push(
-            container(text("Scanning...").size(FONT_BODY))
-                .padding([8, 10])
-                .into(),
-        );
-    } else {
-        for node in &state.tree {
-            collect_nodes(node, root, state, 0, &pal, &mut items);
+    let tree_el = lazy(key, move |_| {
+        let mut items: Vec<Element<'static, Message>> = Vec::new();
+
+        if st.tree.is_empty() {
+            items.push(
+                container(text("Scanning...").size(FONT_BODY))
+                    .padding([8, 10])
+                    .into(),
+            );
+        } else {
+            for node in &st.tree {
+                collect_nodes(node, &root_owned, &st, 0, &pal, &mut items);
+            }
         }
-    }
 
-    let list = iced::widget::Column::with_children(items)
-        .spacing(0)
-        .padding([0, 10]);
+        iced::widget::Column::with_children(items)
+            .spacing(0)
+            .padding([0, 10])
+    });
 
     let content = column![
         header,
-        scrollable(list)
+        scrollable(tree_el)
             .height(Length::Fill)
             .style(scrollable::default)
     ]
@@ -275,24 +363,22 @@ pub fn view<'a>(
     content.into()
 }
 
-fn collect_nodes<'a>(
-    node: &'a FileNode,
-    root: &'a Path,
-    state: &'a FileExplorerState,
+fn collect_nodes(
+    node: &FileNode,
+    root: &Path,
+    state: &FileExplorerState,
     depth: u16,
     pal: &Palette,
-    items: &mut Vec<Element<'a, Message>>,
+    items: &mut Vec<Element<'static, Message>>,
 ) {
     let indent = (depth as f32) * 16.0;
     let is_expanded = state.expanded.contains(&node.path);
     let is_selected = state.selected.as_ref() == Some(&node.path);
 
-    // Determine git status for this entry. The aggregation is non-trivial
-    // for directories (it walks every entry in `git_statuses`), so we
-    // compute it ONCE here and derive both the foreground color and the
-    // letter badge from the same value.
+    // Look up git status and diff stats from precomputed maps (O(1) per
+    // node instead of O(files) for directories). Spark ryve-252c5b6e.
     let rel_path = node.path.strip_prefix(root).unwrap_or(&node.path);
-    let git_status = file_git_status(rel_path, &node.kind, &state.git_statuses);
+    let git_status = state.precomputed_git_statuses.get(rel_path).copied();
     let git_color = match git_status {
         Some(status) => status_color(status),
         None => pal.text_primary,
@@ -304,13 +390,16 @@ fn collect_nodes<'a>(
     };
     let icon_widget = svg(icon_handle).width(16).height(16);
 
-    // Diff stats: for files look up directly, for directories aggregate children
-    let diff = file_diff_stat(rel_path, &node.kind, &state.diff_stats);
+    let diff = state
+        .precomputed_diff_stats
+        .get(rel_path)
+        .copied()
+        .unwrap_or_default();
 
     let mut label = row![
         Space::new().width(indent),
         icon_widget,
-        text(&node.name).size(FONT_BODY).color(git_color),
+        text(node.name.clone()).size(FONT_BODY).color(git_color),
         Space::new().width(Length::Fill),
     ]
     .spacing(4)
@@ -386,7 +475,9 @@ fn collect_nodes<'a>(
 // ── Git status colors ─────────────────────────────────
 
 /// Convert the local file-explorer node kind into the perf_core variant
-/// the shared aggregation functions expect.
+/// the shared aggregation functions expect. Only used in tests now that
+/// the view uses precomputed maps. Spark ryve-252c5b6e.
+#[cfg(test)]
 fn perf_node_kind(kind: &NodeKind) -> perf_core::NodeKind {
     match kind {
         NodeKind::File => perf_core::NodeKind::File,
@@ -398,6 +489,8 @@ fn perf_node_kind(kind: &NodeKind) -> perf_core::NodeKind {
 ///
 /// Implementation lives in `perf_core` so the regression harness benches
 /// the same code path the UI hits on every redraw. Spark ryve-5b9c5d93.
+/// Only used in tests now that the view uses precomputed maps.
+#[cfg(test)]
 fn file_git_status(
     rel_path: &Path,
     kind: &NodeKind,
@@ -409,6 +502,8 @@ fn file_git_status(
 /// Get aggregated diff stats for a file or directory.
 ///
 /// Implementation lives in `perf_core` (see [`file_git_status`]).
+/// Only used in tests now that the view uses precomputed maps.
+#[cfg(test)]
 fn file_diff_stat(
     rel_path: &Path,
     kind: &NodeKind,

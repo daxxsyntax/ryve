@@ -533,13 +533,15 @@ mod tests {
         let ryve_dir = RyveDir::new(tmp.path());
         ryve_dir.ensure_exists().await.unwrap();
 
-        let mut state = UiState::default();
-        state.sparks_filter = SparksFilterState {
-            status: ["open".to_string()].into_iter().collect(),
-            priority: [0, 1].into_iter().collect(),
-            show_closed: true,
-            sort_mode: "recently_updated".to_string(),
-            search: "auth".to_string(),
+        let state = UiState {
+            sparks_filter: SparksFilterState {
+                status: ["open".to_string()].into_iter().collect(),
+                priority: [0, 1].into_iter().collect(),
+                show_closed: true,
+                sort_mode: "recently_updated".to_string(),
+                search: "auth".to_string(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         save_ui_state(&ryve_dir, &state).await.unwrap();

@@ -173,13 +173,10 @@ pub async fn spawn_hand(
     agent_session_repo::create(pool, &new_session).await?;
 
     // 3. Claim the spark.
-    let short_id = &session_id[..8.min(session_id.len())];
     let assignment = NewHandAssignment {
         session_id: session_id.clone(),
         spark_id: spark_id.to_string(),
         role: kind.role(),
-        source_branch: Some(format!("hand/{short_id}")),
-        target_branch: Some("main".to_string()),
     };
     assignment_repo::assign(pool, assignment).await?;
 
@@ -500,8 +497,33 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::bundled_tmux;
     use crate::coding_agents::{CodingAgent, ResumeStrategy};
     use crate::tmux::TmuxClient;
+
+    /// Skip-gate for the `spawn_*` integration tests below.
+    ///
+    /// These tests exercise the full production hand-spawn path, which
+    /// invokes tmux via the bundled binary (`vendor/tmux/bin/tmux` in the
+    /// dev layout, `<exe_dir>/bin/tmux` in shipped builds). They were
+    /// previously gated on `tmux::resolve_tmux_bin().is_none()`, which
+    /// returns the system tmux as a fallback — but in CI environments
+    /// (Ubuntu runner) the system tmux exhibits behaviour the production
+    /// path is not hardened against (notably failing `pipe-pane` lookup
+    /// immediately after `new-session`), producing flaky `SessionNotFound`
+    /// failures unrelated to anything under test.
+    ///
+    /// Gating on the bundled tmux specifically:
+    ///   - keeps these tests running locally (developers have
+    ///     `vendor/tmux/bin/tmux` built),
+    ///   - keeps them running in the dedicated `Bundled tmux builds and
+    ///     runs` CI job (which builds vendor/tmux as a step),
+    ///   - and skips them in the generic `Test` CI job (which does not
+    ///     build vendor/tmux, so any tmux it found would be the runner's
+    ///     system tmux).
+    fn bundled_tmux_available_for_tests() -> bool {
+        bundled_tmux::bundled_tmux_path().is_some()
+    }
 
     /// Build a throwaway workshop directory: `git init`, an initial empty
     /// commit (worktree creation requires HEAD), an open sqlite pool, and
@@ -526,11 +548,25 @@ mod tests {
         run_git(&["init", "-q", "-b", "main"]);
         run_git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
-        // Stub agent: prints its argv to a file. The output path is
-        // hardcoded into the script body so parallel tests cannot clobber
-        // each other via a shared env var — an earlier version used
+        // Stub agent: prints its argv to a file, then sleeps briefly to
+        // keep the tmux session alive. The output path is hardcoded into
+        // the script body so parallel tests cannot clobber each other via
+        // a shared env var — an earlier version used
         // `$RYVE_TEST_AGENT_OUT` and flaked whenever two of these tests
         // ran in parallel (their env overwrite raced).
+        //
+        // Why the sleep: `spawn_hand` issues `tmux new-session` then
+        // immediately `tmux pipe-pane`. With a real agent (claude / codex)
+        // the agent stays alive for the lifetime of the conversation, so
+        // pipe-pane always finds the session. With a stub that exits in
+        // microseconds, tmux destroys the session as soon as `printf`
+        // returns — and on fast hosts (Ubuntu CI runners) `pipe-pane`
+        // loses the race and reports `SessionNotFound`. macOS happens to
+        // be slow enough that the race is rarely lost. Sleeping 5 seconds
+        // gives the test plenty of headroom on any host without changing
+        // anything about the production path. The tests don't wait on the
+        // sleep — they read agent-out.txt as soon as `printf` has written
+        // it, which happens before the sleep starts.
         let out_path = base.join("agent-out.txt");
         let stub_path = base.join("stub-agent.sh");
         std::fs::write(
@@ -538,7 +574,10 @@ mod tests {
             format!(
                 "#!/bin/sh\n\
                  # Record argv so the test can verify the prompt was delivered.\n\
-                 printf '%s\\n' \"$@\" > \"{}\"\n",
+                 printf '%s\\n' \"$@\" > \"{}\"\n\
+                 # Keep the tmux pane alive long enough for pipe-pane to\n\
+                 # attach (see comment in setup_workshop in hand_spawn.rs).\n\
+                 sleep 5\n",
                 out_path.display()
             ),
         )
@@ -582,8 +621,14 @@ mod tests {
     /// exists and is named `hand-<session_id>`.
     #[tokio::test]
     async fn spawned_hand_delivers_prompt_to_agent_process() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, out_path) = setup_workshop().await;
@@ -690,8 +735,14 @@ mod tests {
     /// as `head-<session_id>`.
     #[tokio::test]
     async fn spawn_head_creates_session_and_crew_and_delivers_prompt() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, out_path) = setup_workshop().await;
@@ -810,6 +861,16 @@ mod tests {
     /// a crew for the goal.
     #[tokio::test]
     async fn spawn_head_reuses_existing_crew() {
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
+            return;
+        }
         let (workshop_dir, pool, _out_path) = setup_workshop().await;
         let stub_path = workshop_dir.join("stub-agent.sh");
 
@@ -897,8 +958,14 @@ mod tests {
     /// expected path is being written.
     #[tokio::test]
     async fn spawn_hand_creates_tmux_session_and_writes_log() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, _out_path) = setup_workshop().await;
@@ -971,10 +1038,10 @@ mod tests {
         //    script's output should appear in the log file via pipe-pane.
         let deadline = Instant::now() + Duration::from_secs(5);
         let log_has_content = loop {
-            if let Ok(content) = std::fs::read_to_string(&expected_log) {
-                if !content.is_empty() {
-                    break true;
-                }
+            if let Ok(content) = std::fs::read_to_string(&expected_log)
+                && !content.is_empty()
+            {
+                break true;
             }
             if Instant::now() >= deadline {
                 break false;

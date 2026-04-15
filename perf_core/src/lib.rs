@@ -102,6 +102,62 @@ pub fn file_diff_stat(
     total
 }
 
+// ── Precomputed git-status/diff maps ────────────────────
+
+/// Build a lookup map that resolves both files (direct) and directories
+/// (aggregated) in O(1). For each file entry we also insert aggregated
+/// values for every ancestor directory.
+///
+/// This replaces the per-node O(files) scan that `file_git_status` did
+/// for directories on every frame. Spark ryve-252c5b6e.
+pub fn precompute_git_status_map(
+    statuses: &HashMap<PathBuf, FileStatus>,
+) -> HashMap<PathBuf, FileStatus> {
+    let mut map: HashMap<PathBuf, FileStatus> = HashMap::with_capacity(statuses.len() * 2);
+    for (path, &status) in statuses {
+        // File entry — direct.
+        map.insert(path.clone(), status);
+        // Propagate to every ancestor directory.
+        let mut ancestor = path.as_path();
+        while let Some(parent) = ancestor.parent() {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            let entry = map.entry(PathBuf::from(parent)).or_insert(status);
+            *entry = higher_priority_status(*entry, status);
+            ancestor = parent;
+        }
+    }
+    map
+}
+
+/// Build a lookup map that resolves both files (direct) and directories
+/// (summed additions/deletions) in O(1). Mirrors
+/// [`precompute_git_status_map`] for diff stats.
+pub fn precompute_diff_stat_map(
+    diff_stats: &HashMap<PathBuf, DiffStat>,
+) -> HashMap<PathBuf, DiffStat> {
+    let mut map: HashMap<PathBuf, DiffStat> = HashMap::with_capacity(diff_stats.len() * 2);
+    for (path, stat) in diff_stats {
+        // File entry — direct.
+        let file_entry = map.entry(path.clone()).or_default();
+        file_entry.additions += stat.additions;
+        file_entry.deletions += stat.deletions;
+        // Propagate to every ancestor directory.
+        let mut ancestor = path.as_path();
+        while let Some(parent) = ancestor.parent() {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            let dir_entry = map.entry(PathBuf::from(parent)).or_default();
+            dir_entry.additions += stat.additions;
+            dir_entry.deletions += stat.deletions;
+            ancestor = parent;
+        }
+    }
+    map
+}
+
 fn higher_priority_status(a: FileStatus, b: FileStatus) -> FileStatus {
     fn rank(s: FileStatus) -> u8 {
         match s {
@@ -194,6 +250,49 @@ pub fn classify_key_event(kind: KeyKind, modifiers: KeyModifiers) -> KeyDispatch
     }
 }
 
+// ── Relative-time formatting ────────────────────────────
+
+/// Format an RFC 3339 timestamp as a short relative time string
+/// (e.g. "2h ago", "3d ago"). Accepts a pre-computed `now` so callers
+/// can share a single clock read across many rows in a frame.
+pub fn format_relative_time(rfc3339: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(then) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
+        return String::new();
+    };
+    let duration = now.signed_duration_since(then);
+
+    if duration.num_minutes() < 1 {
+        "now".to_string()
+    } else if duration.num_minutes() < 60 {
+        format!("{}m ago", duration.num_minutes())
+    } else if duration.num_hours() < 24 {
+        format!("{}h ago", duration.num_hours())
+    } else {
+        format!("{}d ago", duration.num_days())
+    }
+}
+
+// ── Log-tail virtualization ──────────────────────────────
+
+pub const LOG_LINE_HEIGHT: f32 = 20.0;
+
+pub const LOG_OVERSCAN_LINES: usize = 5;
+
+pub fn log_tail_visible_range(
+    offset_y: f32,
+    viewport_height: f32,
+    total_lines: usize,
+) -> (usize, usize) {
+    if total_lines == 0 {
+        return (0, 0);
+    }
+    let first = (offset_y / LOG_LINE_HEIGHT).floor() as usize;
+    let visible_count = (viewport_height / LOG_LINE_HEIGHT).ceil() as usize;
+    let first = first.saturating_sub(LOG_OVERSCAN_LINES).min(total_lines);
+    let last = (first + visible_count + 2 * LOG_OVERSCAN_LINES).min(total_lines);
+    (first, last)
+}
+
 // ── Tests ────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -267,6 +366,90 @@ mod tests {
         fn is_stale(&self) -> bool {
             self.stale
         }
+    }
+
+    #[test]
+    fn precompute_git_status_map_aggregates_ancestors() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src/a.rs"), FileStatus::Modified);
+        statuses.insert(PathBuf::from("src/b.rs"), FileStatus::Added);
+        statuses.insert(PathBuf::from("other/c.rs"), FileStatus::Untracked);
+
+        let map = precompute_git_status_map(&statuses);
+
+        // Files: direct lookup.
+        assert_eq!(map.get(Path::new("src/a.rs")), Some(&FileStatus::Modified));
+        assert_eq!(map.get(Path::new("src/b.rs")), Some(&FileStatus::Added));
+        // Directory: highest priority child (Added > Modified).
+        assert_eq!(map.get(Path::new("src")), Some(&FileStatus::Added));
+        // Other directory.
+        assert_eq!(map.get(Path::new("other")), Some(&FileStatus::Untracked));
+    }
+
+    #[test]
+    fn precompute_git_status_map_no_sibling_bleed() {
+        let mut statuses = HashMap::new();
+        statuses.insert(PathBuf::from("src2/foo.rs"), FileStatus::Modified);
+        let map = precompute_git_status_map(&statuses);
+        // `src` must NOT appear — only `src2` is an ancestor.
+        assert_eq!(map.get(Path::new("src")), None);
+        assert_eq!(map.get(Path::new("src2")), Some(&FileStatus::Modified));
+    }
+
+    #[test]
+    fn precompute_diff_stat_map_sums_ancestors() {
+        let mut diff_stats = HashMap::new();
+        diff_stats.insert(
+            PathBuf::from("src/a.rs"),
+            DiffStat {
+                additions: 5,
+                deletions: 2,
+            },
+        );
+        diff_stats.insert(
+            PathBuf::from("src/b.rs"),
+            DiffStat {
+                additions: 3,
+                deletions: 1,
+            },
+        );
+
+        let map = precompute_diff_stat_map(&diff_stats);
+        let src = map.get(Path::new("src")).unwrap();
+        assert_eq!(src.additions, 8);
+        assert_eq!(src.deletions, 3);
+    }
+
+    #[test]
+    fn format_relative_time_invalid_returns_empty() {
+        assert_eq!(format_relative_time("not a date", chrono::Utc::now()), "");
+    }
+
+    #[test]
+    fn format_relative_time_recent_returns_now() {
+        let now = chrono::Utc::now();
+        assert_eq!(format_relative_time(&now.to_rfc3339(), now), "now");
+    }
+
+    #[test]
+    fn format_relative_time_minutes_ago() {
+        let now = chrono::Utc::now();
+        let then = now - chrono::Duration::minutes(5);
+        assert_eq!(format_relative_time(&then.to_rfc3339(), now), "5m ago");
+    }
+
+    #[test]
+    fn format_relative_time_hours_ago() {
+        let now = chrono::Utc::now();
+        let then = now - chrono::Duration::hours(3);
+        assert_eq!(format_relative_time(&then.to_rfc3339(), now), "3h ago");
+    }
+
+    #[test]
+    fn format_relative_time_days_ago() {
+        let now = chrono::Utc::now();
+        let then = now - chrono::Duration::days(2);
+        assert_eq!(format_relative_time(&then.to_rfc3339(), now), "2d ago");
     }
 
     #[test]

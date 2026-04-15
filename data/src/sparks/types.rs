@@ -733,44 +733,51 @@ impl AssignmentRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Assignment {
+pub struct HandAssignment {
     pub id: i64,
     pub session_id: String,
     pub spark_id: String,
     pub status: String,
     pub role: String,
-    pub phase: String,
-    pub event_version: i64,
-    pub source_branch: Option<String>,
-    pub target_branch: Option<String>,
     pub assigned_at: String,
     pub last_heartbeat_at: Option<String>,
     pub lease_expires_at: Option<String>,
     pub completed_at: Option<String>,
     pub handoff_to: Option<String>,
     pub handoff_reason: Option<String>,
-    /// Current workflow phase, governed by the transition validator.
-    /// `None` for rows created before the migration adds this column.
-    pub assignment_phase: Option<String>,
-    /// When the phase was last changed (RFC 3339).
-    pub phase_changed_at: Option<String>,
-    /// actor_id that performed the last phase transition.
-    pub phase_changed_by: Option<String>,
-    /// Role of the actor that performed the last phase transition.
-    pub phase_actor_role: Option<String>,
-    /// Event ID that triggered the last phase transition.
-    pub phase_event_id: Option<i64>,
 }
 
-/// Backward-compatible alias for code that still references HandAssignment.
-pub type HandAssignment = Assignment;
-
-pub struct NewAssignment {
+pub struct NewHandAssignment {
     pub session_id: String,
     pub spark_id: String,
     pub role: AssignmentRole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Assignment {
+    pub assignment_id: String,
+    pub spark_id: String,
+    pub actor_id: String,
+    pub assignment_phase: String,
     pub source_branch: Option<String>,
     pub target_branch: Option<String>,
+    pub event_version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub struct NewAssignment {
+    pub spark_id: String,
+    pub actor_id: String,
+    pub assignment_phase: AssignmentPhase,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
+}
+
+pub struct UpdateAssignment {
+    pub event_version: Option<i64>,
+    pub source_branch: Option<Option<String>>,
+    pub target_branch: Option<Option<String>>,
 }
 
 // ── Assignment Phase (transition state machine) ─────
@@ -880,9 +887,6 @@ impl TransitionActorRole {
         matches!(self, Self::Head | Self::Director)
     }
 }
-
-/// Backward-compatible alias for code that still references NewHandAssignment.
-pub type NewHandAssignment = NewAssignment;
 
 // ── Crew ──────────────────────────────────────────────
 
@@ -1261,40 +1265,6 @@ pub struct ReleaseEpic {
     pub release_id: String,
     pub spark_id: String,
     pub added_at: String,
-}
-
-// ── Phase-based assignment ──────────────────────────
-//
-// A phase-lifecycle assignment linking an actor to a spark. Distinct from
-// `HandAssignment` which tracks session-level claims with heartbeats.
-
-/// A phase-lifecycle assignment row from the `assignments` table.
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct PhaseAssignment {
-    pub assignment_id: String,
-    pub spark_id: String,
-    pub actor_id: String,
-    pub assignment_phase: String,
-    pub source_branch: Option<String>,
-    pub target_branch: Option<String>,
-    pub event_version: i64,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-pub struct NewPhaseAssignment {
-    pub spark_id: String,
-    pub actor_id: String,
-    pub assignment_phase: AssignmentPhase,
-    pub source_branch: Option<String>,
-    pub target_branch: Option<String>,
-}
-
-#[derive(Default)]
-pub struct UpdatePhaseAssignment {
-    pub event_version: Option<i64>,
-    pub source_branch: Option<Option<String>>,
-    pub target_branch: Option<Option<String>>,
 }
 
 #[cfg(test)]

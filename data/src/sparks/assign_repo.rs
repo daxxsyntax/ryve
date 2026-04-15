@@ -11,13 +11,13 @@ use sqlx::SqlitePool;
 
 use super::error::SparksError;
 use super::id::generate_id;
-use super::types::{NewPhaseAssignment, PhaseAssignment, UpdatePhaseAssignment};
+use super::types::{Assignment, NewAssignment, UpdateAssignment};
 
 /// Create a new assignment and return it.
 pub async fn create_assignment(
     pool: &SqlitePool,
-    new: NewPhaseAssignment,
-) -> Result<PhaseAssignment, SparksError> {
+    new: NewAssignment,
+) -> Result<Assignment, SparksError> {
     let id = generate_id("asgn");
     let now = Utc::now().to_rfc3339();
 
@@ -43,8 +43,8 @@ pub async fn create_assignment(
 pub async fn get_assignment(
     pool: &SqlitePool,
     assignment_id: &str,
-) -> Result<PhaseAssignment, SparksError> {
-    sqlx::query_as::<_, PhaseAssignment>("SELECT * FROM assignments WHERE assignment_id = ?")
+) -> Result<Assignment, SparksError> {
+    sqlx::query_as::<_, Assignment>("SELECT * FROM assignments WHERE assignment_id = ?")
         .bind(assignment_id)
         .fetch_optional(pool)
         .await?
@@ -55,8 +55,8 @@ pub async fn get_assignment(
 pub async fn list_assignments_for_spark(
     pool: &SqlitePool,
     spark_id: &str,
-) -> Result<Vec<PhaseAssignment>, SparksError> {
-    Ok(sqlx::query_as::<_, PhaseAssignment>(
+) -> Result<Vec<Assignment>, SparksError> {
+    Ok(sqlx::query_as::<_, Assignment>(
         "SELECT * FROM assignments WHERE spark_id = ? ORDER BY created_at DESC",
     )
     .bind(spark_id)
@@ -70,8 +70,8 @@ pub async fn list_assignments_for_spark(
 pub async fn update_assignment(
     pool: &SqlitePool,
     assignment_id: &str,
-    update: UpdatePhaseAssignment,
-) -> Result<PhaseAssignment, SparksError> {
+    update: UpdateAssignment,
+) -> Result<Assignment, SparksError> {
     let existing = get_assignment(pool, assignment_id).await?;
     let now = Utc::now().to_rfc3339();
 
