@@ -497,8 +497,33 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::bundled_tmux;
     use crate::coding_agents::{CodingAgent, ResumeStrategy};
     use crate::tmux::TmuxClient;
+
+    /// Skip-gate for the `spawn_*` integration tests below.
+    ///
+    /// These tests exercise the full production hand-spawn path, which
+    /// invokes tmux via the bundled binary (`vendor/tmux/bin/tmux` in the
+    /// dev layout, `<exe_dir>/bin/tmux` in shipped builds). They were
+    /// previously gated on `tmux::resolve_tmux_bin().is_none()`, which
+    /// returns the system tmux as a fallback — but in CI environments
+    /// (Ubuntu runner) the system tmux exhibits behaviour the production
+    /// path is not hardened against (notably failing `pipe-pane` lookup
+    /// immediately after `new-session`), producing flaky `SessionNotFound`
+    /// failures unrelated to anything under test.
+    ///
+    /// Gating on the bundled tmux specifically:
+    ///   - keeps these tests running locally (developers have
+    ///     `vendor/tmux/bin/tmux` built),
+    ///   - keeps them running in the dedicated `Bundled tmux builds and
+    ///     runs` CI job (which builds vendor/tmux as a step),
+    ///   - and skips them in the generic `Test` CI job (which does not
+    ///     build vendor/tmux, so any tmux it found would be the runner's
+    ///     system tmux).
+    fn bundled_tmux_available_for_tests() -> bool {
+        bundled_tmux::bundled_tmux_path().is_some()
+    }
 
     /// Build a throwaway workshop directory: `git init`, an initial empty
     /// commit (worktree creation requires HEAD), an open sqlite pool, and
@@ -579,8 +604,14 @@ mod tests {
     /// exists and is named `hand-<session_id>`.
     #[tokio::test]
     async fn spawned_hand_delivers_prompt_to_agent_process() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, out_path) = setup_workshop().await;
@@ -687,8 +718,14 @@ mod tests {
     /// as `head-<session_id>`.
     #[tokio::test]
     async fn spawn_head_creates_session_and_crew_and_delivers_prompt() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, out_path) = setup_workshop().await;
@@ -807,6 +844,16 @@ mod tests {
     /// a crew for the goal.
     #[tokio::test]
     async fn spawn_head_reuses_existing_crew() {
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
+            return;
+        }
         let (workshop_dir, pool, _out_path) = setup_workshop().await;
         let stub_path = workshop_dir.join("stub-agent.sh");
 
@@ -894,8 +941,14 @@ mod tests {
     /// expected path is being written.
     #[tokio::test]
     async fn spawn_hand_creates_tmux_session_and_writes_log() {
-        if tmux::resolve_tmux_bin().is_none() {
-            eprintln!("tmux not available — skipping test");
+        if !bundled_tmux_available_for_tests() {
+            eprintln!(
+                "bundled tmux not available — skipping integration test \
+                 (these tests exercise the production hand-spawn path which \
+                 is hardened against the pinned bundled tmux; arbitrary \
+                 system tmux versions are covered by the separate Bundled \
+                 tmux CI job)"
+            );
             return;
         }
         let (workshop_dir, pool, _out_path) = setup_workshop().await;
