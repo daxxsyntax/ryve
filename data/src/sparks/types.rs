@@ -1216,6 +1216,14 @@ pub struct NewRelease {
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct UpdateRelease {
+    pub version: Option<String>,
+    pub problem: Option<String>,
+    pub notes: Option<String>,
+    pub acceptance: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStatus {

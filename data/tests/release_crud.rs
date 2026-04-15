@@ -173,3 +173,79 @@ async fn list_filters_by_status(pool: sqlx::SqlitePool) {
     assert_eq!(in_progress.len(), 1);
     assert_eq!(in_progress[0].version, "4.0.0");
 }
+
+#[sqlx::test(fixtures("seed_sparks"))]
+async fn update_changes_version(pool: sqlx::SqlitePool) {
+    let rel = release_repo::create(&pool, new_release("5.0.0"))
+        .await
+        .unwrap();
+
+    let updated = release_repo::update(
+        &pool,
+        &rel.id,
+        UpdateRelease {
+            version: Some("5.1.0".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(updated.version, "5.1.0");
+    assert_eq!(updated.problem.as_deref(), Some("ship it"));
+}
+
+#[sqlx::test(fixtures("seed_sparks"))]
+async fn update_rejects_invalid_semver(pool: sqlx::SqlitePool) {
+    let rel = release_repo::create(&pool, new_release("6.0.0"))
+        .await
+        .unwrap();
+
+    let err = release_repo::update(
+        &pool,
+        &rel.id,
+        UpdateRelease {
+            version: Some("bad-version".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, SparksError::InvalidSemver(_)), "got {err:?}");
+
+    let unchanged = release_repo::get(&pool, &rel.id).await.unwrap();
+    assert_eq!(unchanged.version, "6.0.0");
+}
+
+#[sqlx::test(fixtures("seed_sparks"))]
+async fn update_none_fields_are_preserved(pool: sqlx::SqlitePool) {
+    let rel = release_repo::create(&pool, new_release("7.0.0"))
+        .await
+        .unwrap();
+
+    let updated = release_repo::update(
+        &pool,
+        &rel.id,
+        UpdateRelease {
+            notes: Some("new notes".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(updated.version, "7.0.0");
+    assert_eq!(updated.notes.as_deref(), Some("new notes"));
+    assert_eq!(updated.problem.as_deref(), Some("ship it"));
+    assert_eq!(updated.acceptance(), vec!["tests pass", "tag pushed"]);
+}
+
+#[sqlx::test(fixtures("seed_sparks"))]
+async fn update_not_found(pool: sqlx::SqlitePool) {
+    let err = release_repo::update(&pool, "rel-nonexistent", UpdateRelease::default())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, SparksError::NotFound(_)), "got {err:?}");
+}
