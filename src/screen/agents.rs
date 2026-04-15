@@ -572,8 +572,6 @@ pub fn view<'a>(
     sparks: &'a [Spark],
     state: &'a AgentsPanelState,
     pal: Palette,
-    _now: Instant,
-    _utc_now: chrono::DateTime<chrono::Utc>,
 ) -> Element<'a, Message> {
     // Panel title is "Activity" (not "Hands") because the panel actually
     // shows the entire orchestration tree — Heads, Crews, leaf Hands,

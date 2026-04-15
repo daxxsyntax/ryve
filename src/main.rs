@@ -2233,11 +2233,11 @@ impl App {
                     } => {
                         if let Some(idx) = self.active_workshop {
                             let ws = &mut self.workshops[idx];
-                            if let Some(active_id) = ws.bench.active_tab {
-                                if let Some(tail) = ws.log_tails.get_mut(&active_id) {
-                                    tail.scroll_offset_y = offset_y;
-                                    tail.viewport_height = viewport_height;
-                                }
+                            if let Some(active_id) = ws.bench.active_tab
+                                && let Some(tail) = ws.log_tails.get_mut(&active_id)
+                            {
+                                tail.scroll_offset_y = offset_y;
+                                tail.viewport_height = viewport_height;
                             }
                         }
                     }
@@ -6915,8 +6915,8 @@ impl App {
         ws: &'a Workshop,
         _has_bg: bool,
         pal: &style::Palette,
-        now: std::time::Instant,
-        utc_now: chrono::DateTime<chrono::Utc>,
+        _now: std::time::Instant,
+        _utc_now: chrono::DateTime<chrono::Utc>,
     ) -> Element<'a, Message> {
         screen::agents::view(
             &ws.agent_sessions,
@@ -6926,8 +6926,6 @@ impl App {
             &ws.sparks,
             &ws.agents_panel,
             *pal,
-            now,
-            utc_now,
         )
         .map(Message::Agents)
     }

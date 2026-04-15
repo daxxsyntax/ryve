@@ -59,7 +59,7 @@ pub struct HomeData<'a> {
 
 pub fn view<'a>(data: HomeData<'a>, pal: &Palette, has_bg: bool) -> Element<'a, Message> {
     let pal = *pal;
-    let utc_now = chrono::Utc::now();
+    let utc_now = data.utc_now;
 
     let header = row![
         text("Home").size(FONT_HEADER).color(pal.text_primary),
