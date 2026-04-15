@@ -207,8 +207,8 @@ pub struct PendingNavPrompt {
 pub struct Workshop {
     pub id: Uuid,
     pub directory: PathBuf,
-    pub ryve_dir: RyveDir,
-    pub config: WorkshopConfig,
+    pub ryve_dir: Arc<RyveDir>,
+    pub config: Arc<WorkshopConfig>,
     pub bench: BenchState,
     pub terminals: HashMap<u64, iced_term::Terminal>,
     /// Hand terminals whose worktree is being created asynchronously. Keyed
@@ -372,16 +372,28 @@ pub struct Workshop {
     /// the panel survives restart; stale IDs (epics deleted between runs)
     /// are pruned on load. Spark ryve-926870a9.
     pub collapsed_epics: HashSet<String>,
+    /// Cached spark summary for the status bar. Recomputed on `SparksLoaded`
+    /// instead of every frame. Spark ryve-252c5b6e.
+    pub cached_spark_summary: crate::screen::status_bar::SparkSummary,
+    /// Cached git diff stats for the status bar. Recomputed on `FilesScanned`
+    /// instead of every frame. Spark ryve-252c5b6e.
+    pub cached_git_stats: crate::screen::status_bar::GitStats,
+    /// Cached active-hand count for the status bar. Recomputed on
+    /// `AgentSessionsLoaded` instead of every frame. Spark ryve-252c5b6e.
+    pub cached_active_hands: usize,
+    /// Cached total (non-stale) hand count for the status bar. Recomputed on
+    /// `AgentSessionsLoaded` instead of every frame. Spark ryve-252c5b6e.
+    pub cached_total_hands: usize,
 }
 
 impl Workshop {
     pub fn new(directory: PathBuf) -> Self {
-        let ryve_dir = RyveDir::new(&directory);
+        let ryve_dir = Arc::new(RyveDir::new(&directory));
         Self {
             id: Uuid::new_v4(),
             directory,
             ryve_dir,
-            config: WorkshopConfig::default(),
+            config: Arc::new(WorkshopConfig::default()),
             bench: BenchState::new(),
             terminals: HashMap::new(),
             pending_terminal_spawns: HashMap::new(),
@@ -442,7 +454,49 @@ impl Workshop {
             terminal_font_family: None,
             agent_context_sync_cache: Arc::new(Mutex::new(AgentContextSyncCache::new())),
             collapsed_epics: HashSet::new(),
+            cached_spark_summary: Default::default(),
+            cached_git_stats: Default::default(),
+            cached_active_hands: 0,
+            cached_total_hands: 0,
         }
+    }
+
+    // ── Cached aggregations (spark ryve-252c5b6e) ──────────
+
+    /// Recompute the spark summary from `self.sparks`. Call after
+    /// `SparksLoaded` replaces the spark list.
+    pub fn recompute_spark_summary(&mut self) {
+        let mut s = crate::screen::status_bar::SparkSummary::default();
+        for spark in &self.sparks {
+            match spark.status.as_str() {
+                "open" => s.open += 1,
+                "in_progress" => s.in_progress += 1,
+                "blocked" => s.blocked += 1,
+                "deferred" => s.deferred += 1,
+                "closed" => s.closed += 1,
+                _ => {}
+            }
+        }
+        self.cached_spark_summary = s;
+    }
+
+    /// Recompute git diff stats from the file explorer state. Call after
+    /// `FilesScanned` replaces git_statuses/diff_stats.
+    pub fn recompute_git_stats(&mut self) {
+        let mut gs = crate::screen::status_bar::GitStats::default();
+        for stat in self.file_explorer.diff_stats.values() {
+            gs.additions += stat.additions;
+            gs.deletions += stat.deletions;
+        }
+        gs.changed_files = self.file_explorer.git_statuses.len();
+        self.cached_git_stats = gs;
+    }
+
+    /// Recompute active/total hand counts from agent sessions. Call after
+    /// `AgentSessionsLoaded` updates the session list.
+    pub fn recompute_hand_counts(&mut self) {
+        self.cached_active_hands = self.agent_sessions.iter().filter(|a| a.active).count();
+        self.cached_total_hands = self.agent_sessions.iter().filter(|a| !a.stale).count();
     }
 
     // ── Sort mode (spark ryve-6f24ef2a) ─────────────────────
@@ -1127,34 +1181,13 @@ impl Workshop {
             self.bench.create_tab(tab_id, title, tab_kind);
         }
 
-        // Pre-resolve the system-prompt file (for built-in agents that
-        // support `--system-prompt`). Reading it now lets stage 2 stay
-        // trivially synchronous and keeps the behavior identical to the
-        // previous blocking implementation.
-        let system_prompt = if let PendingTerminalKind::Agent(agent) = &kind {
-            agent.system_prompt_flag().and_then(|(flag, is_file)| {
-                let prompt_path = self.ryve_dir.workshop_md_path();
-                if !prompt_path.exists() {
-                    return None;
-                }
-                let value = if is_file {
-                    prompt_path.to_string_lossy().into_owned()
-                } else {
-                    std::fs::read_to_string(&prompt_path).unwrap_or_default()
-                };
-                Some((flag.to_string(), value))
-            })
-        } else {
-            None
-        };
-
         self.pending_terminal_spawns.insert(
             tab_id,
             PendingTerminalSpawn {
                 session_id,
                 kind,
                 full_auto,
-                system_prompt,
+                system_prompt: None,
             },
         );
 
@@ -1173,10 +1206,19 @@ impl Workshop {
         &mut self,
         tab_id: u64,
         worktree_result: Result<PathBuf, String>,
+        system_prompt: Option<(String, String)>,
     ) -> bool {
-        let Some(pending) = self.pending_terminal_spawns.remove(&tab_id) else {
+        let Some(mut pending) = self.pending_terminal_spawns.remove(&tab_id) else {
             return false;
         };
+
+        // Prefer the asynchronously-resolved system prompt passed in from
+        // the worktree task (spark ryve-2c7d348b). Fall back to whatever
+        // was stored in the pending spawn (always None after the async
+        // migration, but kept for safety).
+        if system_prompt.is_some() {
+            pending.system_prompt = system_prompt;
+        }
 
         let working_dir = match worktree_result {
             Ok(path) => path,
@@ -1305,29 +1347,16 @@ impl Workshop {
             }
         }
 
-        // Resolve system-prompt for the agent.
-        let system_prompt = agent.system_prompt_flag().and_then(|(flag, is_file)| {
-            let prompt_path = self.ryve_dir.workshop_md_path();
-            if !prompt_path.exists() {
-                return None;
-            }
-            let value = if is_file {
-                prompt_path.to_string_lossy().into_owned()
-            } else {
-                std::fs::read_to_string(&prompt_path).unwrap_or_default()
-            };
-            Some((flag.to_string(), value))
-        });
-
         // Queue the pending spawn so `finalize_hand_terminal` picks it up
-        // when `HandWorktreeReady` arrives.
+        // when `HandWorktreeReady` arrives. System prompt is resolved
+        // asynchronously in dispatch_worktree_task (spark ryve-2c7d348b).
         self.pending_terminal_spawns.insert(
             tab_id,
             PendingTerminalSpawn {
                 session_id: new_session_id,
                 kind: PendingTerminalKind::Agent(agent.clone()),
                 full_auto,
-                system_prompt,
+                system_prompt: None,
             },
         );
 
@@ -1588,6 +1617,30 @@ pub(crate) async fn create_hand_worktree(
     }
 
     Ok(wt_dir)
+}
+
+/// Asynchronously resolve the system-prompt flag + value for a coding agent.
+///
+/// Spark ryve-2c7d348b: moved out of `begin_hand_terminal_inner` /
+/// `prepare_atlas_refresh` (which ran on the UI thread) into the async
+/// worktree task so no `std::fs` calls block `update()`.
+pub(crate) async fn resolve_system_prompt_async(
+    ryve_dir: &RyveDir,
+    prompt_flag: Option<(&str, bool)>,
+) -> Option<(String, String)> {
+    let (flag, is_file) = prompt_flag?;
+    let prompt_path = ryve_dir.workshop_md_path();
+    if !tokio::fs::try_exists(&prompt_path).await.unwrap_or(false) {
+        return None;
+    }
+    let value = if is_file {
+        prompt_path.to_string_lossy().into_owned()
+    } else {
+        tokio::fs::read_to_string(&prompt_path)
+            .await
+            .unwrap_or_default()
+    };
+    Some((flag.to_string(), value))
 }
 
 /// Env vars to inject into every Hand's terminal so the `ryve` CLI works
@@ -2517,5 +2570,34 @@ mod tests {
             "wrapped command should embed BOTTOM_PIN_NEWLINES loop bound: {}",
             args[1]
         );
+    }
+
+    // ── Arc-wrapped config & ryve_dir (spark ryve-7fc6006f) ──
+
+    #[test]
+    fn config_and_ryve_dir_are_arc_wrapped() {
+        let ws = Workshop::new(PathBuf::from("/tmp/ryve-arc-test"));
+        // Clone is a cheap Arc pointer bump, not a deep copy.
+        let config_clone = Arc::clone(&ws.config);
+        let ryve_dir_clone = Arc::clone(&ws.ryve_dir);
+        assert!(Arc::ptr_eq(&ws.config, &config_clone));
+        assert!(Arc::ptr_eq(&ws.ryve_dir, &ryve_dir_clone));
+    }
+
+    #[test]
+    fn arc_make_mut_allows_config_mutation() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve-arc-mut"));
+        // Shared clone first — refcount > 1.
+        let shared = Arc::clone(&ws.config);
+        assert_eq!(
+            shared.background.dim_opacity,
+            ws.config.background.dim_opacity
+        );
+
+        // make_mut triggers copy-on-write: ws.config gets a new allocation.
+        Arc::make_mut(&mut ws.config).background.dim_opacity = 0.42;
+        assert!((ws.config.background.dim_opacity - 0.42).abs() < f32::EPSILON);
+        // The previously-shared Arc still holds the old value.
+        assert!(!Arc::ptr_eq(&ws.config, &shared));
     }
 }

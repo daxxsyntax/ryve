@@ -3,12 +3,13 @@
 
 //! Hands panel — lists active and past Hand sessions.
 
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use data::sparks::types::{Crew, CrewMember, HandAssignment, Spark};
 use iced::widget::{
-    Space, button, column, container, mouse_area, row, scrollable, svg, text, text_input,
+    Space, button, column, container, lazy, mouse_area, row, scrollable, svg, text, text_input,
 };
 use iced::{Element, Length, Theme};
 
@@ -431,40 +432,140 @@ pub fn owner_spark_for_session<'a>(
         .map(|a| a.spark_id.as_str())
 }
 
+/// Case-insensitive ASCII substring check without allocating. Returns `true`
+/// when `haystack` contains `needle` ignoring ASCII case.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let needle_bytes = needle.as_bytes();
+    let haystack_bytes = haystack.as_bytes();
+    if needle_bytes.len() > haystack_bytes.len() {
+        return false;
+    }
+    haystack_bytes
+        .windows(needle_bytes.len())
+        .any(|window| window.eq_ignore_ascii_case(needle_bytes))
+}
+
 /// Decide whether a session row matches the search query. The query is
 /// matched (case-insensitively) against:
 /// - the session's display name (e.g. "Claude Code")
 /// - the agent command (e.g. "claude")
 /// - the linked spark id and (if found) spark title
 ///
-/// Empty queries match everything.
+/// Empty queries match everything. This function allocates zero `String`s
+/// per call — it uses byte-level ASCII-case-insensitive comparison.
 pub fn session_matches_query(
     session: &AgentSession,
     assignments: &[HandAssignment],
     sparks: &[Spark],
     query: &str,
 ) -> bool {
-    let q = query.trim().to_ascii_lowercase();
+    let q = query.trim();
     if q.is_empty() {
         return true;
     }
-    if session.name.to_ascii_lowercase().contains(&q) {
+    if contains_ignore_ascii_case(&session.name, q) {
         return true;
     }
-    if session.agent.command.to_ascii_lowercase().contains(&q) {
+    if contains_ignore_ascii_case(&session.agent.command, q) {
         return true;
     }
     if let Some(spark_id) = owner_spark_for_session(&session.id, assignments) {
-        if spark_id.to_ascii_lowercase().contains(&q) {
+        if contains_ignore_ascii_case(spark_id, q) {
             return true;
         }
         if let Some(spark) = sparks.iter().find(|s| s.id == spark_id)
-            && spark.title.to_ascii_lowercase().contains(&q)
+            && contains_ignore_ascii_case(&spark.title, q)
         {
             return true;
         }
     }
     false
+}
+
+// ── Lazy key computation ─────────────────────────────
+
+/// Compute a hash key for the agents panel so `lazy()` can skip widget-tree
+/// rebuilds when inputs are unchanged. Includes a 5-second time bucket so
+/// idle/working status colors refresh at the same cadence as `IDLE_THRESHOLD`.
+fn agents_panel_hash(
+    sessions: &[AgentSession],
+    assignments: &[HandAssignment],
+    crews: &[Crew],
+    crew_members: &[CrewMember],
+    sparks: &[Spark],
+    state: &AgentsPanelState,
+) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // 5-second time bucket for status color refresh.
+    let time_bucket = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 5)
+        .unwrap_or(0);
+    time_bucket.hash(&mut h);
+    // `last_output_at` drives idle/working status color relative to
+    // `Instant::now()`. Bucket the elapsed time at the same 5-second
+    // cadence as `time_bucket` so a session crossing an idle threshold
+    // within a bucket window still invalidates the lazy cache
+    // (Copilot PR #23 review). Capture `now` once here so all sessions
+    // share the same reference point for a stable hash within one frame.
+    let now = Instant::now();
+    sessions.len().hash(&mut h);
+    for s in sessions {
+        s.id.hash(&mut h);
+        s.name.hash(&mut h);
+        s.active.hash(&mut h);
+        s.stale.hash(&mut h);
+        s.tmux_session_live.hash(&mut h);
+        s.parent_session_id.hash(&mut h);
+        s.session_label.hash(&mut h);
+        match s.last_output_at {
+            Some(t) => {
+                let elapsed_bucket = now.saturating_duration_since(t).as_secs() / 5;
+                (1u8, elapsed_bucket).hash(&mut h);
+            }
+            None => 0u8.hash(&mut h),
+        }
+    }
+    assignments.len().hash(&mut h);
+    for a in assignments {
+        a.session_id.hash(&mut h);
+        a.spark_id.hash(&mut h);
+    }
+    crews.len().hash(&mut h);
+    for c in crews {
+        c.id.hash(&mut h);
+        c.name.hash(&mut h);
+    }
+    crew_members.len().hash(&mut h);
+    for m in crew_members {
+        m.crew_id.hash(&mut h);
+        m.session_id.hash(&mut h);
+    }
+    // Only hash spark fields relevant to rendering.
+    sparks.len().hash(&mut h);
+    for s in sparks {
+        s.id.hash(&mut h);
+        s.title.hash(&mut h);
+        s.spark_type.hash(&mut h);
+        s.priority.hash(&mut h);
+    }
+    state.search.hash(&mut h);
+    state.history_limit.hash(&mut h);
+    state.stale_collapsed.hash(&mut h);
+    let mut ch: Vec<&String> = state.collapsed_heads.iter().collect();
+    ch.sort();
+    for id in ch {
+        id.hash(&mut h);
+    }
+    let mut cc: Vec<&String> = state.collapsed_crews.iter().collect();
+    cc.sort();
+    for id in cc {
+        id.hash(&mut h);
+    }
+    h.finish()
 }
 
 /// Render the Hands panel.
@@ -486,7 +587,6 @@ pub fn view<'a>(
     state: &'a AgentsPanelState,
     pal: Palette,
 ) -> Element<'a, Message> {
-    let now = Instant::now();
     // Panel title is "Activity" (not "Hands") because the panel actually
     // shows the entire orchestration tree — Heads, Crews, leaf Hands,
     // and history — not just Hands. The inner section labels ("Active",
@@ -508,115 +608,121 @@ pub fn view<'a>(
         .align_y(iced::Alignment::Center)
         .padding([2, 4]);
 
-    let mut content = column![header, search_row].spacing(6).padding(10);
+    // Wrap the content sections (active, history, stale) in `lazy()` so
+    // iced reuses the cached widget tree when inputs are unchanged (sp-78d34de4).
+    let key = agents_panel_hash(sessions, assignments, crews, crew_members, sparks, state);
+    let sess = sessions.to_vec();
+    let asgn = assignments.to_vec();
+    let cr = crews.to_vec();
+    let cm = crew_members.to_vec();
+    let sp = sparks.to_vec();
+    let st = state.clone();
 
-    // Pre-filter sessions by the search query so the tree only contains
-    // matching rows. Stale section is filtered separately below.
-    let q = state.search.as_str();
-    let active_filtered: Vec<AgentSession> = sessions
-        .iter()
-        .filter(|s| s.active && session_matches_query(s, assignments, sparks, q))
-        .cloned()
-        .collect();
+    let body = lazy(key, move |_| {
+        let now = Instant::now();
+        let utc_now = chrono::Utc::now();
+        let q = st.search.as_str();
+        let mut content = column![].spacing(6);
 
-    // Build the hierarchical tree from filtered Active rows.
-    let tree = build_active_tree(&active_filtered, crews, crew_members);
+        let active_filtered: Vec<AgentSession> = sess
+            .iter()
+            .filter(|s| s.active && session_matches_query(s, &asgn, &sp, q))
+            .cloned()
+            .collect();
 
-    if tree.is_empty()
-        && sessions.iter().filter(|s| !s.active && !s.stale).count() == 0
-        && sessions.iter().filter(|s| s.stale).count() == 0
-    {
-        content = content.push(
-            text("No hands yet")
-                .size(FONT_BODY)
-                .color(pal.text_tertiary),
-        );
-    }
+        let tree = build_active_tree(&active_filtered, &cr, &cm);
 
-    // ── Active section ─────────────────────
-    if !tree.is_empty() {
-        content = content.push(text("Active").size(FONT_LABEL).color(pal.text_secondary));
-        for node in tree {
-            content = content.push(render_active_node(
-                node,
-                sessions,
-                assignments,
-                sparks,
-                state,
-                &pal,
-                now,
-            ));
-        }
-    }
-
-    // ── History section ────────────────────
-    let history_filtered: Vec<&AgentSession> = sessions
-        .iter()
-        .filter(|s| !s.active && !s.stale && session_matches_query(s, assignments, sparks, q))
-        .collect();
-    if !history_filtered.is_empty() {
-        content = content.push(Space::new().height(4));
-        content = content.push(text("History").size(FONT_LABEL).color(pal.text_secondary));
-
-        let total = history_filtered.len();
-        let limit = state.history_limit.min(total);
-        for session in history_filtered.iter().take(limit) {
-            content = content.push(render_history_row(session, assignments, sparks, &pal));
+        if tree.is_empty()
+            && sess.iter().filter(|s| !s.active && !s.stale).count() == 0
+            && sess.iter().filter(|s| s.stale).count() == 0
+        {
+            content = content.push(
+                text("No hands yet")
+                    .size(FONT_BODY)
+                    .color(pal.text_tertiary),
+            );
         }
 
-        if total > limit {
-            let remaining = total - limit;
-            let more_btn = button(
-                text(format!("Load more… ({remaining})"))
-                    .size(FONT_SMALL)
-                    .color(pal.accent),
-            )
-            .style(button::text)
-            .padding([4, 8])
-            .on_press(Message::LoadMoreHistory);
-            content = content.push(more_btn);
-        }
-    }
-
-    // ── Stale section (collapsed by default, at the bottom) ─────
-    let stale: Vec<&AgentSession> = sessions
-        .iter()
-        .filter(|s| s.stale && session_matches_query(s, assignments, sparks, q))
-        .collect();
-    if !stale.is_empty() {
-        content = content.push(Space::new().height(8));
-
-        let chev_icon = if state.stale_collapsed {
-            UiIcon::ChevronRight
-        } else {
-            UiIcon::ChevronDown
-        };
-        let chev = svg(icons::ui_icon(chev_icon))
-            .width(12)
-            .height(12)
-            .style(icons::ui_icon_color(pal.text_secondary));
-        let header_row = row![
-            chev,
-            text(format!("Stale ({})", stale.len()))
-                .size(FONT_LABEL)
-                .color(pal.text_secondary),
-        ]
-        .spacing(4)
-        .align_y(iced::Alignment::Center);
-        let header_btn = button(header_row)
-            .style(button::text)
-            .padding([2, 4])
-            .on_press(Message::ToggleStaleCollapsed);
-        content = content.push(header_btn);
-
-        if !state.stale_collapsed {
-            for session in &stale {
-                content = content.push(render_stale_row(session, &pal));
+        // ── Active section ─────────────────────
+        if !tree.is_empty() {
+            content = content.push(text("Active").size(FONT_LABEL).color(pal.text_secondary));
+            for node in tree {
+                content = content.push(render_active_node(node, &sess, &asgn, &sp, &st, &pal, now));
             }
         }
-    }
 
-    scrollable(content)
+        // ── History section ────────────────────
+        let history_filtered: Vec<&AgentSession> = sess
+            .iter()
+            .filter(|s| !s.active && !s.stale && session_matches_query(s, &asgn, &sp, q))
+            .collect();
+        if !history_filtered.is_empty() {
+            content = content.push(Space::new().height(4));
+            content = content.push(text("History").size(FONT_LABEL).color(pal.text_secondary));
+
+            let total = history_filtered.len();
+            let limit = st.history_limit.min(total);
+            for session in history_filtered.iter().take(limit) {
+                content = content.push(render_history_row(session, &asgn, &sp, &pal, utc_now));
+            }
+
+            if total > limit {
+                let remaining = total - limit;
+                let more_btn = button(
+                    text(format!("Load more… ({remaining})"))
+                        .size(FONT_SMALL)
+                        .color(pal.accent),
+                )
+                .style(button::text)
+                .padding([4, 8])
+                .on_press(Message::LoadMoreHistory);
+                content = content.push(more_btn);
+            }
+        }
+
+        // ── Stale section (collapsed by default, at the bottom) ─────
+        let stale: Vec<&AgentSession> = sess
+            .iter()
+            .filter(|s| s.stale && session_matches_query(s, &asgn, &sp, q))
+            .collect();
+        if !stale.is_empty() {
+            content = content.push(Space::new().height(8));
+
+            let chev_icon = if st.stale_collapsed {
+                UiIcon::ChevronRight
+            } else {
+                UiIcon::ChevronDown
+            };
+            let chev = svg(icons::ui_icon(chev_icon))
+                .width(12)
+                .height(12)
+                .style(icons::ui_icon_color(pal.text_secondary));
+            let header_row = row![
+                chev,
+                text(format!("Stale ({})", stale.len()))
+                    .size(FONT_LABEL)
+                    .color(pal.text_secondary),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center);
+            let header_btn = button(header_row)
+                .style(button::text)
+                .padding([2, 4])
+                .on_press(Message::ToggleStaleCollapsed);
+            content = content.push(header_btn);
+
+            if !st.stale_collapsed {
+                for session in &stale {
+                    content = content.push(render_stale_row(session, &pal, utc_now));
+                }
+            }
+        }
+
+        content
+    });
+
+    let outer = column![header, search_row, body].spacing(6).padding(10);
+    scrollable(outer)
         .height(Length::Fill)
         .width(Length::Fill)
         .into()
@@ -627,15 +733,15 @@ pub fn view<'a>(
 /// Render a single node in the Active hierarchy. Recurses one level for
 /// crew children. Heads always render a chevron toggle (even with no
 /// children) so the affordance stays consistent.
-fn render_active_node<'a>(
+fn render_active_node(
     node: ActiveNode,
-    sessions: &'a [AgentSession],
-    assignments: &'a [HandAssignment],
-    sparks: &'a [Spark],
-    state: &'a AgentsPanelState,
+    sessions: &[AgentSession],
+    assignments: &[HandAssignment],
+    sparks: &[Spark],
+    state: &AgentsPanelState,
     pal: &Palette,
     now: Instant,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     match node {
         ActiveNode::Standalone { session_id } => sessions
             .iter()
@@ -691,16 +797,16 @@ fn render_active_node<'a>(
 // now) parameters into a shared `RenderCtx<'a>` borrow struct so the
 // row renderers don't keep growing. Tracked separately from this PR.
 #[allow(clippy::too_many_arguments)]
-fn render_head_row<'a>(
-    session: Option<&'a AgentSession>,
+fn render_head_row(
+    session: Option<&AgentSession>,
     session_id: String,
     epic_spark_id: Option<String>,
     expanded: bool,
     pal: &Palette,
-    assignments: &'a [HandAssignment],
-    sparks: &'a [Spark],
+    assignments: &[HandAssignment],
+    sparks: &[Spark],
     now: Instant,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     let chev_icon = if expanded {
         UiIcon::ChevronDown
     } else {
@@ -805,15 +911,15 @@ fn render_head_row<'a>(
         .into()
 }
 
-fn render_crew_node<'a>(
+fn render_crew_node(
     crew: CrewNode,
-    sessions: &'a [AgentSession],
-    assignments: &'a [HandAssignment],
-    sparks: &'a [Spark],
-    state: &'a AgentsPanelState,
+    sessions: &[AgentSession],
+    assignments: &[HandAssignment],
+    sparks: &[Spark],
+    state: &AgentsPanelState,
     pal: &Palette,
     now: Instant,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     let expanded = !state.collapsed_crews.contains(&crew.crew_id);
     let chev_icon = if expanded {
         UiIcon::ChevronDown
@@ -860,14 +966,14 @@ fn render_crew_node<'a>(
     col.into()
 }
 
-fn render_hand_row<'a>(
-    session: &'a AgentSession,
-    assignments: &'a [HandAssignment],
-    sparks: &'a [Spark],
+fn render_hand_row(
+    session: &AgentSession,
+    assignments: &[HandAssignment],
+    sparks: &[Spark],
     pal: &Palette,
     now: Instant,
     depth: u16,
-) -> Element<'a, Message> {
+) -> Element<'static, Message> {
     let status = hand_status(
         &session.id,
         assignments,
@@ -952,12 +1058,13 @@ fn render_hand_row<'a>(
     btn.into()
 }
 
-fn render_history_row<'a>(
-    session: &'a AgentSession,
-    assignments: &'a [HandAssignment],
-    sparks: &'a [Spark],
+fn render_history_row(
+    session: &AgentSession,
+    assignments: &[HandAssignment],
+    sparks: &[Spark],
     pal: &Palette,
-) -> Element<'a, Message> {
+    utc_now: chrono::DateTime<chrono::Utc>,
+) -> Element<'static, Message> {
     // Per product decision: history rows are read-only. Click does
     // nothing (no resume, no spy view) — the spark captures the outcome.
     // We still render the spark chip so the user can jump to context.
@@ -981,7 +1088,7 @@ fn render_history_row<'a>(
         .size(FONT_BODY)
         .color(pal.text_secondary)
         .width(Length::Fill);
-    let time_label = text(format_relative_time(&session.started_at))
+    let time_label = text(format_relative_time(&session.started_at, utc_now))
         .size(FONT_SMALL)
         .color(pal.text_tertiary);
 
@@ -1024,7 +1131,11 @@ fn render_history_row<'a>(
         .into()
 }
 
-fn render_stale_row<'a>(session: &'a AgentSession, pal: &Palette) -> Element<'a, Message> {
+fn render_stale_row(
+    session: &AgentSession,
+    pal: &Palette,
+    utc_now: chrono::DateTime<chrono::Utc>,
+) -> Element<'static, Message> {
     let warn = text("\u{26A0}").size(FONT_ICON_SM).color(pal.danger);
     let agent_icon = svg(icons::ui_icon(icons::agent_icon_for_command(
         &session.agent.command,
@@ -1032,10 +1143,10 @@ fn render_stale_row<'a>(session: &'a AgentSession, pal: &Palette) -> Element<'a,
     .width(14)
     .height(14)
     .style(icons::ui_icon_color(pal.text_secondary));
-    let label = text(&session.name)
+    let label = text(session.name.clone())
         .size(FONT_BODY)
         .color(pal.text_secondary);
-    let time_label = text(format_relative_time(&session.started_at))
+    let time_label = text(format_relative_time(&session.started_at, utc_now))
         .size(FONT_SMALL)
         .color(pal.text_tertiary);
     let badge = text("stale").size(FONT_SMALL).color(pal.danger);
@@ -1078,7 +1189,7 @@ fn render_stale_row<'a>(session: &'a AgentSession, pal: &Palette) -> Element<'a,
 /// Small clickable spark id chip — emits `Message::OpenSpark` so the
 /// parent can route to the spark detail panel via the existing
 /// `SelectSpark` flow.
-fn spark_chip<'a>(spark_id: &str, pal: &Palette) -> Element<'a, Message> {
+fn spark_chip(spark_id: &str, pal: &Palette) -> Element<'static, Message> {
     let label = text(spark_id.to_string())
         .size(FONT_SMALL)
         .color(pal.accent);
@@ -1102,21 +1213,11 @@ fn spark_chip<'a>(spark_id: &str, pal: &Palette) -> Element<'a, Message> {
 }
 
 /// Format an RFC 3339 timestamp as a short relative time string (e.g. "2h ago", "3d ago").
-pub fn format_relative_time(rfc3339: &str) -> String {
-    let Ok(then) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
-        return String::new();
-    };
-    let duration = chrono::Utc::now().signed_duration_since(then);
-
-    if duration.num_minutes() < 1 {
-        "now".to_string()
-    } else if duration.num_minutes() < 60 {
-        format!("{}m ago", duration.num_minutes())
-    } else if duration.num_hours() < 24 {
-        format!("{}h ago", duration.num_hours())
-    } else {
-        format!("{}d ago", duration.num_days())
-    }
+///
+/// Delegates to [`perf_core::format_relative_time`] so the hot path is
+/// benchmarkable without pulling in the UI crate.
+pub fn format_relative_time(rfc3339: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    perf_core::format_relative_time(rfc3339, now)
 }
 
 #[cfg(test)]
@@ -1212,13 +1313,13 @@ mod tests {
 
     #[test]
     fn format_relative_time_handles_invalid_input() {
-        assert_eq!(format_relative_time("not a date"), "");
+        assert_eq!(format_relative_time("not a date", chrono::Utc::now()), "");
     }
 
     #[test]
     fn format_relative_time_returns_now_for_recent() {
-        let now = chrono::Utc::now().to_rfc3339();
-        assert_eq!(format_relative_time(&now), "now");
+        let now = chrono::Utc::now();
+        assert_eq!(format_relative_time(&now.to_rfc3339(), now), "now");
     }
 
     #[test]
@@ -1584,6 +1685,17 @@ mod tests {
         assert!(session_matches_query(&s, &[], &[], "claude"));
         assert!(session_matches_query(&s, &[], &[], "CLA"));
         assert!(!session_matches_query(&s, &[], &[], "codex"));
+    }
+
+    #[test]
+    fn contains_ignore_ascii_case_basics() {
+        assert!(super::contains_ignore_ascii_case("Claude Code", "claude"));
+        assert!(super::contains_ignore_ascii_case("Claude Code", "CODE"));
+        assert!(super::contains_ignore_ascii_case("Claude Code", "de Co"));
+        assert!(!super::contains_ignore_ascii_case("Claude Code", "codex"));
+        assert!(super::contains_ignore_ascii_case("anything", ""));
+        assert!(!super::contains_ignore_ascii_case("", "x"));
+        assert!(!super::contains_ignore_ascii_case("ab", "abc"));
     }
 
     // ── Tmux attach (spark ryve-8ba40d83) ──────────

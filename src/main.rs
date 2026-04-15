@@ -328,8 +328,9 @@ enum Message {
         ws_id: Uuid,
         spark_id: String,
     },
-    /// Agent sessions loaded from DB
-    AgentSessionsLoaded(Uuid, Vec<PersistedAgentSession>),
+    /// Agent sessions loaded from DB, paired with live tmux session names
+    /// resolved asynchronously (spark ryve-2c7d348b).
+    AgentSessionsLoaded(Uuid, Vec<PersistedAgentSession>, Vec<tmux::TmuxSession>),
     /// Agent session saved to DB
     AgentSessionSaved,
     /// Dead-session reconciliation completed. Carries the session IDs whose
@@ -392,11 +393,6 @@ enum Message {
     /// reload — all reading liveness from this single snapshot. Spark
     /// `ryve-a5b9e4a1`.
     ProcessSnapshotReady(Arc<ProcessSnapshot>),
-    /// Inert no-op. Used by the global keyboard subscription for any key
-    /// event that does not map to a real hotkey, so unmatched keystrokes
-    /// can never accidentally re-trigger an expensive `SparksPoll`.
-    /// Spark ryve-5b9c5d93 (perf regression harness).
-    Noop,
     /// Periodic backup tick — take a `.backup` snapshot of each open
     /// workshop's sparks.db into `.ryve/backups/`. Also fires once on
     /// graceful workshop close. Spark ryve-7c8573c4.
@@ -423,6 +419,14 @@ enum Message {
         workshop_id: Uuid,
         tab_id: u64,
         result: Result<PathBuf, String>,
+        /// System prompt resolved asynchronously (spark ryve-2c7d348b).
+        system_prompt: Option<(String, String)>,
+    },
+    /// Tmux attach command resolved asynchronously (spark ryve-2c7d348b).
+    TmuxAttachReady {
+        workshop_id: Uuid,
+        tab_id: u64,
+        result: Result<(String, Vec<String>), String>,
     },
     /// Send initial spark prompt to a Hand's terminal after agent boots.
     SendSparkPrompt {
@@ -558,8 +562,13 @@ impl std::fmt::Debug for Message {
             Self::ContractCheckFinished { ws_id, spark_id } => {
                 write!(f, "ContractCheckFinished({ws_id}, {spark_id})")
             }
-            Self::AgentSessionsLoaded(id, s) => {
-                write!(f, "AgentSessionsLoaded({id}, {} sessions)", s.len())
+            Self::AgentSessionsLoaded(id, s, tmux) => {
+                write!(
+                    f,
+                    "AgentSessionsLoaded({id}, {} sessions, {} tmux)",
+                    s.len(),
+                    tmux.len()
+                )
             }
             Self::AgentSessionSaved => write!(f, "AgentSessionSaved"),
             Self::DeadSessionsReconciled(ids) => {
@@ -608,7 +617,7 @@ impl std::fmt::Debug for Message {
             Self::AgentContextSynced => write!(f, "AgentContextSynced"),
             Self::SparksPoll => write!(f, "SparksPoll"),
             Self::ProcessSnapshotReady(_) => write!(f, "ProcessSnapshotReady"),
-            Self::Noop => write!(f, "Noop"),
+
             Self::BackupTick => write!(f, "BackupTick"),
             Self::BackupFinished(r) => match r {
                 Ok(p) => write!(f, "BackupFinished(ok={})", p.display()),
@@ -623,11 +632,15 @@ impl std::fmt::Debug for Message {
                 workshop_id,
                 tab_id,
                 result,
+                ..
             } => write!(
                 f,
                 "HandWorktreeReady({workshop_id}, {tab_id}, ok={})",
                 result.is_ok()
             ),
+            Self::TmuxAttachReady { tab_id, result, .. } => {
+                write!(f, "TmuxAttachReady({tab_id}, ok={})", result.is_ok())
+            }
             Self::SendSparkPrompt { tab_id, .. } => write!(f, "SendSparkPrompt({tab_id})"),
             Self::SubmitSparkPrompt { tab_id } => write!(f, "SubmitSparkPrompt({tab_id})"),
             Self::SplitterPressed(k) => write!(f, "SplitterPressed({k:?})"),
@@ -1062,7 +1075,7 @@ impl App {
                 custom_agents,
                 agent_context,
                 agent_context_sync_cache,
-                ui_state,
+                mut ui_state,
             } => {
                 let ws_idx = self.workshops.iter().position(|ws| ws.id == id);
                 let Some(idx) = ws_idx else {
@@ -1070,14 +1083,14 @@ impl App {
                 };
                 if let Some(ws) = self.workshops.get_mut(idx) {
                     ws.sparks_db = Some(pool.clone());
-                    ws.config = *config;
+                    ws.config = Arc::new(*config);
                     ws.custom_agents = custom_agents;
                     ws.agent_context = agent_context;
                     // Apply persisted UI state before the first render so
                     // the sparks panel honours the user's last collapse
                     // choices. Stale IDs are pruned once sparks finish
                     // loading (see SparksLoaded below). Spark ryve-926870a9.
-                    ws.collapsed_epics = ui_state.collapsed_epics.clone();
+                    ws.collapsed_epics = std::mem::take(&mut ui_state.collapsed_epics);
                     // Rehydrate the persisted sparks-panel filter so the
                     // user returns to the same view. Spark ryve-27e33825.
                     ws.sparks_filter = crate::screen::sparks::SparksFilter::from_persisted(
@@ -1104,9 +1117,13 @@ impl App {
                     let reconcile_then_sessions = Task::perform(
                         async move {
                             tmux::reconcile_sessions(&dir_rec, &pool_rec, &ws_id_rec).await;
-                            load_agent_sessions(pool2, ws_id2).await
+                            let sessions = load_agent_sessions(pool2, ws_id2).await;
+                            let tmux_live = tmux::list_sessions_async(&dir_rec).await;
+                            (sessions, tmux_live)
                         },
-                        move |sessions| Message::AgentSessionsLoaded(id, sessions),
+                        move |(sessions, tmux_live)| {
+                            Message::AgentSessionsLoaded(id, sessions, tmux_live)
+                        },
                     );
 
                     // Load sparks + (reconcile → agent sessions) + scan file tree in parallel
@@ -1192,6 +1209,9 @@ impl App {
                     // Spark ryve-6f24ef2a.
                     ws.sort_sparks();
                     ws.recompute_filtered_sparks();
+                    // Cache the spark summary so view() doesn't
+                    // recompute it per frame. Spark ryve-252c5b6e.
+                    ws.recompute_spark_summary();
                     // Clear the Refresh-button indicator now that the
                     // refetch has landed. Both the explicit Refresh and
                     // the 3s poll route through this handler; clearing
@@ -1206,7 +1226,7 @@ impl App {
                     // Spark ryve-926870a9.
                     let live_epic_ids = Workshop::live_epic_ids(&ws.sparks);
                     if ws.prune_collapsed_epics(&live_epic_ids) {
-                        let ryve_dir = ws.ryve_dir.clone();
+                        let ryve_dir = Arc::clone(&ws.ryve_dir);
                         let snapshot = ws.ui_state_snapshot();
                         tokio::spawn(async move {
                             if let Err(e) =
@@ -1287,8 +1307,8 @@ impl App {
                     // Spark ryve-86b0b326.
                     if !ws.config.agents.disable_sync {
                         let dir = ws.directory.clone();
-                        let ryve_dir = ws.ryve_dir.clone();
-                        let config = ws.config.clone();
+                        let ryve_dir = Arc::clone(&ws.ryve_dir);
+                        let config = Arc::clone(&ws.config);
                         let cache = ws.agent_context_sync_cache.clone();
                         tasks.push(Task::perform(
                             async move {
@@ -1458,7 +1478,7 @@ impl App {
                 Task::batch([load_task, count_task])
             }
 
-            Message::AgentSessionsLoaded(id, persisted) => {
+            Message::AgentSessionsLoaded(id, persisted, live_tmux) => {
                 // Merge persisted sessions into the in-memory vec.
                 //
                 // This handler is fired both at workshop init and on every
@@ -1494,13 +1514,10 @@ impl App {
                     let known_ids: std::collections::HashSet<String> =
                         ws.agent_sessions.iter().map(|s| s.id.clone()).collect();
 
-                    // Cache the set of live tmux session names once per
-                    // poll so we avoid shelling out per-session.
-                    // Spark: copilot review comment #10.
-                    let live_tmux_names: std::collections::HashSet<String> = {
-                        let live = tmux::list_sessions_sync(&ws.directory);
-                        live.into_iter().map(|s| s.name).collect()
-                    };
+                    // Live tmux session names resolved asynchronously
+                    // (spark ryve-2c7d348b, copilot review comment #10).
+                    let live_tmux_names: std::collections::HashSet<String> =
+                        live_tmux.into_iter().map(|s| s.name).collect();
 
                     // Use the tmux wrapper to diff tracked sessions against
                     // the process snapshot, collecting session IDs to feed
@@ -1604,7 +1621,7 @@ impl App {
                             log_path: p.log_path.map(PathBuf::from),
                             last_output_at: None,
                             parent_session_id: p.parent_session_id,
-                            session_label: p.session_label.clone(),
+                            session_label: p.session_label,
                             tmux_session_live: tmux_live,
                         });
                     }
@@ -1613,6 +1630,9 @@ impl App {
                     // (spark ryve-baca34b0).
                     ws.agent_session_names =
                         ws.agent_sessions.iter().map(|s| s.name.clone()).collect();
+                    // Cache hand counts so view() doesn't recompute per
+                    // frame. Spark ryve-252c5b6e.
+                    ws.recompute_hand_counts();
 
                     // First time we see agent_sessions for this workshop:
                     // chain into load_open_tabs so the persisted snapshot
@@ -1874,6 +1894,13 @@ impl App {
                     ws.file_explorer.git_statuses = statuses;
                     ws.file_explorer.diff_stats = diff_stats;
                     ws.file_explorer.branch = branch;
+                    // Rebuild precomputed per-path maps so the file
+                    // explorer view uses O(1) lookups instead of O(n)
+                    // scans per directory node. Spark ryve-252c5b6e.
+                    ws.file_explorer.rebuild_precomputed_maps();
+                    // Cache git stats so view() doesn't recompute per
+                    // frame. Spark ryve-252c5b6e.
+                    ws.recompute_git_stats();
                     // Start collapsed — user expands directories on demand
                 }
                 Task::none()
@@ -2180,8 +2207,7 @@ impl App {
                         for ws in &mut self.workshops {
                             if let Some(tail) = ws.log_tails.get_mut(&tab_id) {
                                 if tail.path == path {
-                                    tail.content = content;
-                                    tail.error = None;
+                                    tail.set_content(content);
                                 }
                                 break;
                             }
@@ -2198,6 +2224,20 @@ impl App {
                                     tail.error = Some(error);
                                 }
                                 break;
+                            }
+                        }
+                    }
+                    log_tail::Message::Scrolled {
+                        offset_y,
+                        viewport_height,
+                    } => {
+                        if let Some(idx) = self.active_workshop {
+                            let ws = &mut self.workshops[idx];
+                            if let Some(active_id) = ws.bench.active_tab
+                                && let Some(tail) = ws.log_tails.get_mut(&active_id)
+                            {
+                                tail.scroll_offset_y = offset_y;
+                                tail.viewport_height = viewport_height;
                             }
                         }
                     }
@@ -2305,7 +2345,10 @@ impl App {
                                 started_at,
                                 can_resume,
                             } => {
-                                let when = screen::agents::format_relative_time(&started_at);
+                                let when = screen::agents::format_relative_time(
+                                    &started_at,
+                                    chrono::Utc::now(),
+                                );
                                 let body = if can_resume {
                                     format!(
                                         "Past session started {when}. Click \u{25B6} to resume."
@@ -2504,36 +2547,23 @@ impl App {
                                 },
                             );
 
-                            // Create the iced_term::Terminal with the tmux
-                            // attach command as the backend program.
-                            let (program, args) =
-                                match tmux::attach_command(&ws.directory, &tmux_name) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        log::error!(
-                                            "Cannot attach to tmux session '{tmux_name}': {e}"
-                                        );
-                                        return Task::none();
-                                    }
-                                };
-                            let (shell, shell_args) =
-                                workshop::wrap_command_with_bottom_pin(&program, &args);
-
-                            let mut settings = iced_term::settings::Settings {
-                                font: ws.terminal_font_settings(),
-                                ..iced_term::settings::Settings::default()
-                            };
-                            settings.theme.color_pallete.background = ws.terminal_bg_hex();
-                            settings.backend.working_directory = Some(ws.directory.clone());
-                            settings.backend.program = shell;
-                            settings.backend.args = shell_args;
-
-                            if let Ok(term) = iced_term::Terminal::new(tab_id, settings) {
-                                let focus =
-                                    iced_term::TerminalView::focus(term.widget_id().clone());
-                                ws.terminals.insert(tab_id, term);
-                                return focus;
-                            }
+                            // Resolve the tmux attach command asynchronously
+                            // (spark ryve-2c7d348b) to avoid blocking the UI
+                            // thread on `which tmux`.
+                            let workshop_dir = ws.directory.clone();
+                            let workshop_id = ws.id;
+                            return Task::perform(
+                                async move {
+                                    tmux::attach_command_async(&workshop_dir, &tmux_name)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                move |result| Message::TmuxAttachReady {
+                                    workshop_id,
+                                    tab_id,
+                                    result,
+                                },
+                            );
                         }
                     }
                     screen::agents::Message::ViewLog(session_id) => {
@@ -3447,6 +3477,7 @@ impl App {
                 workshop_id,
                 tab_id,
                 result,
+                system_prompt,
             } => {
                 // Stage 2 of the Hand spawn flow (spark ryve-885ed3eb):
                 // the async `create_hand_worktree` task has reported back.
@@ -3456,7 +3487,7 @@ impl App {
                     return Task::none();
                 };
                 let ws = &mut self.workshops[idx];
-                let created = ws.finalize_hand_terminal(tab_id, result);
+                let created = ws.finalize_hand_terminal(tab_id, result, system_prompt);
                 let mut tasks: Vec<Task<Message>> = Vec::new();
                 if created && let Some(term) = ws.terminals.get(&tab_id) {
                     tasks.push(iced_term::TerminalView::focus(term.widget_id().clone()));
@@ -3470,6 +3501,44 @@ impl App {
                 } else {
                     Task::batch(tasks)
                 }
+            }
+            Message::TmuxAttachReady {
+                workshop_id,
+                tab_id,
+                result,
+            } => {
+                // Stage 2 of tmux attach (spark ryve-2c7d348b): the async
+                // `attach_command_async` has resolved the tmux binary. Now
+                // finalize the terminal widget.
+                let Some(ws) = self.workshops.iter_mut().find(|ws| ws.id == workshop_id) else {
+                    return Task::none();
+                };
+                match result {
+                    Ok((program, args)) => {
+                        let (shell, shell_args) =
+                            workshop::wrap_command_with_bottom_pin(&program, &args);
+                        let mut settings = iced_term::settings::Settings {
+                            font: ws.terminal_font_settings(),
+                            ..iced_term::settings::Settings::default()
+                        };
+                        settings.theme.color_pallete.background = ws.terminal_bg_hex();
+                        settings.backend.working_directory = Some(ws.directory.clone());
+                        settings.backend.program = shell;
+                        settings.backend.args = shell_args;
+
+                        if let Ok(term) = iced_term::Terminal::new(tab_id, settings) {
+                            let focus = iced_term::TerminalView::focus(term.widget_id().clone());
+                            ws.terminals.insert(tab_id, term);
+                            return focus;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Cannot attach to tmux session: {e}");
+                        // Remove the empty tab since we failed to create the terminal.
+                        ws.bench.close_tab(tab_id);
+                    }
+                }
+                Task::none()
             }
             Message::SendSparkPrompt { tab_id, prompt } => {
                 // Find the terminal across all workshops and send the prompt as input.
@@ -3851,7 +3920,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_status(&status);
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3866,7 +3935,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.show_closed = !ws.sparks_filter.show_closed;
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3885,7 +3954,7 @@ impl App {
                         // Spark ryve-926870a9.
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.toggle_epic_collapse(&epic_id);
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3901,7 +3970,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_type(ty);
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3916,7 +3985,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.toggle_priority(p);
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3931,7 +4000,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.set_assignee(a);
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3948,7 +4017,7 @@ impl App {
                             ws.sort_dropdown_open = false;
                             ws.sort_sparks();
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3968,7 +4037,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.search = query;
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -3983,7 +4052,7 @@ impl App {
                         if let Some(ws) = self.workshops.get_mut(idx) {
                             ws.sparks_filter.search.clear();
                             ws.recompute_filtered_sparks();
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -4000,7 +4069,7 @@ impl App {
                         // failed write is logged but never blocks the UI.
                         // Spark ryve-27e33825.
                         if let Some(ws) = self.workshops.get_mut(idx) {
-                            let ryve_dir = ws.ryve_dir.clone();
+                            let ryve_dir = Arc::clone(&ws.ryve_dir);
                             let snapshot = ws.ui_state_snapshot();
                             tokio::spawn(async move {
                                 if let Err(e) =
@@ -4135,17 +4204,18 @@ impl App {
                 };
                 let ws = &mut self.workshops[idx];
                 let ws_uuid = ws.id;
-                ws.config.background.image = Some(filename.clone());
-                ws.config.background.unsplash_photographer = Some(photographer);
-                ws.config.background.unsplash_photographer_url = Some(photographer_url);
+                let cfg = Arc::make_mut(&mut ws.config);
+                cfg.background.image = Some(filename.clone());
+                cfg.background.unsplash_photographer = Some(photographer);
+                cfg.background.unsplash_photographer_url = Some(photographer_url);
                 ws.background_picker.open = false;
                 ws.background_picker.loading = false;
 
                 // Load the image + save config
                 let bg_dir = ws.ryve_dir.backgrounds_dir();
                 let path = bg_dir.join(&filename);
-                let ryve_dir = ws.ryve_dir.clone();
-                let config = ws.config.clone();
+                let ryve_dir = Arc::clone(&ws.ryve_dir);
+                let config = Arc::clone(&ws.config);
                 Task::batch([
                     Task::perform(
                         async move { tokio::fs::read(&path).await.ok() },
@@ -4193,15 +4263,16 @@ impl App {
                 };
                 let ws = &mut self.workshops[idx];
                 let ws_uuid = ws.id;
-                ws.config.background.image = Some(filename.clone());
-                ws.config.background.unsplash_photographer = None;
-                ws.config.background.unsplash_photographer_url = None;
+                let cfg = Arc::make_mut(&mut ws.config);
+                cfg.background.image = Some(filename.clone());
+                cfg.background.unsplash_photographer = None;
+                cfg.background.unsplash_photographer_url = None;
                 ws.background_picker.open = false;
 
                 let bg_dir = ws.ryve_dir.backgrounds_dir();
                 let path = bg_dir.join(&filename);
-                let ryve_dir = ws.ryve_dir.clone();
-                let config = ws.config.clone();
+                let ryve_dir = Arc::clone(&ws.ryve_dir);
+                let config = Arc::clone(&ws.config);
                 Task::batch([
                     Task::perform(
                         async move { tokio::fs::read(&path).await.ok() },
@@ -4217,7 +4288,6 @@ impl App {
             }
             Message::BackgroundConfigSaved => Task::none(),
             Message::AgentContextSynced => Task::none(),
-            Message::Noop => Task::none(),
             Message::BackupTick => {
                 // Spark ryve-7c8573c4: periodic snapshot of every open
                 // workshop's sparks.db so a crash or corruption leaves
@@ -4373,9 +4443,13 @@ impl App {
                         Task::perform(
                             async move {
                                 tmux::reconcile_sessions(&dir, &pool2, &ws_id2).await;
-                                load_agent_sessions(pool, ws_id).await
+                                let sessions = load_agent_sessions(pool, ws_id).await;
+                                let tmux_live = tmux::list_sessions_async(&dir).await;
+                                (sessions, tmux_live)
                             },
-                            move |sessions| Message::AgentSessionsLoaded(id, sessions),
+                            move |(sessions, tmux_live)| {
+                                Message::AgentSessionsLoaded(id, sessions, tmux_live)
+                            },
                         )
                     })
                     .collect();
@@ -4480,10 +4554,11 @@ impl App {
                 let new_value = splitter::compute_new_value(drag, cursor, sidebar_height);
                 let kind = drag.kind;
                 let ws = &mut self.workshops[idx];
+                let cfg = Arc::make_mut(&mut ws.config);
                 match kind {
-                    SplitterKind::SidebarRight => ws.config.layout.sidebar_width = new_value,
-                    SplitterKind::SparksLeft => ws.config.layout.sparks_width = new_value,
-                    SplitterKind::SidebarFilesHands => ws.config.layout.sidebar_split = new_value,
+                    SplitterKind::SidebarRight => cfg.layout.sidebar_width = new_value,
+                    SplitterKind::SparksLeft => cfg.layout.sparks_width = new_value,
+                    SplitterKind::SidebarFilesHands => cfg.layout.sidebar_split = new_value,
                 }
                 Task::none()
             }
@@ -4495,8 +4570,8 @@ impl App {
                     return Task::none();
                 };
                 let ws = &self.workshops[idx];
-                let ryve_dir = ws.ryve_dir.clone();
-                let config = ws.config.clone();
+                let ryve_dir = Arc::clone(&ws.ryve_dir);
+                let config = Arc::clone(&ws.config);
                 Task::perform(
                     async move {
                         if let Err(e) = data::ryve_dir::save_config(&ryve_dir, &config).await {
@@ -5418,16 +5493,47 @@ impl App {
     /// Spark ryve-885ed3eb: callers that begin a Hand spawn via
     /// `Workshop::begin_hand_terminal` use this to kick off stage 2 without
     /// blocking the UI thread on `git worktree add`.
+    ///
+    /// Also resolves the system-prompt file asynchronously (spark
+    /// ryve-2c7d348b) so no `std::fs` calls remain on the UI thread.
     fn dispatch_worktree_task(ws: &Workshop, tab_id: u64, session_id: String) -> Task<Message> {
         let workshop_dir = ws.directory.clone();
-        let ryve_dir = ws.ryve_dir.clone();
+        let ryve_dir = Arc::clone(&ws.ryve_dir);
         let workshop_id = ws.id;
+
+        // Extract the prompt flag info synchronously (pure data, no I/O)
+        // so the async block can resolve the file contents off-thread.
+        let prompt_flag = ws
+            .pending_terminal_spawns
+            .get(&tab_id)
+            .and_then(|p| match &p.kind {
+                workshop::PendingTerminalKind::Agent(agent) => agent
+                    .system_prompt_flag()
+                    .map(|(f, is_file)| (f.to_string(), is_file)),
+                workshop::PendingTerminalKind::CustomAgent(_) => None,
+            });
+
         Task::perform(
-            async move { workshop::create_hand_worktree(&workshop_dir, &ryve_dir, &session_id).await },
-            move |result| Message::HandWorktreeReady {
+            async move {
+                let wt_result =
+                    workshop::create_hand_worktree(&workshop_dir, &ryve_dir, &session_id).await;
+                let system_prompt = match &prompt_flag {
+                    Some((flag, is_file)) => {
+                        workshop::resolve_system_prompt_async(
+                            &ryve_dir,
+                            Some((flag.as_str(), *is_file)),
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                (wt_result, system_prompt)
+            },
+            move |(result, system_prompt)| Message::HandWorktreeReady {
                 workshop_id,
                 tab_id,
                 result,
+                system_prompt,
             },
         )
     }
@@ -5860,11 +5966,13 @@ impl App {
             }
             screen::background_picker::Message::SearchResults(photos) => {
                 ws.background_picker.loading = false;
-                ws.background_picker.results = photos.clone();
+                ws.background_picker.results = photos;
 
                 // Kick off thumbnail downloads
-                let tasks: Vec<_> = photos
-                    .into_iter()
+                let tasks: Vec<_> = ws
+                    .background_picker
+                    .results
+                    .iter()
                     .map(|photo| {
                         let id = photo.id.clone();
                         let url = photo.thumb_url.clone();
@@ -5915,15 +6023,16 @@ impl App {
                 )
             }
             screen::background_picker::Message::RemoveBackground => {
-                ws.config.background.image = None;
-                ws.config.background.unsplash_photographer = None;
-                ws.config.background.unsplash_photographer_url = None;
+                let cfg = Arc::make_mut(&mut ws.config);
+                cfg.background.image = None;
+                cfg.background.unsplash_photographer = None;
+                cfg.background.unsplash_photographer_url = None;
                 ws.background_handle = None;
                 ws.bg_is_dark = None;
                 ws.background_picker.open = false;
 
-                let ryve_dir = ws.ryve_dir.clone();
-                let config = ws.config.clone();
+                let ryve_dir = Arc::clone(&ws.ryve_dir);
+                let config = Arc::clone(&ws.config);
                 Task::perform(
                     async move {
                         data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
@@ -5934,12 +6043,12 @@ impl App {
 
             // ── Dim opacity ──────────────────────────────────
             screen::background_picker::Message::DimOpacityChanged(value) => {
-                ws.config.background.dim_opacity = value.clamp(0.0, 1.0);
+                Arc::make_mut(&mut ws.config).background.dim_opacity = value.clamp(0.0, 1.0);
                 Task::none()
             }
             screen::background_picker::Message::DimOpacityCommitted => {
-                let ryve_dir = ws.ryve_dir.clone();
-                let config = ws.config.clone();
+                let ryve_dir = Arc::clone(&ws.ryve_dir);
+                let config = Arc::clone(&ws.config);
                 Task::perform(
                     async move {
                         data::ryve_dir::save_config(&ryve_dir, &config).await.ok();
@@ -6030,12 +6139,20 @@ impl App {
         // routing decision lives in [`perf_core::classify_key_event`]. The
         // smoke test in `perf_core/tests/sparks_poll_smoke.rs` drives the
         // *same* classifier with synthetic events to assert no key path
-        // ever resolves to `SparksPoll`. This subsumes the lean
-        // event::listen_with fix from hand/0e2ed795 ([sp-18253584]) by
-        // making the same correctness property automatically tested.
-        // Sparks ryve-5b9c5d93 + ryve-a13f9d3a.
-        let hotkeys = keyboard::listen().map(|event| {
-            let (kind, mods) = match &event {
+        // ever resolves to `SparksPoll`.
+        //
+        // [sp-78d34de4]: switched from `keyboard::listen().map()` to
+        // `event::listen_with()` so unmatched keys return `None` — no
+        // `Message` is dispatched and the iced update loop is not entered.
+        // Previously every keystroke (including terminal typing) produced
+        // at minimum a `Message::Noop`, adding unnecessary overhead.
+        let hotkeys = event::listen_with(|event, _status, _id| {
+            let keyboard_event = match event {
+                iced::Event::Keyboard(ke) => ke,
+                _ => return None,
+            };
+
+            let (kind, mods) = match &keyboard_event {
                 keyboard::Event::KeyPressed {
                     key: keyboard::Key::Character(c),
                     modifiers,
@@ -6062,28 +6179,23 @@ impl App {
                     },
                     perf_core::KeyModifiers::default(),
                 ),
-                _ => (
-                    perf_core::KeyKind::Other,
-                    perf_core::KeyModifiers::default(),
-                ),
+                _ => return None,
             };
 
             match perf_core::classify_key_event(kind, mods) {
-                perf_core::KeyDispatch::NewDefaultHand => Message::NewDefaultHand,
+                perf_core::KeyDispatch::NewDefaultHand => Some(Message::NewDefaultHand),
                 perf_core::KeyDispatch::CopySelection => {
-                    Message::FileViewer(file_viewer::Message::CopySelection)
+                    Some(Message::FileViewer(file_viewer::Message::CopySelection))
                 }
-                perf_core::KeyDispatch::HotkeyCmdF => Message::HotkeyCmdF,
-                perf_core::KeyDispatch::NewWorkshopDialog => Message::NewWorkshopDialog,
-                perf_core::KeyDispatch::HotkeyEscape => Message::HotkeyEscape,
+                perf_core::KeyDispatch::HotkeyCmdF => Some(Message::HotkeyCmdF),
+                perf_core::KeyDispatch::NewWorkshopDialog => Some(Message::NewWorkshopDialog),
+                perf_core::KeyDispatch::HotkeyEscape => Some(Message::HotkeyEscape),
                 perf_core::KeyDispatch::ShiftStateChanged(shift) => {
-                    Message::ShiftStateChanged(shift)
+                    Some(Message::ShiftStateChanged(shift))
                 }
-                // SparksPoll is a sentinel that classify_key_event must
-                // never return. The regression test asserts this; if it
-                // ever did escape, we still want a no-op rather than a
-                // workgraph reload — so map it to Noop here too.
-                perf_core::KeyDispatch::Noop | perf_core::KeyDispatch::SparksPoll => Message::Noop,
+                // Unmatched keys and the SparksPoll sentinel both return
+                // None — no message dispatched, no update loop entered.
+                perf_core::KeyDispatch::Noop | perf_core::KeyDispatch::SparksPoll => None,
             }
         });
 
@@ -6501,6 +6613,15 @@ impl App {
             None => self.appearance.palette(),
         };
 
+        // Compute the wall-clock snapshot once per frame so downstream row
+        // renderers avoid per-row Utc::now() calls. Spark ryve-252c5b6e.
+        // (A monotonic `Instant::now()` snapshot used to live here too but
+        // the surviving consumer — `screen::agents::view` — takes its own
+        // `Instant::now()` inside its `lazy()` closure, where the call
+        // only fires on cache miss, so plumbing it through added no win.
+        // Removed per Copilot PR #23 review.)
+        let frame_utc_now = chrono::Utc::now();
+
         // -- Left sidebar: files (top) + agents (bottom) --
         let files_view =
             file_explorer::view(&ws.file_explorer, &ws.directory, &pal).map(Message::FileExplorer);
@@ -6528,7 +6649,7 @@ impl App {
             .height(Length::Fill);
 
         // -- Center: bench (tabbed area) --
-        let bench = self.view_bench(ws, has_bg, &pal);
+        let bench = self.view_bench(ws, has_bg, &pal, frame_utc_now);
 
         // -- Right: sparks panel (or detail view) --
         // Derive the delegation trace on demand so it always reflects the
@@ -6632,31 +6753,12 @@ impl App {
             widget::splitter::vertical(Message::SplitterPressed(SplitterKind::SparksLeft), &pal);
 
         // -- Bottom: status bar --
-        let spark_summary = {
-            let mut s = screen::status_bar::SparkSummary::default();
-            for spark in &ws.sparks {
-                match spark.status.as_str() {
-                    "open" => s.open += 1,
-                    "in_progress" => s.in_progress += 1,
-                    "blocked" => s.blocked += 1,
-                    "deferred" => s.deferred += 1,
-                    "closed" => s.closed += 1,
-                    _ => {}
-                }
-            }
-            s
-        };
-        let git_stats = {
-            let mut gs = screen::status_bar::GitStats::default();
-            for stat in ws.file_explorer.diff_stats.values() {
-                gs.additions += stat.additions;
-                gs.deletions += stat.deletions;
-            }
-            gs.changed_files = ws.file_explorer.git_statuses.len();
-            gs
-        };
-        let active_hands = ws.agent_sessions.iter().filter(|a| a.active).count();
-        let total_hands = ws.agent_sessions.iter().filter(|a| !a.stale).count();
+        // Use pre-cached aggregations instead of recomputing per frame.
+        // Spark ryve-252c5b6e.
+        let spark_summary = &ws.cached_spark_summary;
+        let git_stats = &ws.cached_git_stats;
+        let active_hands = ws.cached_active_hands;
+        let total_hands = ws.cached_total_hands;
 
         // Build file viewer info if the active bench tab is a file viewer.
         let file_info = ws.bench.active_tab.and_then(|tab_id| {
@@ -6673,8 +6775,8 @@ impl App {
         let status_bar = screen::status_bar::view(
             ws.file_explorer.branch.as_deref(),
             &ws.directory,
-            &spark_summary,
-            &git_stats,
+            spark_summary,
+            git_stats,
             active_hands,
             total_hands,
             ws.failing_contracts,
@@ -6835,6 +6937,7 @@ impl App {
         ws: &'a Workshop,
         has_bg: bool,
         pal: &style::Palette,
+        utc_now: chrono::DateTime<chrono::Utc>,
     ) -> Element<'a, Message> {
         let tab_bar = ws.bench.view_tab_bar(pal).map(Message::Bench);
 
@@ -6853,6 +6956,7 @@ impl App {
                         assignments: &ws.hand_assignments,
                         failing_contracts: &ws.failing_contracts_list,
                         embers: &ws.embers,
+                        utc_now,
                     },
                     pal,
                     has_bg,
@@ -7131,43 +7235,20 @@ async fn load_crews(
     Vec<data::sparks::types::Crew>,
     Vec<data::sparks::types::CrewMember>,
 ) {
-    let crews = data::sparks::crew_repo::list_for_workshop(&pool, &workshop_id)
-        .await
-        .unwrap_or_default();
-    let mut all_members: Vec<data::sparks::types::CrewMember> = Vec::new();
-    for c in &crews {
-        if let Ok(mut members) = data::sparks::crew_repo::members(&pool, &c.id).await {
-            all_members.append(&mut members);
-        }
-    }
-    (crews, all_members)
+    let (crews, members) = tokio::join!(
+        data::sparks::crew_repo::list_for_workshop(&pool, &workshop_id),
+        data::sparks::crew_repo::members_for_workshop(&pool, &workshop_id),
+    );
+    (crews.unwrap_or_default(), members.unwrap_or_default())
 }
 
 /// Load all active hand assignments for the workshop, used by the Home
 /// overview to join sparks ↔ Hands. Filters down to status='active' on
 /// the SQL side already.
 async fn load_hand_assignments(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<HandAssignment> {
-    // assignment_repo::list_active is workshop-agnostic — filter to this
-    // workshop's sparks here so the Home view doesn't bleed across workshops
-    // sharing the same database file.
-    let all = data::sparks::assignment_repo::list_active(&pool)
+    data::sparks::assignment_repo::list_active_for_workshop(&pool, &workshop_id)
         .await
-        .unwrap_or_default();
-    let workshop_spark_ids: std::collections::HashSet<String> = data::sparks::spark_repo::list(
-        &pool,
-        data::sparks::types::SparkFilter {
-            workshop_id: Some(workshop_id),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|s| s.id)
-    .collect();
-    all.into_iter()
-        .filter(|a| workshop_spark_ids.contains(&a.spark_id))
-        .collect()
+        .unwrap_or_default()
 }
 
 /// Load active embers for the Home overview.
