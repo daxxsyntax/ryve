@@ -422,6 +422,11 @@ async fn handle_backup(
                 },
                 None => data::backup::RetentionPolicy::default(),
             };
+            if !json_mode && let Some(k) = keep {
+                eprintln!(
+                    "note: --keep={k} sets only the recent-snapshot retention floor; default daily/weekly retention still applies, so more than {k} snapshot(s) may be kept"
+                );
+            }
             match data::backup::apply_retention(&ryve_dir, &policy).await {
                 Ok(deleted) => {
                     if json_mode {
@@ -443,6 +448,10 @@ async fn handle_backup(
                 "  backup prune [--keep=N]      Prune old snapshots (default keep_recent={})",
                 data::backup::KEEP_RECENT
             );
+            eprintln!(
+                "                               --keep=N only sets the recent-snapshot floor;"
+            );
+            eprintln!("                               daily/weekly taper retention still applies.");
         }
         other => die(&format!("unknown backup subcommand '{other}'")),
     }

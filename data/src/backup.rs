@@ -270,8 +270,14 @@ pub async fn list_snapshots(ryve_dir: &RyveDir) -> Result<Vec<Snapshot>, BackupE
     Ok(out)
 }
 
-/// Compute the set of snapshot indices (into a newest-first slice) that
-/// the retention policy preserves. Exposed for testability.
+/// Compute the set of snapshot indices that the retention policy preserves.
+///
+/// The returned indices refer to the *input* `snapshots` slice, which
+/// [`list_snapshots`] produces in oldest-first order. Internally the function
+/// walks newest-first so retention windows are easy to express, but the
+/// indices stored in the set always reference the original oldest-first
+/// order — callers can simply `enumerate()` over `snapshots` and check
+/// membership. Exposed for testability.
 pub fn retained_indices(
     snapshots: &[Snapshot],
     policy: &RetentionPolicy,
