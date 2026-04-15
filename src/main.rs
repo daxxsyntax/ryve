@@ -13,6 +13,7 @@ mod head;
 mod head_archetype;
 mod head_archetypes;
 mod icons;
+mod panel_state;
 mod process_snapshot;
 mod release_artifact;
 mod screen;
