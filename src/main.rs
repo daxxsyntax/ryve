@@ -397,9 +397,16 @@ enum Message {
     /// workshop's sparks.db into `.ryve/backups/`. Also fires once on
     /// graceful workshop close. Spark ryve-7c8573c4.
     BackupTick,
-    /// A backup snapshot finished. `Ok(path)` on success so the UI can
-    /// log where it landed; `Err(msg)` for failures, which are logged.
-    BackupFinished(Result<PathBuf, String>),
+    /// A backup snapshot finished for a specific workshop. `workshop_id`
+    /// identifies which workshop produced this result so the error handler
+    /// can emit a flare ember only for the failing workshop — snapshots are
+    /// taken per-workshop (see `snapshot_all_workshops`) and without this
+    /// identifier a single failure would incorrectly flare every open
+    /// workshop. `Ok(path)` on success; `Err(msg)` on failure.
+    BackupFinished {
+        workshop_id: String,
+        result: Result<PathBuf, String>,
+    },
     /// Spawn a new Hand with the default agent (Cmd+H)
     NewDefaultHand,
     HandAssignmentSaved,
@@ -619,9 +626,12 @@ impl std::fmt::Debug for Message {
             Self::ProcessSnapshotReady(_) => write!(f, "ProcessSnapshotReady"),
 
             Self::BackupTick => write!(f, "BackupTick"),
-            Self::BackupFinished(r) => match r {
-                Ok(p) => write!(f, "BackupFinished(ok={})", p.display()),
-                Err(e) => write!(f, "BackupFinished(err={e})"),
+            Self::BackupFinished {
+                workshop_id,
+                result,
+            } => match result {
+                Ok(p) => write!(f, "BackupFinished(ws={workshop_id}, ok={})", p.display()),
+                Err(e) => write!(f, "BackupFinished(ws={workshop_id}, err={e})"),
             },
             Self::NewDefaultHand => write!(f, "NewDefaultHand"),
             Self::HandAssignmentSaved => write!(f, "HandAssignmentSaved"),
@@ -753,19 +763,31 @@ impl App {
 
     /// Construct a single snapshot Task: take a `.backup` of `pool`
     /// into `dir/.ryve/backups/` and prune to the default retention.
+    ///
+    /// The returned message carries the `workshop_id` derived from `dir`
+    /// (same derivation as `Workshop::workshop_id`) so the error handler
+    /// can flare only the failing workshop instead of every open one.
     fn snapshot_task(pool: sqlx::SqlitePool, dir: PathBuf) -> Task<Message> {
+        let workshop_id = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         Task::perform(
             async move {
                 let ryve_dir = data::ryve_dir::RyveDir::new(&dir);
                 data::backup::snapshot_and_retain(
                     &pool,
                     &ryve_dir,
-                    data::backup::DEFAULT_BACKUP_RETENTION,
+                    &data::backup::RetentionPolicy::default(),
                 )
                 .await
                 .map_err(|e| e.to_string())
             },
-            Message::BackupFinished,
+            move |result| Message::BackupFinished {
+                workshop_id: workshop_id.clone(),
+                result,
+            },
         )
     }
 
@@ -4295,22 +4317,44 @@ impl App {
                 // unrecoverable.
                 self.snapshot_all_workshops()
             }
-            Message::BackupFinished(result) => {
-                match result {
-                    Ok(path) => {
-                        log::info!("backup: wrote {}", path.display());
-                        Task::none()
-                    }
-                    Err(err) => {
-                        // Loud in logs, but don't spam a toast on every
-                        // tick — quiet failure is preferable to a
-                        // user-facing interruption. The next successful
-                        // snapshot restores the invariant.
-                        log::warn!("backup: snapshot failed: {err}");
-                        Task::none()
-                    }
+            Message::BackupFinished {
+                workshop_id,
+                result,
+            } => match result {
+                Ok(path) => {
+                    log::info!("backup[{workshop_id}]: wrote {}", path.display());
+                    Task::none()
                 }
-            }
+                Err(err) => {
+                    log::warn!("backup[{workshop_id}]: snapshot failed: {err}");
+                    // Emit the flare only in the workshop whose snapshot
+                    // failed — a single failure used to flare every open
+                    // workshop because the message carried no workshop id.
+                    let Some(pool) = self.workshops.iter().find_map(|ws| {
+                        if ws.workshop_id() == workshop_id {
+                            ws.sparks_db.clone()
+                        } else {
+                            None
+                        }
+                    }) else {
+                        log::warn!(
+                            "backup[{workshop_id}]: workshop not found (likely closed); skipping flare"
+                        );
+                        return Task::none();
+                    };
+                    let ws_id = workshop_id;
+                    Task::perform(
+                        async move {
+                            if let Err(e) =
+                                data::backup::emit_backup_failure_flare(&pool, &ws_id, &err).await
+                            {
+                                log::warn!("backup: failed to emit flare: {e}");
+                            }
+                        },
+                        |_| Message::AgentContextSynced,
+                    )
+                }
+            },
             Message::SparksPoll => {
                 // Opportunistically surface any worktree warnings that the
                 // synchronous spawn paths accumulated since the last tick.

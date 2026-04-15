@@ -79,6 +79,49 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<u64, SparksError> {
     Ok(result.rows_affected())
 }
 
+/// Find the most recent active ember of `ember_type` whose content starts
+/// with `prefix`, created within the last `window_secs` seconds.
+pub async fn find_recent_by_prefix(
+    pool: &SqlitePool,
+    workshop_id: &str,
+    ember_type: EmberType,
+    prefix: &str,
+    window_secs: i64,
+) -> Result<Option<Ember>, SparksError> {
+    let now = Utc::now().to_rfc3339();
+    let pattern = format!("{prefix}%");
+    Ok(sqlx::query_as::<_, Ember>(
+        "SELECT * FROM embers \
+         WHERE workshop_id = ? AND ember_type = ? \
+           AND content LIKE ? \
+           AND datetime(created_at, '+' || ttl_seconds || ' seconds') > datetime(?) \
+           AND datetime(created_at, '+' || ? || ' seconds') > datetime(?) \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(workshop_id)
+    .bind(ember_type.as_str())
+    .bind(&pattern)
+    .bind(&now)
+    .bind(window_secs)
+    .bind(&now)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// Update the content of an existing ember.
+pub async fn update_content(
+    pool: &SqlitePool,
+    id: &str,
+    new_content: &str,
+) -> Result<u64, SparksError> {
+    let result = sqlx::query("UPDATE embers SET content = ? WHERE id = ?")
+        .bind(new_content)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Delete all expired embers. Returns number removed.
 pub async fn sweep_expired(pool: &SqlitePool) -> Result<u64, SparksError> {
     let now = Utc::now().to_rfc3339();
