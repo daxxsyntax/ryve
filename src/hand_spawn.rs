@@ -548,11 +548,25 @@ mod tests {
         run_git(&["init", "-q", "-b", "main"]);
         run_git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
-        // Stub agent: prints its argv to a file. The output path is
-        // hardcoded into the script body so parallel tests cannot clobber
-        // each other via a shared env var — an earlier version used
+        // Stub agent: prints its argv to a file, then sleeps briefly to
+        // keep the tmux session alive. The output path is hardcoded into
+        // the script body so parallel tests cannot clobber each other via
+        // a shared env var — an earlier version used
         // `$RYVE_TEST_AGENT_OUT` and flaked whenever two of these tests
         // ran in parallel (their env overwrite raced).
+        //
+        // Why the sleep: `spawn_hand` issues `tmux new-session` then
+        // immediately `tmux pipe-pane`. With a real agent (claude / codex)
+        // the agent stays alive for the lifetime of the conversation, so
+        // pipe-pane always finds the session. With a stub that exits in
+        // microseconds, tmux destroys the session as soon as `printf`
+        // returns — and on fast hosts (Ubuntu CI runners) `pipe-pane`
+        // loses the race and reports `SessionNotFound`. macOS happens to
+        // be slow enough that the race is rarely lost. Sleeping 5 seconds
+        // gives the test plenty of headroom on any host without changing
+        // anything about the production path. The tests don't wait on the
+        // sleep — they read agent-out.txt as soon as `printf` has written
+        // it, which happens before the sleep starts.
         let out_path = base.join("agent-out.txt");
         let stub_path = base.join("stub-agent.sh");
         std::fs::write(
@@ -560,7 +574,10 @@ mod tests {
             format!(
                 "#!/bin/sh\n\
                  # Record argv so the test can verify the prompt was delivered.\n\
-                 printf '%s\\n' \"$@\" > \"{}\"\n",
+                 printf '%s\\n' \"$@\" > \"{}\"\n\
+                 # Keep the tmux pane alive long enough for pipe-pane to\n\
+                 # attach (see comment in setup_workshop in hand_spawn.rs).\n\
+                 sleep 5\n",
                 out_path.display()
             ),
         )
