@@ -1221,7 +1221,6 @@ pub struct UpdateRelease {
     pub version: Option<String>,
     pub problem: Option<String>,
     pub notes: Option<String>,
-    pub acceptance: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

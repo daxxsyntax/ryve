@@ -3051,90 +3051,58 @@ async fn handle_release(
                 Err(e) => die(&format!("{e}")),
             }
         }
-        "close" => {
-            if args.len() < 2 {
-                die("release close requires <id>");
-            }
-            release_close(pool, workshop_root, &args[1], json_mode).await;
-        }
         "edit" => {
             if args.len() < 2 {
-                die("release edit requires <id>");
+                die(
+                    "release edit requires <id> [--version <ver>] [--notes <text>] [--problem <text>]",
+                );
             }
-            let id = &args[1];
-            let mut version: Option<String> = None;
+            let release_id = &args[1];
+            let mut patch = UpdateRelease::default();
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
                     "--version" => {
                         i += 1;
-                        if i < args.len() {
-                            version = Some(args[i].clone());
+                        if i >= args.len() {
+                            die("--version requires a value");
                         }
+                        patch.version = Some(args[i].clone());
                     }
-                    _ => {}
+                    "--notes" => {
+                        i += 1;
+                        if i >= args.len() {
+                            die("--notes requires a value");
+                        }
+                        patch.notes = Some(args[i].clone());
+                    }
+                    "--problem" => {
+                        i += 1;
+                        if i >= args.len() {
+                            die("--problem requires a value");
+                        }
+                        patch.problem = Some(args[i].clone());
+                    }
+                    other => die(&format!("unknown flag '{other}' for release edit")),
                 }
                 i += 1;
             }
-            let Some(ver) = version else {
-                die("release edit requires --version <semver>");
-            };
-            match release_repo::update(pool, id, &ver).await {
-                Ok(release) => {
-                    let epics = release_repo::list_member_epics(pool, &release.id)
-                        .await
-                        .unwrap_or_default();
+            match release_repo::update(pool, release_id, patch).await {
+                Ok(r) => {
                     if json_mode {
-                        let payload = serde_json::json!({
-                            "release": release,
-                            "epics": epics,
-                        });
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&payload).unwrap_or_default()
-                        );
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
                     } else {
-                        println!("ID:       {}", release.id);
-                        println!("Version:  {}", release.version);
-                        println!("Status:   {}", release.status);
-                        if let Some(ref b) = release.branch_name {
-                            println!("Branch:   {b}");
-                        }
-                        println!("Created:  {}", release.created_at);
-                        if let Some(ref t) = release.cut_at {
-                            println!("Cut at:   {t}");
-                        }
-                        if let Some(ref t) = release.tag {
-                            println!("Tag:      {t}");
-                        }
-                        if let Some(ref p) = release.artifact_path {
-                            println!("Artifact: {p}");
-                        }
-                        if let Some(ref p) = release.problem {
-                            println!("Problem:  {p}");
-                        }
-                        let acc = release.acceptance();
-                        if !acc.is_empty() {
-                            println!("Acceptance:");
-                            for a in &acc {
-                                println!("  - {a}");
-                            }
-                        }
-                        if let Some(ref n) = release.notes {
-                            println!("Notes:    {n}");
-                        }
-                        if epics.is_empty() {
-                            println!("\nNo member epics.");
-                        } else {
-                            println!("\nMember epics ({}):", epics.len());
-                            for eid in &epics {
-                                println!("  {eid}");
-                            }
-                        }
+                        println!("{} updated — v{} ({})", r.id, r.version, r.status);
                     }
                 }
                 Err(e) => die(&format!("{e}")),
             }
+        }
+        "close" => {
+            if args.len() < 2 {
+                die("release close requires <id>");
+            }
+            release_close(pool, workshop_root, &args[1], json_mode).await;
         }
         other => die(&format!(
             "unknown release subcommand '{other}': expected create, list, show, edit, add-epic, remove-epic, status, or close"

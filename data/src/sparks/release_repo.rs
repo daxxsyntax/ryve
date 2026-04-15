@@ -125,23 +125,13 @@ pub async fn update(
     let problem = patch.problem.or(existing.problem);
     let notes = patch.notes.or(existing.notes);
 
-    let acceptance_json = match patch.acceptance {
-        Some(acc) => {
-            serde_json::to_string(&acc).map_err(|e| SparksError::Serialization(e.to_string()))?
-        }
-        None => existing.acceptance_json,
-    };
-
-    sqlx::query(
-        "UPDATE releases SET version = ?, problem = ?, notes = ?, acceptance_json = ? WHERE id = ?",
-    )
-    .bind(&version)
-    .bind(&problem)
-    .bind(&notes)
-    .bind(&acceptance_json)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE releases SET version = ?, problem = ?, notes = ? WHERE id = ?")
+        .bind(&version)
+        .bind(&problem)
+        .bind(&notes)
+        .bind(id)
+        .execute(pool)
+        .await?;
 
     get(pool, id).await
 }
@@ -234,24 +224,6 @@ pub async fn list_member_epics(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(s,)| s).collect())
-}
-
-/// Update the version of an existing release.
-pub async fn update(
-    pool: &SqlitePool,
-    release_id: &str,
-    new_version: &str,
-) -> Result<Release, SparksError> {
-    validate_semver(new_version)?;
-    let _ = get(pool, release_id).await?;
-
-    sqlx::query("UPDATE releases SET version = ? WHERE id = ?")
-        .bind(new_version)
-        .bind(release_id)
-        .execute(pool)
-        .await?;
-
-    get(pool, release_id).await
 }
 
 /// Record the tag name and artifact path on a release. Used by the close flow

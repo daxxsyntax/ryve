@@ -18,7 +18,16 @@ async fn test_update_version(pool: sqlx::SqlitePool) {
         .unwrap();
     assert_eq!(r.version, "1.0.0");
 
-    let updated = release_repo::update(&pool, &r.id, "2.0.0").await.unwrap();
+    let updated = release_repo::update(
+        &pool,
+        &r.id,
+        UpdateRelease {
+            version: Some("2.0.0".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(updated.version, "2.0.0");
     assert_eq!(updated.id, r.id);
 }
@@ -29,9 +38,16 @@ async fn test_update_rejects_invalid_semver(pool: sqlx::SqlitePool) {
         .await
         .unwrap();
 
-    let err = release_repo::update(&pool, &r.id, "not-semver")
-        .await
-        .unwrap_err();
+    let err = release_repo::update(
+        &pool,
+        &r.id,
+        UpdateRelease {
+            version: Some("not-semver".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("semver"),
         "expected semver error, got: {err}"
@@ -40,9 +56,16 @@ async fn test_update_rejects_invalid_semver(pool: sqlx::SqlitePool) {
 
 #[sqlx::test]
 async fn test_update_missing_release(pool: sqlx::SqlitePool) {
-    let err = release_repo::update(&pool, "rel-nonexistent", "1.0.0")
-        .await
-        .unwrap_err();
+    let err = release_repo::update(
+        &pool,
+        "rel-nonexistent",
+        UpdateRelease {
+            version: Some("1.0.0".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found") || err.to_string().contains("Not found"),
         "expected not-found error, got: {err}"
