@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use data::backup::{
-    self, DEFAULT_BACKUP_RETENTION, SNAPSHOT_PREFIX, Snapshot, apply_retention, list_snapshots,
-    parse_stamp, restore_snapshot, snapshot_and_retain, take_snapshot,
+    self, DEFAULT_BACKUP_RETENTION, SNAPSHOT_PREFIX, Snapshot, apply_retention,
+    emit_backup_failure_flare, list_snapshots, parse_stamp, restore_snapshot, snapshot_and_retain,
+    take_snapshot,
 };
 use data::db::open_sparks_db;
 use data::ryve_dir::RyveDir;
@@ -332,4 +333,56 @@ fn parse_stamp_rejects_non_matching_names() {
     assert!(parse_stamp("notes.txt").is_none());
     assert!(parse_stamp("sparks-bogus.db").is_none());
     assert!(parse_stamp("sparks-20260408T130500Z.txt").is_none());
+}
+
+#[tokio::test]
+async fn backup_failure_emits_flare_ember() {
+    let (_tmp, _root, _ryve_dir, pool) = fresh_workshop().await;
+
+    emit_backup_failure_flare(&pool, "ws-test", "write to /nonexistent: permission denied")
+        .await
+        .expect("emit flare");
+
+    let flares = data::sparks::ember_repo::list_by_type(
+        &pool,
+        "ws-test",
+        data::sparks::types::EmberType::Flare,
+    )
+    .await
+    .unwrap();
+    assert_eq!(flares.len(), 1);
+    assert!(
+        flares[0]
+            .content
+            .contains("Backup failed: write to /nonexistent: permission denied")
+    );
+}
+
+#[tokio::test]
+async fn backup_failure_coalesces_within_window() {
+    let (_tmp, _root, _ryve_dir, pool) = fresh_workshop().await;
+
+    emit_backup_failure_flare(&pool, "ws-test", "disk full")
+        .await
+        .expect("first flare");
+    emit_backup_failure_flare(&pool, "ws-test", "disk full")
+        .await
+        .expect("second flare (should coalesce)");
+    emit_backup_failure_flare(&pool, "ws-test", "disk full")
+        .await
+        .expect("third flare (should coalesce)");
+
+    let flares = data::sparks::ember_repo::list_by_type(
+        &pool,
+        "ws-test",
+        data::sparks::types::EmberType::Flare,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        flares.len(),
+        1,
+        "repeated failures must coalesce into one ember"
+    );
+    assert!(flares[0].content.contains("3 failures in window"));
 }

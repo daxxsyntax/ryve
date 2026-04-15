@@ -366,3 +366,57 @@ pub fn resolve_snapshot(ryve_dir: &RyveDir, snapshot: &Path) -> PathBuf {
     }
     ryve_dir.backups_dir().join(snapshot)
 }
+
+const BACKUP_FLARE_PREFIX: &str = "Backup failed: ";
+const BACKUP_FLARE_COALESCE_SECS: i64 = 600;
+
+/// Emit a flare ember for a backup failure, coalescing repeated failures
+/// within a 10-minute window. The first failure creates a new flare;
+/// subsequent failures update the existing ember's content with a count.
+pub async fn emit_backup_failure_flare(
+    pool: &sqlx::SqlitePool,
+    workshop_id: &str,
+    error: &str,
+) -> Result<(), crate::sparks::error::SparksError> {
+    use crate::sparks::ember_repo;
+    use crate::sparks::types::{EmberType, NewEmber};
+
+    let existing = ember_repo::find_recent_by_prefix(
+        pool,
+        workshop_id,
+        EmberType::Flare,
+        BACKUP_FLARE_PREFIX,
+        BACKUP_FLARE_COALESCE_SECS,
+    )
+    .await?;
+
+    match existing {
+        Some(ember) => {
+            let count = parse_failure_count(&ember.content) + 1;
+            let updated = format!("{BACKUP_FLARE_PREFIX}{error} ({count} failures in window)");
+            ember_repo::update_content(pool, &ember.id, &updated).await?;
+        }
+        None => {
+            ember_repo::create(
+                pool,
+                NewEmber {
+                    ember_type: EmberType::Flare,
+                    content: format!("{BACKUP_FLARE_PREFIX}{error}"),
+                    source_agent: None,
+                    workshop_id: workshop_id.to_string(),
+                    ttl_seconds: Some(3600),
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_failure_count(content: &str) -> u32 {
+    content
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.strip_suffix(" failures in window)"))
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(1)
+}

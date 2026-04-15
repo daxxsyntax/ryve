@@ -4225,22 +4225,36 @@ impl App {
                 // unrecoverable.
                 self.snapshot_all_workshops()
             }
-            Message::BackupFinished(result) => {
-                match result {
-                    Ok(path) => {
-                        log::info!("backup: wrote {}", path.display());
-                        Task::none()
-                    }
-                    Err(err) => {
-                        // Loud in logs, but don't spam a toast on every
-                        // tick — quiet failure is preferable to a
-                        // user-facing interruption. The next successful
-                        // snapshot restores the invariant.
-                        log::warn!("backup: snapshot failed: {err}");
-                        Task::none()
-                    }
+            Message::BackupFinished(result) => match result {
+                Ok(path) => {
+                    log::info!("backup: wrote {}", path.display());
+                    Task::none()
                 }
-            }
+                Err(err) => {
+                    log::warn!("backup: snapshot failed: {err}");
+                    let tasks: Vec<Task<Message>> = self
+                        .workshops
+                        .iter()
+                        .filter_map(|ws| {
+                            let pool = ws.sparks_db.clone()?;
+                            let ws_id = ws.workshop_id();
+                            let err = err.clone();
+                            Some(Task::perform(
+                                async move {
+                                    if let Err(e) =
+                                        data::backup::emit_backup_failure_flare(&pool, &ws_id, &err)
+                                            .await
+                                    {
+                                        log::warn!("backup: failed to emit flare: {e}");
+                                    }
+                                },
+                                |_| Message::AgentContextSynced,
+                            ))
+                        })
+                        .collect();
+                    Task::batch(tasks)
+                }
+            },
             Message::SparksPoll => {
                 // Opportunistically surface any worktree warnings that the
                 // synchronous spawn paths accumulated since the last tick.
