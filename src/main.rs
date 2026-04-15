@@ -7140,43 +7140,20 @@ async fn load_crews(
     Vec<data::sparks::types::Crew>,
     Vec<data::sparks::types::CrewMember>,
 ) {
-    let crews = data::sparks::crew_repo::list_for_workshop(&pool, &workshop_id)
-        .await
-        .unwrap_or_default();
-    let mut all_members: Vec<data::sparks::types::CrewMember> = Vec::new();
-    for c in &crews {
-        if let Ok(mut members) = data::sparks::crew_repo::members(&pool, &c.id).await {
-            all_members.append(&mut members);
-        }
-    }
-    (crews, all_members)
+    let (crews, members) = tokio::join!(
+        data::sparks::crew_repo::list_for_workshop(&pool, &workshop_id),
+        data::sparks::crew_repo::members_for_workshop(&pool, &workshop_id),
+    );
+    (crews.unwrap_or_default(), members.unwrap_or_default())
 }
 
 /// Load all active hand assignments for the workshop, used by the Home
 /// overview to join sparks ↔ Hands. Filters down to status='active' on
 /// the SQL side already.
 async fn load_hand_assignments(pool: sqlx::SqlitePool, workshop_id: String) -> Vec<HandAssignment> {
-    // assignment_repo::list_active is workshop-agnostic — filter to this
-    // workshop's sparks here so the Home view doesn't bleed across workshops
-    // sharing the same database file.
-    let all = data::sparks::assignment_repo::list_active(&pool)
+    data::sparks::assignment_repo::list_active_for_workshop(&pool, &workshop_id)
         .await
-        .unwrap_or_default();
-    let workshop_spark_ids: std::collections::HashSet<String> = data::sparks::spark_repo::list(
-        &pool,
-        data::sparks::types::SparkFilter {
-            workshop_id: Some(workshop_id),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|s| s.id)
-    .collect();
-    all.into_iter()
-        .filter(|a| workshop_spark_ids.contains(&a.spark_id))
-        .collect()
+        .unwrap_or_default()
 }
 
 /// Load active embers for the Home overview.

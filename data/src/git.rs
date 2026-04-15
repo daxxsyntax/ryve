@@ -172,21 +172,18 @@ impl Repository {
     /// Get per-file diff stats (additions, deletions) for the working tree against HEAD.
     /// Returns a map from repo-relative file path to (additions, deletions).
     pub async fn diff_stats(&self) -> Result<HashMap<PathBuf, DiffStat>, GitError> {
-        // Staged changes
-        let staged = Command::new("git")
-            .args(["diff", "--cached", "--numstat"])
-            .current_dir(&self.path)
-            .output()
-            .await
-            .map_err(GitError::Io)?;
-
-        // Unstaged changes
-        let unstaged = Command::new("git")
-            .args(["diff", "--numstat"])
-            .current_dir(&self.path)
-            .output()
-            .await
-            .map_err(GitError::Io)?;
+        let (staged, unstaged) = tokio::join!(
+            Command::new("git")
+                .args(["diff", "--cached", "--numstat"])
+                .current_dir(&self.path)
+                .output(),
+            Command::new("git")
+                .args(["diff", "--numstat"])
+                .current_dir(&self.path)
+                .output(),
+        );
+        let staged = staged.map_err(GitError::Io)?;
+        let unstaged = unstaged.map_err(GitError::Io)?;
 
         let mut stats = HashMap::new();
 

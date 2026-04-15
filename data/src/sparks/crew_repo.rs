@@ -153,6 +153,23 @@ pub async fn members(pool: &SqlitePool, crew_id: &str) -> Result<Vec<CrewMember>
     .await?)
 }
 
+/// Fetch all crew members for every crew in a workshop in a single query.
+/// Avoids N+1 when loading the full crew hierarchy.
+pub async fn members_for_workshop(
+    pool: &SqlitePool,
+    workshop_id: &str,
+) -> Result<Vec<CrewMember>, SparksError> {
+    Ok(sqlx::query_as::<_, CrewMember>(
+        "SELECT cm.* FROM crew_members cm
+         INNER JOIN crews c ON c.id = cm.crew_id
+         WHERE c.workshop_id = ?
+         ORDER BY cm.joined_at ASC",
+    )
+    .bind(workshop_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 /// List crews that a given session belongs to.
 pub async fn crews_for_session(
     pool: &SqlitePool,
@@ -356,6 +373,69 @@ mod tests {
 
         // Errors on missing crew.
         assert!(set_status(&pool, "cr-nope", "merging").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn members_for_workshop_batch_fetches_all_members() {
+        let pool = fresh_pool().await;
+        let crew_a = create(
+            &pool,
+            NewCrew {
+                name: "a".into(),
+                purpose: None,
+                workshop_id: "ws".into(),
+                head_session_id: None,
+                parent_spark_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let crew_b = create(
+            &pool,
+            NewCrew {
+                name: "b".into(),
+                purpose: None,
+                workshop_id: "ws".into(),
+                head_session_id: None,
+                parent_spark_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        // Crew in a different workshop — should not appear.
+        let crew_other = create(
+            &pool,
+            NewCrew {
+                name: "other".into(),
+                purpose: None,
+                workshop_id: "ws-other".into(),
+                head_session_id: None,
+                parent_spark_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let s1 = make_session(&pool, "ws").await;
+        let s2 = make_session(&pool, "ws").await;
+        let s3 = make_session(&pool, "ws-other").await;
+
+        add_member(&pool, &crew_a.id, &s1, Some("hand"))
+            .await
+            .unwrap();
+        add_member(&pool, &crew_b.id, &s2, Some("hand"))
+            .await
+            .unwrap();
+        add_member(&pool, &crew_other.id, &s3, Some("hand"))
+            .await
+            .unwrap();
+
+        let all = members_for_workshop(&pool, "ws").await.unwrap();
+        assert_eq!(all.len(), 2);
+        let crew_ids: Vec<&str> = all.iter().map(|m| m.crew_id.as_str()).collect();
+        assert!(crew_ids.contains(&crew_a.id.as_str()));
+        assert!(crew_ids.contains(&crew_b.id.as_str()));
+        assert!(!crew_ids.contains(&crew_other.id.as_str()));
     }
 
     #[tokio::test]
