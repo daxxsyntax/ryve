@@ -84,6 +84,62 @@ impl LogTailState {
     }
 }
 
+/// Process a log-tail message, updating workshop state in place.
+///
+/// The handler iterates over all workshops because log-tail tabs are
+/// identified by a globally-unique tab id — we don't know which workshop
+/// owns the tab until we find it.
+pub fn update(
+    workshops: &mut [crate::workshop::Workshop],
+    msg: Message,
+) -> iced::Task<crate::app::Message> {
+    match msg {
+        Message::Loaded {
+            tab_id,
+            path,
+            content,
+        } => {
+            for ws in workshops.iter_mut() {
+                if let Some(tail) = ws.log_tails.get_mut(&tab_id) {
+                    if tail.path == path {
+                        tail.set_content(content);
+                    }
+                    break;
+                }
+            }
+        }
+        Message::LoadFailed {
+            tab_id,
+            path,
+            error,
+        } => {
+            for ws in workshops.iter_mut() {
+                if let Some(tail) = ws.log_tails.get_mut(&tab_id) {
+                    if tail.path == path {
+                        tail.error = Some(error);
+                    }
+                    break;
+                }
+            }
+        }
+        Message::Scrolled {
+            offset_y,
+            viewport_height,
+        } => {
+            for ws in workshops.iter_mut() {
+                if let Some(active_id) = ws.bench.active_tab
+                    && let Some(tail) = ws.log_tails.get_mut(&active_id)
+                {
+                    tail.scroll_offset_y = offset_y;
+                    tail.viewport_height = viewport_height;
+                    break;
+                }
+            }
+        }
+    }
+    iced::Task::none()
+}
+
 /// Render the spy view for a background Hand.
 pub fn view<'a>(state: &'a LogTailState, pal: &Palette) -> Element<'a, Message> {
     let header = text(format!("Spying on {}", state.path.display()))
