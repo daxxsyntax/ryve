@@ -111,10 +111,15 @@ pub fn classify_worktree(facts: &WorktreeFacts) -> WorktreeStatus {
     let Some(short_id) = facts.short_id.as_deref() else {
         return WorktreeStatus::NotHandWorktree;
     };
-    // Defensive: branch must be `hand/<short_id>` to qualify. Anything
-    // else (crew/*, merge-*, detached HEAD) falls out of scope.
-    let expected_branch = format!("hand/{short_id}");
-    if facts.branch.as_deref() != Some(expected_branch.as_str()) {
+    // Defensive: branch must be `<actor>/<short_id>` to qualify, where
+    // `<actor>` is a single non-reserved path segment. Reserved prefixes
+    // (`crew/*`, `epic/*`, `release/*`) are explicitly out of scope, as
+    // are `merge-*` directories and detached HEADs. Actor-scoped branches
+    // replaced the legacy `hand/<short>` naming in spark ryve-c44b92e5.
+    let Some(branch) = facts.branch.as_deref() else {
+        return WorktreeStatus::NotHandWorktree;
+    };
+    if !branch_is_actor_scoped_hand(branch, short_id) {
         return WorktreeStatus::NotHandWorktree;
     }
 
@@ -165,6 +170,27 @@ impl PruneSummary {
 // uses these to build `WorktreeFacts` for each candidate; the unit
 // tests do not — they construct `WorktreeFacts` directly so the
 // predicate is exercised without any process spawn.
+
+/// True when `branch` has the shape `<actor>/<short_id>` that a Hand
+/// worktree is expected to be on: exactly one `/`, the suffix equals the
+/// short_id, and the actor segment is not one of the reserved top-level
+/// prefixes that the rest of Ryve owns (`crew`, `epic`, `release`, `merge`).
+///
+/// Actor-scoped hand branches replaced the legacy `hand/<short>` naming in
+/// spark ryve-c44b92e5; this predicate accepts the new form while keeping
+/// crew / epic / release / merge worktrees out of the cleanup path.
+pub fn branch_is_actor_scoped_hand(branch: &str, short_id: &str) -> bool {
+    let Some((actor, suffix)) = branch.split_once('/') else {
+        return false;
+    };
+    if suffix != short_id {
+        return false;
+    }
+    if actor.is_empty() || actor.contains('/') {
+        return false;
+    }
+    !matches!(actor, "crew" | "epic" | "release" | "merge")
+}
 
 /// Parse the 8-char short id from a worktree directory name. Returns
 /// `None` for anything that doesn't match `[0-9a-f]{8}` exactly so
@@ -407,9 +433,43 @@ mod tests {
     #[test]
     fn crew_branch_is_out_of_scope() {
         // Even if the directory matches the 8-char pattern, a crew/*
-        // branch must NOT be touched — the predicate gates on the
-        // exact `hand/<short_id>` form.
+        // branch must NOT be touched — the predicate gates on actor-
+        // scoped forms `<actor>/<short_id>` with `actor` outside the
+        // reserved set {crew, epic, release, merge}.
         let f = facts(Some("abcd1234"), Some("crew/cr-deadbeef"), true, 0, false);
+        assert_eq!(classify_worktree(&f), WorktreeStatus::NotHandWorktree);
+    }
+
+    /// Spark ryve-c44b92e5: actor-scoped branches like `alice/abcd1234`
+    /// are hand worktrees and must be classifiable by the predicate.
+    #[test]
+    fn actor_scoped_branch_is_removable() {
+        let f = facts(Some("abcd1234"), Some("alice/abcd1234"), true, 0, false);
+        assert_eq!(classify_worktree(&f), WorktreeStatus::Removable);
+    }
+
+    /// The reserved epic/release/merge prefixes must also be refused even
+    /// if the suffix happens to match the short_id, so cleanup never
+    /// deletes integration / release branches.
+    #[test]
+    fn reserved_prefixes_are_out_of_scope() {
+        for prefix in ["epic", "release", "merge"] {
+            let branch = format!("{prefix}/abcd1234");
+            let f = facts(Some("abcd1234"), Some(branch.as_str()), true, 0, false);
+            assert_eq!(
+                classify_worktree(&f),
+                WorktreeStatus::NotHandWorktree,
+                "{prefix}/<short_id> must never be treated as a hand worktree"
+            );
+        }
+    }
+
+    /// A short_id suffix that doesn't match the worktree directory name
+    /// must still be refused — otherwise a mislabeled branch could
+    /// accidentally be targeted.
+    #[test]
+    fn branch_suffix_must_equal_short_id() {
+        let f = facts(Some("abcd1234"), Some("alice/deadbeef"), true, 0, false);
         assert_eq!(classify_worktree(&f), WorktreeStatus::NotHandWorktree);
     }
 
