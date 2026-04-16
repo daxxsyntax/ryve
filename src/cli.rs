@@ -1355,6 +1355,7 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
                 session_id: sid.clone(),
                 spark_id: args[2].clone(),
                 role: AssignmentRole::Owner,
+                actor_id: None,
             };
             match assignment_repo::assign(pool, new).await {
                 Ok(a) => println!("{} claimed by {} ({})", a.spark_id, a.session_id, a.role),
@@ -1756,6 +1757,7 @@ async fn handle_hand(
             let mut agent_name: Option<String> = None;
             let mut role = HandKind::Owner;
             let mut crew_id: Option<String> = None;
+            let mut actor_override: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -1784,6 +1786,12 @@ async fn handle_hand(
                             crew_id = Some(args[i].clone());
                         }
                     }
+                    "--actor" => {
+                        i += 1;
+                        if i < args.len() {
+                            actor_override = Some(args[i].clone());
+                        }
+                    }
                     other => die(&format!("unknown hand spawn flag '{other}'")),
                 }
                 i += 1;
@@ -1804,8 +1812,11 @@ async fn handle_hand(
                 &agent,
                 &spark_id,
                 role,
-                crew_id.as_deref(),
-                parent_session_id.as_deref(),
+                hand_spawn::SpawnContext {
+                    crew_id: crew_id.as_deref(),
+                    parent_session_id: parent_session_id.as_deref(),
+                    actor_id: actor_override.as_deref(),
+                },
             )
             .await
             {
@@ -2098,6 +2109,7 @@ async fn handle_head(
             let mut archetype_name: Option<String> = None;
             let mut agent_name: Option<String> = None;
             let mut crew_id: Option<String> = None;
+            let mut actor_override: Option<String> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -2117,6 +2129,12 @@ async fn handle_head(
                         i += 1;
                         if i < args.len() {
                             crew_id = Some(args[i].clone());
+                        }
+                    }
+                    "--actor" => {
+                        i += 1;
+                        if i < args.len() {
+                            actor_override = Some(args[i].clone());
                         }
                     }
                     other => die(&format!(
@@ -2146,8 +2164,11 @@ async fn handle_head(
                 &agent,
                 &epic_id,
                 archetype,
-                crew_id.as_deref(),
-                parent_session_id.as_deref(),
+                hand_spawn::SpawnContext {
+                    crew_id: crew_id.as_deref(),
+                    parent_session_id: parent_session_id.as_deref(),
+                    actor_id: actor_override.as_deref(),
+                },
             )
             .await
             {

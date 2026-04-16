@@ -750,6 +750,11 @@ pub struct NewHandAssignment {
     pub session_id: String,
     pub spark_id: String,
     pub role: AssignmentRole,
+    /// Identity of the actor (human or agent namespace) owning this claim.
+    /// Used to scope the Hand's git branch (`<actor>/<short>`) and to enforce
+    /// the cross-user mutation boundary at spawn time. When `None`, falls
+    /// back to `session_id` so pre-existing callers continue to work.
+    pub actor_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

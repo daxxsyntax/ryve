@@ -5130,10 +5130,15 @@ impl App {
                 workshop::PendingTerminalKind::CustomAgent(_) => None,
             });
 
+        // UI-driven spawn has no explicit actor scope yet, so resolve the
+        // current shell user or fall back to "hand" for the branch prefix.
+        // Spark ryve-c44b92e5: every Hand branch is actor-scoped.
+        let actor = crate::hand_spawn::resolve_ui_actor();
         Task::perform(
             async move {
                 let result =
-                    workshop::create_hand_worktree(&workshop_dir, &ryve_dir, &session_id).await;
+                    workshop::create_hand_worktree(&workshop_dir, &ryve_dir, &session_id, &actor)
+                        .await;
                 let system_prompt = match &prompt_flag {
                     Some((flag, is_file)) => {
                         workshop::resolve_system_prompt_async(
@@ -5257,6 +5262,7 @@ impl App {
                         session_id: sid_for_assign,
                         spark_id: spark_id_clone,
                         role: data::sparks::types::AssignmentRole::Owner,
+                        actor_id: None,
                     };
                     let _ = data::sparks::assignment_repo::assign(&pool2, assignment).await;
                 },
@@ -7145,6 +7151,7 @@ mod tests {
                 session_id: session_id.clone(),
                 spark_id: spark.id.clone(),
                 role: AssignmentRole::Owner,
+                actor_id: None,
             },
         )
         .await
