@@ -1032,13 +1032,33 @@ impl App {
                     return Task::none();
                 };
                 let ws = &mut self.workshops[idx];
-                let created = ws.finalize_hand_terminal(tab_id, result, system_prompt);
+                let outcome = ws.finalize_hand_terminal(tab_id, result, system_prompt);
                 let mut tasks: Vec<Task<Message>> = Vec::new();
-                if created && let Some(term) = ws.terminals.get(&tab_id) {
+                if outcome.created
+                    && let Some(term) = ws.terminals.get(&tab_id)
+                {
                     tasks.push(iced_term::TerminalView::focus(term.widget_id().clone()));
                 }
                 if let Some(msg) = ws.take_worktree_warning() {
                     tasks.push(self.push_toast("Worktree fallback", msg, ToastKind::Warning));
+                }
+                // Dispatch the initial prompt now that the terminal exists.
+                // Previously each spawn site scheduled `SendSparkPrompt` on
+                // a standalone 3-second timer — if the worktree or widget
+                // took longer than that the prompt fired before the
+                // terminal was inserted into `ws.terminals` and was
+                // silently dropped. Chaining here closes the race; the
+                // short delay below gives the freshly-exec'd agent
+                // subprocess time to come up ready for stdin.
+                if outcome.created
+                    && let Some(prompt) = outcome.initial_prompt
+                {
+                    tasks.push(Task::perform(
+                        async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        },
+                        move |_| Message::SendSparkPrompt { tab_id, prompt },
+                    ));
                 }
                 if tasks.is_empty() {
                     Task::none()
@@ -4987,14 +5007,12 @@ impl App {
                     ));
                 }
 
-                // Re-inject the Atlas Director prompt after a boot delay.
+                // Re-inject the Atlas Director prompt: stash it on the
+                // pending terminal spawn (re-created by
+                // `prepare_atlas_refresh`) so `HandWorktreeReady` can
+                // dispatch it once the replacement terminal is live.
                 let prompt = agent_prompts::compose_atlas_prompt();
-                tasks.push(Task::perform(
-                    async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    },
-                    move |_| Message::SendSparkPrompt { tab_id, prompt },
-                ));
+                self.workshops[idx].set_pending_initial_prompt(tab_id, prompt);
 
                 return Task::batch(tasks);
             }
@@ -5226,8 +5244,11 @@ impl App {
             // Create hand-spark assignment (spark is required)
             let pool2 = ws.sparks_db.clone().unwrap();
 
-            // Compose the initial prompt: house rules + spark details + DONE checklist
+            // Compose the initial prompt: house rules + spark details + DONE checklist.
+            // Stash it on the pending terminal spawn so `HandWorktreeReady`
+            // dispatches it once the terminal actually exists.
             let prompt = agent_prompts::compose_hand_prompt(&ws.sparks, &spark_id);
+            ws.set_pending_initial_prompt(tab_id, prompt);
 
             let spark_id_clone = spark_id.clone();
             tasks.push(Task::perform(
@@ -5240,18 +5261,6 @@ impl App {
                     let _ = data::sparks::assignment_repo::assign(&pool2, assignment).await;
                 },
                 |_| Message::HandAssignmentSaved,
-            ));
-
-            // Send the initial prompt to the agent after a delay (let it boot)
-            let prompt_tab_id = tab_id;
-            tasks.push(Task::perform(
-                async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                },
-                move |_| Message::SendSparkPrompt {
-                    tab_id: prompt_tab_id,
-                    prompt,
-                },
             ));
         }
         // Kick off the async worktree creation last so it is chained after
@@ -5334,29 +5343,19 @@ impl App {
             ));
         }
 
-        // Inject the Head system prompt the same way the Hand flow injects
-        // its prompt: a delayed type-into-terminal so the agent has had time
-        // to boot. Coding agents like claude/codex pick up `--system-prompt`
-        // via flag too, but the existing infra here uses the typed-prompt
-        // path so we stay consistent and avoid having to fork the spawn API.
+        // Inject the Head system prompt by stashing it on the pending
+        // terminal spawn. The `HandWorktreeReady` handler dispatches it
+        // once the terminal is inserted, so the prompt can never fire
+        // into a tab that hasn't materialised yet.
         let prompt = agent_prompts::compose_head_prompt(
             agent_prompts::HeadArchetype::Build,
             epic_id.as_deref(),
             epic_title.as_deref(),
         );
-        let prompt_tab_id = tab_id;
-        tasks.push(Task::perform(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            },
-            move |_| Message::SendSparkPrompt {
-                tab_id: prompt_tab_id,
-                prompt,
-            },
-        ));
+        ws.set_pending_initial_prompt(tab_id, prompt);
 
-        // Focus is handled by the `HandWorktreeReady` handler once the
-        // terminal widget actually exists.
+        // Focus + prompt dispatch are both handled by the
+        // `HandWorktreeReady` handler once the terminal widget exists.
         Task::batch(tasks)
     }
 
@@ -5463,22 +5462,16 @@ impl App {
             ));
         }
 
-        // Inject the Atlas Director system prompt the same way the Head and
-        // Hand flows do — typed into the terminal after a short boot delay.
+        // Inject the Atlas Director system prompt by stashing it on the
+        // pending terminal spawn. `HandWorktreeReady` dispatches it only
+        // after `finalize_hand_terminal` has inserted the live terminal,
+        // which removes the old race where a slow worktree could let the
+        // prompt fire into an empty `ws.terminals` map.
         let prompt = agent_prompts::compose_atlas_prompt();
-        let prompt_tab_id = tab_id;
-        tasks.push(Task::perform(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            },
-            move |_| Message::SendSparkPrompt {
-                tab_id: prompt_tab_id,
-                prompt,
-            },
-        ));
+        ws.set_pending_initial_prompt(tab_id, prompt);
 
-        // Focus is handled by the `HandWorktreeReady` handler once the
-        // terminal widget actually exists.
+        // Focus + prompt dispatch are both handled by the
+        // `HandWorktreeReady` handler once the terminal widget exists.
         Task::batch(tasks)
     }
 

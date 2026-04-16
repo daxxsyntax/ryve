@@ -55,6 +55,21 @@ pub struct PendingTerminalSpawn {
     /// for agents that want the prompt body on the command line. Computed
     /// at stage 1 so stage 2 doesn't have to touch the filesystem.
     pub system_prompt: Option<(String, String)>,
+    /// Initial user-message prompt to type into the terminal once the agent
+    /// subprocess is ready to accept input. Delivered by the
+    /// `HandWorktreeReady` handler after `finalize_hand_terminal` inserts
+    /// the terminal — removes the old spawn-time timer race where the
+    /// prompt could fire before the terminal existed and be silently
+    /// dropped.
+    pub initial_prompt: Option<String>,
+}
+
+/// Outcome of [`Workshop::finalize_hand_terminal`] — lets the caller both
+/// react to success/failure and learn whether an initial prompt needs to
+/// be dispatched now that the terminal exists.
+pub struct FinalizedTerminal {
+    pub created: bool,
+    pub initial_prompt: Option<String>,
 }
 
 pub enum PendingTerminalKind {
@@ -1188,10 +1203,23 @@ impl Workshop {
                 kind,
                 full_auto,
                 system_prompt: None,
+                initial_prompt: None,
             },
         );
 
         tab_id
+    }
+
+    /// Attach an initial user-message prompt to a pending terminal spawn.
+    /// Call this after `begin_hand_terminal` / `begin_atlas_terminal` so
+    /// the `HandWorktreeReady` handler can dispatch the prompt once the
+    /// terminal is actually alive. No-op if the pending spawn has already
+    /// been finalised (e.g. the worktree race resolved between the begin
+    /// call and this setter).
+    pub fn set_pending_initial_prompt(&mut self, tab_id: u64, prompt: String) {
+        if let Some(pending) = self.pending_terminal_spawns.get_mut(&tab_id) {
+            pending.initial_prompt = Some(prompt);
+        }
     }
 
     /// Stage 2 of a two-step Hand terminal spawn (spark ryve-885ed3eb):
@@ -1207,10 +1235,18 @@ impl Workshop {
         tab_id: u64,
         worktree_result: Result<PathBuf, String>,
         system_prompt: Option<(String, String)>,
-    ) -> bool {
+    ) -> FinalizedTerminal {
         let Some(mut pending) = self.pending_terminal_spawns.remove(&tab_id) else {
-            return false;
+            return FinalizedTerminal {
+                created: false,
+                initial_prompt: None,
+            };
         };
+
+        // Take the initial-prompt payload now; the caller dispatches it once
+        // we return `created == true`. If terminal creation fails below the
+        // prompt is dropped along with the tab.
+        let initial_prompt = pending.initial_prompt.take();
 
         // Prefer the asynchronously-resolved system prompt passed in from
         // the worktree task (spark ryve-2c7d348b). Fall back to whatever
@@ -1274,9 +1310,15 @@ impl Workshop {
 
         if let Ok(term) = iced_term::Terminal::new(tab_id, settings) {
             self.terminals.insert(tab_id, term);
-            true
+            FinalizedTerminal {
+                created: true,
+                initial_prompt,
+            }
         } else {
-            false
+            FinalizedTerminal {
+                created: false,
+                initial_prompt: None,
+            }
         }
     }
 
@@ -1357,6 +1399,7 @@ impl Workshop {
                 kind: PendingTerminalKind::Agent(agent.clone()),
                 full_auto,
                 system_prompt: None,
+                initial_prompt: None,
             },
         );
 
@@ -1809,6 +1852,60 @@ mod tests {
     fn workshop_id_derives_from_directory_name() {
         let ws = Workshop::new(PathBuf::from("/home/user/projects/my-project"));
         assert_eq!(ws.workshop_id(), "my-project");
+    }
+
+    /// Regression: the old spawn paths scheduled `SendSparkPrompt` on a
+    /// standalone 3s timer, independent of whether the worktree task had
+    /// actually produced a terminal yet. On slow startup the timer could
+    /// fire before `finalize_hand_terminal` inserted the terminal, and
+    /// the prompt was silently dropped.
+    ///
+    /// The replacement contract: spawn sites call
+    /// `set_pending_initial_prompt`, and `finalize_hand_terminal` hands
+    /// the prompt back to the caller via `FinalizedTerminal.initial_prompt`
+    /// so `HandWorktreeReady` dispatches it only after the terminal exists.
+    /// These tests lock in the flow-independent half: the prompt is
+    /// stashed on, and later removed from, the pending spawn.
+    #[test]
+    fn set_pending_initial_prompt_stashes_on_pending_spawn() {
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+
+        // Simulate what begin_hand_terminal does: insert a pending spawn.
+        let tab_id = 42;
+        ws.pending_terminal_spawns.insert(
+            tab_id,
+            PendingTerminalSpawn {
+                session_id: "sess-1".to_string(),
+                kind: PendingTerminalKind::Agent(CodingAgent {
+                    display_name: "claude".to_string(),
+                    command: "claude".to_string(),
+                    args: vec![],
+                    resume: ResumeStrategy::None,
+                    compatibility: crate::coding_agents::CompatStatus::Unknown,
+                }),
+                full_auto: false,
+                system_prompt: None,
+                initial_prompt: None,
+            },
+        );
+
+        ws.set_pending_initial_prompt(tab_id, "Hello Atlas".to_string());
+
+        let pending = ws
+            .pending_terminal_spawns
+            .get(&tab_id)
+            .expect("pending spawn must still exist");
+        assert_eq!(pending.initial_prompt.as_deref(), Some("Hello Atlas"));
+    }
+
+    #[test]
+    fn set_pending_initial_prompt_is_noop_if_no_pending_spawn() {
+        // Race safety: if the pending spawn has already been finalised
+        // (or the tab never existed), this must not panic or insert a
+        // ghost entry.
+        let mut ws = Workshop::new(PathBuf::from("/tmp/ryve"));
+        ws.set_pending_initial_prompt(9999, "into the void".to_string());
+        assert!(ws.pending_terminal_spawns.is_empty());
     }
 
     // ── Collapsed epic state (spark ryve-926870a9) ──────────
