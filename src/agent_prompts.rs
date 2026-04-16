@@ -506,6 +506,43 @@ pub fn compose_perf_head_prompt(epic_id: Option<&str>, epic_title: Option<&str>)
     prompt
 }
 
+/// Compose the initial prompt for an **Investigator** Hand — a read-only
+/// worker spawned by a Research Head to audit code and post structured
+/// findings as comments on the parent spark. The full read-only contract
+/// and Finding schema live in a separate spark (ryve-c0733c9c) that owns
+/// this function's body; this stub is the import target the spawn path
+/// dispatches to so the two sparks can land independently.
+pub fn compose_investigator_prompt(sparks: &[Spark], spark_id: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(HOUSE_RULES);
+
+    prompt.push_str(&format!(
+        "ASSIGNMENT: spark {spark_id} (role: INVESTIGATOR — READ-ONLY). \
+         Mark it in progress now: `ryve spark status {spark_id} in_progress`.\n\n\
+         You are a read-only investigator Hand. You MUST NOT use Edit, Write, \
+         or NotebookEdit. You MUST NOT run destructive git commands \
+         (`git reset --hard`, force-push, branch deletion, `--no-verify`). \
+         Shell is limited to read-only commands and the `ryve` CLI. All \
+         findings are posted as comments on the parent spark via \
+         `ryve comment add {spark_id} '<finding>'` — never as code changes.\n\n"
+    ));
+
+    if let Some(spark) = sparks.iter().find(|s| s.id == spark_id) {
+        push_spark_details(&mut prompt, spark);
+    } else {
+        prompt.push_str(&format!(
+            "(Spark {spark_id} details not in cache — run `ryve spark show {spark_id}` to load them.)\n"
+        ));
+    }
+
+    prompt.push_str(
+        "\nBegin the investigation now. When complete, post your findings via \
+         `ryve comment add` and close the spark.\n",
+    );
+
+    prompt
+}
+
 /// Compose the initial prompt for a Merger Hand — a Hand whose only job is
 /// to integrate the worktree branches of every other Hand in its Crew into
 /// one PR for review.
