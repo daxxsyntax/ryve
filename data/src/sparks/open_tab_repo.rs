@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Persistence for the bench's open tab list. The whole snapshot is
 //! rewritten on every save so callers don't have to track diffs.

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! File viewer — syntax-highlighted code display with git diff gutter and spark links.
 //!

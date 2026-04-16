@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Spark detail view — shown when a spark is selected in the workgraph panel.
 

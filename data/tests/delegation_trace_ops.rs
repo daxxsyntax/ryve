@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 //
 // Tests for the delegation trace model — spark ryve-1e3848b6.
 // Verifies that traces capture originating request, delegating actor,

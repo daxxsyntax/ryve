@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Performance regression benchmarks for the hottest pure functions in
 //! Ryve's UI hot loop. Output is consumed by `scripts/perf-gate.py` and

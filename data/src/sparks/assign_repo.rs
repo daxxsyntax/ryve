@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! CRUD for the `assignments` table — actor-to-spark assignment with phase
 //! tracking, branch metadata, and optimistic-concurrency event versioning.

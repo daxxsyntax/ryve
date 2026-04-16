@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

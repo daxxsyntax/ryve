@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Resolves the path to the tmux binary bundled inside the Ryve app tree.
 //!

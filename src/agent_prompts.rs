@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Initial prompts for the four roles a coding agent can take on inside a
 //! Ryve workshop:

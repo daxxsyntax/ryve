@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Generic row-list editor for the three intent lists rendered in the
 //! spark detail view: acceptance criteria, invariants, and non-goals.

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! A Workshop is a self-contained workspace bound to a directory.
 //! Each workshop has its own `.ryve/` directory containing config,

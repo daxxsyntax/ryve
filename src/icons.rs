@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Icon resolver — maps file names, extensions, and folder names to Material Icon Theme SVGs.
 //!

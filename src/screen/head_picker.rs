@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Head picker modal — shown when the user clicks "+ → New Head" in the
 //! bench dropdown. Lets the user choose which coding agent to launch as

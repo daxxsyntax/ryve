@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Re-exports of panel state types used by [`crate::workshop::Workshop`].
 //!

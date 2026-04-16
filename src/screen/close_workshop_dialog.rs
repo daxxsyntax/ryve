@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Confirmation dialog shown when the user closes a workshop tab while
 //! one or more Hands (coding-agent sessions) are still active. Spark

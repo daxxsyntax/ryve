@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 //
 // Stress tests for the fix introduced in spark ryve-a78568b9
 // (Workgraph SQLite: enforce WAL + busy_timeout + write serialization).

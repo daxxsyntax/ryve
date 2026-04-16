@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Spark picker modal — shown when spawning a Hand so the user can assign
 //! the agent to a specific spark before the terminal launches.

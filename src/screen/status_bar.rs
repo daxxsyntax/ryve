@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Status bar — rich bottom bar showing git branch, diff stats, spark breakdown,
 //! file viewer position/language, active Hands, failing contracts, and settings.

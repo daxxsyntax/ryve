@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Background picker — modal overlay for choosing a workshop background image.
 //! Supports local file upload and Unsplash search.

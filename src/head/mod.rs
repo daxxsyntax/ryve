@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Head-side primitives. A Head is a coding-agent subprocess that
 //! orchestrates a Crew of Hands; this module gives Heads a reusable

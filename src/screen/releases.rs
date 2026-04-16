@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Releases panel — displays current and past releases with member epics,
 //! progress tracking, and a "Request close" action.

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright 2026 Loomantix
 
 //! Delegation trace — visualizes the Atlas → Head → Hand chain that led
 //! to a given spark being worked on.
