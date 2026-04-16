@@ -40,6 +40,7 @@ pub async fn assign(
 
     let now = Utc::now().to_rfc3339();
     let asgn_id = generate_id("asgn");
+    let actor_id = new.actor_id.as_deref().unwrap_or(new.session_id.as_str());
 
     let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO assignments \
@@ -50,7 +51,7 @@ pub async fn assign(
     )
     .bind(&asgn_id)
     .bind(&new.spark_id)
-    .bind(&new.session_id)
+    .bind(actor_id)
     .bind(&new.session_id)
     .bind(new.role.as_str())
     .bind(&now)
@@ -265,6 +266,24 @@ pub async fn is_spark_claimed(pool: &SqlitePool, spark_id: &str) -> Result<bool,
     Ok(active_for_spark(pool, spark_id).await?.is_some())
 }
 
+/// Look up the actor_id recorded on the most recent active assignment for a
+/// session. Returns `None` if the session has no active assignment — used by
+/// spawn-time cross-user enforcement to derive the parent Hand's actor
+/// without threading extra state through every call site.
+pub async fn actor_id_for_session(
+    pool: &SqlitePool,
+    session_id: &str,
+) -> Result<Option<String>, SparksError> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "SELECT actor_id FROM assignments \
+         WHERE session_id = ? AND status = 'active' \
+         ORDER BY assigned_at DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +355,7 @@ mod tests {
                 session_id: sid.clone(),
                 spark_id: spark_a.clone(),
                 role: AssignmentRole::Owner,
+                actor_id: None,
             },
         )
         .await
@@ -348,6 +368,7 @@ mod tests {
                 session_id: sid2,
                 spark_id: spark_b.clone(),
                 role: AssignmentRole::Owner,
+                actor_id: None,
             },
         )
         .await

@@ -110,6 +110,90 @@ pub enum HandSpawnError {
     MergerNeedsCrew,
     #[error("tmux: {0}")]
     Tmux(#[from] TmuxError),
+    /// The spawning Hand's actor_id differs from the actor the caller is
+    /// trying to spawn this new Hand under. Cross-user mutation is refused
+    /// at the branching boundary so no actor can write to another actor's
+    /// namespace (spark ryve-c44b92e5 / epic ryve-b8802f3b).
+    #[error(
+        "cross-user spawn refused: parent session {parent_session} is actor '{parent_actor}', \
+         cannot spawn a Hand for actor '{requested_actor}'"
+    )]
+    CrossActorRefused {
+        parent_session: String,
+        parent_actor: String,
+        requested_actor: String,
+    },
+    /// The requested actor segment is empty or contains '/' — it would
+    /// collide with reserved branch prefixes (`epic/`, `crew/`, `release/`)
+    /// or produce an invalid git ref.
+    #[error("invalid actor id '{0}': must be non-empty and contain no '/'")]
+    InvalidActor(String),
+}
+
+/// Resolve the actor_id a UI-driven Hand spawn should use when no explicit
+/// actor is configured yet. Priority: `RYVE_ACTOR_ID` > `USER` > `"hand"`.
+/// Kept `pub(crate)` so `app.rs`'s worktree-creation path can share the
+/// exact resolution rules the CLI uses.
+pub(crate) fn resolve_ui_actor() -> String {
+    resolve_actor_from_env(None)
+}
+
+/// Shared actor-resolution rule used by both UI and CLI spawn paths.
+/// Priority order:
+///   1. explicit `override_actor` (CLI `--actor <id>`),
+///   2. `RYVE_ACTOR_ID` env var (propagated by a parent Hand),
+///   3. `USER` env var (direct human invocation),
+///   4. literal `"hand"` as a last-resort fallback.
+fn resolve_actor_from_env(override_actor: Option<&str>) -> String {
+    if let Some(a) = override_actor {
+        let trimmed = a.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Ok(a) = std::env::var("RYVE_ACTOR_ID") {
+        let trimmed = a.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Ok(a) = std::env::var("USER") {
+        let trimmed = a.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    "hand".to_string()
+}
+
+/// Validate an actor id before it is baked into a branch name or a DB row.
+/// Callers share this helper so the same rule is enforced at every entry
+/// point (UI + CLI + tests).
+fn validate_actor(actor: &str) -> Result<(), HandSpawnError> {
+    if actor.is_empty() || actor.contains('/') {
+        return Err(HandSpawnError::InvalidActor(actor.to_string()));
+    }
+    Ok(())
+}
+
+/// Optional context bundle for [`spawn_hand`] and [`spawn_head`]. Bundled
+/// to keep the function signature under clippy's too-many-arguments
+/// threshold while still letting callers pass only the hints they have.
+/// `Default` builds an empty bundle so direct CLI / test callers can use
+/// `SpawnContext::default()` when they have no lineage to propagate.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SpawnContext<'a> {
+    /// Attach the new session to this Crew via `crew_repo::add_member`.
+    pub crew_id: Option<&'a str>,
+    /// `agent_sessions.id` of the Hand issuing this spawn. Persisted on
+    /// the new row's `parent_session_id` column for lineage rendering,
+    /// and read by the cross-user refusal check to discover the parent's
+    /// actor_id.
+    pub parent_session_id: Option<&'a str>,
+    /// Explicit actor override (e.g. CLI `--actor <id>`). When `None`,
+    /// [`resolve_actor_from_env`] falls back to `RYVE_ACTOR_ID`, `USER`,
+    /// then `"hand"`.
+    pub actor_id: Option<&'a str>,
 }
 
 /// Spawn a Hand programmatically. Used by `ryve hand spawn` and by tests.
@@ -129,21 +213,49 @@ pub async fn spawn_hand(
     agent: &CodingAgent,
     spark_id: &str,
     kind: HandKind,
-    crew_id: Option<&str>,
-    parent_session_id: Option<&str>,
+    ctx: SpawnContext<'_>,
 ) -> Result<SpawnedHand, HandSpawnError> {
+    let SpawnContext {
+        crew_id,
+        parent_session_id,
+        actor_id,
+    } = ctx;
+
     if matches!(kind, HandKind::Merger) && crew_id.is_none() {
         return Err(HandSpawnError::MergerNeedsCrew);
+    }
+
+    // Resolve the actor up front so every subsequent step (worktree branch
+    // name, assignment row, env propagation) shares one value. The rule is:
+    // explicit --actor wins, else env, else current shell user, else "hand".
+    // Spark ryve-c44b92e5 / epic ryve-b8802f3b.
+    let actor = resolve_actor_from_env(actor_id);
+    validate_actor(&actor)?;
+
+    // Cross-user refusal: if a parent session is running this spawn, its
+    // active assignment pins the parent's actor. A parent cannot spawn a
+    // Hand under a different actor's namespace.
+    if let Some(parent) = parent_session_id
+        && let Some(parent_actor) =
+            data::sparks::assignment_repo::actor_id_for_session(pool, parent).await?
+        && parent_actor != actor
+    {
+        return Err(HandSpawnError::CrossActorRefused {
+            parent_session: parent.to_string(),
+            parent_actor,
+            requested_actor: actor,
+        });
     }
 
     let ryve_dir = RyveDir::new(workshop_dir);
     ryve_dir.ensure_exists().await.map_err(HandSpawnError::Io)?;
 
-    // 1. New session id + worktree.
+    // 1. New session id + worktree — branch is `<actor>/<short>`.
     let session_id = Uuid::new_v4().to_string();
-    let worktree_path = workshop::create_hand_worktree(workshop_dir, &ryve_dir, &session_id)
-        .await
-        .map_err(HandSpawnError::Worktree)?;
+    let worktree_path =
+        workshop::create_hand_worktree(workshop_dir, &ryve_dir, &session_id, &actor)
+            .await
+            .map_err(HandSpawnError::Worktree)?;
 
     // Pre-compute the log path so it can be persisted alongside the
     // session row. The UI uses this path to drive the read-only spy view
@@ -171,11 +283,14 @@ pub async fn spawn_hand(
     };
     agent_session_repo::create(pool, &new_session).await?;
 
-    // 3. Claim the spark.
+    // 3. Claim the spark. Bind the resolved actor onto the assignment row
+    //    so downstream consumers (branch validator, cleanup, audit) see the
+    //    same actor_id the branch was cut under.
     let assignment = NewHandAssignment {
         session_id: session_id.clone(),
         spark_id: spark_id.to_string(),
         role: kind.role(),
+        actor_id: Some(actor.clone()),
     };
     assignment_repo::assign(pool, assignment).await?;
 
@@ -237,9 +352,12 @@ pub async fn spawn_hand(
     // Build env for the detached child. We layer the new session id on
     // top of the standard `RYVE_WORKSHOP_ROOT` + `PATH` set so any nested
     // `ryve hand spawn` invocation made by *this* Hand correctly attributes
-    // its child to itself.
+    // its child to itself. Also stamp `RYVE_ACTOR_ID` so nested spawns
+    // inherit the same actor — the cross-user refusal check on the child
+    // side relies on the parent's env propagating its actor identity.
     let mut env_vars = workshop::hand_env_vars(workshop_dir);
     env_vars.push(("RYVE_HAND_SESSION_ID".to_string(), session_id.clone()));
+    env_vars.push(("RYVE_ACTOR_ID".to_string(), actor.clone()));
 
     // 8. Launch inside a tmux session. The session name is `hand-<session_id>`
     //    (or `head-`/`merger-` for other kinds), matching the invariant that
@@ -292,13 +410,37 @@ pub async fn spawn_head(
     agent: &CodingAgent,
     epic_id: &str,
     archetype: HeadArchetype,
-    crew_id: Option<&str>,
-    parent_session_id: Option<&str>,
+    ctx: SpawnContext<'_>,
 ) -> Result<SpawnedHead, HandSpawnError> {
+    let SpawnContext {
+        crew_id,
+        parent_session_id,
+        actor_id,
+    } = ctx;
+
     // Validate the epic up front so a typo fails fast *before* we create
     // a worktree, a session row, or a crew. Also gives us the title for
     // the archetype prompt.
     let epic = spark_repo::get(pool, epic_id).await?;
+
+    // Same actor-resolution rules as `spawn_hand` — the Head's worktree
+    // branch also lives under the actor's namespace so cleanup and the
+    // merge-target validator see a consistent shape regardless of whether
+    // the row is a Head or an Owner Hand.
+    let actor = resolve_actor_from_env(actor_id);
+    validate_actor(&actor)?;
+
+    if let Some(parent) = parent_session_id
+        && let Some(parent_actor) =
+            data::sparks::assignment_repo::actor_id_for_session(pool, parent).await?
+        && parent_actor != actor
+    {
+        return Err(HandSpawnError::CrossActorRefused {
+            parent_session: parent.to_string(),
+            parent_actor,
+            requested_actor: actor,
+        });
+    }
 
     let ryve_dir = RyveDir::new(workshop_dir);
     ryve_dir.ensure_exists().await.map_err(HandSpawnError::Io)?;
@@ -307,9 +449,10 @@ pub async fn spawn_head(
     //    the same reason Hands do — so its scratch files, prompt, and any
     //    agent-local state stay out of the main checkout.
     let session_id = Uuid::new_v4().to_string();
-    let worktree_path = workshop::create_hand_worktree(workshop_dir, &ryve_dir, &session_id)
-        .await
-        .map_err(HandSpawnError::Worktree)?;
+    let worktree_path =
+        workshop::create_hand_worktree(workshop_dir, &ryve_dir, &session_id, &actor)
+            .await
+            .map_err(HandSpawnError::Worktree)?;
 
     let logs_dir = ryve_dir.root().join("logs");
     tokio::fs::create_dir_all(&logs_dir).await?;
@@ -378,9 +521,12 @@ pub async fn spawn_head(
     // 6. Env: inherit the workshop env so the Head's own `ryve` calls
     //    resolve the workgraph without cd'ing, and stamp the new session
     //    id so any nested `ryve hand spawn` the Head makes records its
-    //    lineage back to this Head.
+    //    lineage back to this Head. `RYVE_ACTOR_ID` is propagated so the
+    //    child-side spawn on a Hand spawned by this Head inherits the
+    //    same actor namespace.
     let mut env_vars = workshop::hand_env_vars(workshop_dir);
     env_vars.push(("RYVE_HAND_SESSION_ID".to_string(), session_id.clone()));
+    env_vars.push(("RYVE_ACTOR_ID".to_string(), actor.clone()));
 
     // 7. Launch inside a tmux session. On failure, end the session so
     //    the row does not linger as a phantom Head that never actually
@@ -545,6 +691,11 @@ mod tests {
             assert!(status.success(), "git {args:?} failed");
         };
         run_git(&["init", "-q", "-b", "main"]);
+        // Disable gpg signing on the seed commit so flaky gpg-agent
+        // memory errors in CI / concurrent-test environments do not
+        // wedge the whole test. Repo-local config only; the outer
+        // repo's settings are unaffected.
+        run_git(&["config", "commit.gpgsign", "false"]);
         run_git(&["commit", "-q", "--allow-empty", "-m", "init"]);
 
         // Stub agent: prints its argv to a file, then sleeps briefly to
@@ -670,8 +821,7 @@ mod tests {
             &agent,
             &spark.id,
             HandKind::Owner,
-            None,
-            None,
+            SpawnContext::default(),
         )
         .await
         .expect("spawn_hand should succeed against the stub agent");
@@ -783,8 +933,7 @@ mod tests {
             &agent,
             &epic.id,
             HeadArchetype::Build,
-            None, // no pre-existing crew — helper must create one
-            None,
+            SpawnContext::default(),
         )
         .await
         .expect("spawn_head should succeed against the stub agent");
@@ -924,8 +1073,10 @@ mod tests {
             &agent,
             &epic.id,
             HeadArchetype::Research,
-            Some(&crew.id),
-            None,
+            SpawnContext {
+                crew_id: Some(&crew.id),
+                ..SpawnContext::default()
+            },
         )
         .await
         .expect("spawn_head should succeed with an existing crew");
@@ -1006,8 +1157,7 @@ mod tests {
             &agent,
             &spark.id,
             HandKind::Owner,
-            None,
-            None,
+            SpawnContext::default(),
         )
         .await
         .expect("spawn_hand should succeed");
@@ -1053,6 +1203,419 @@ mod tests {
         // log-tail consumers rely on.
         let _ = log_has_content;
 
+        cleanup_tmux(&workshop_dir, &tmux_name);
+        let _ = std::fs::remove_dir_all(&workshop_dir);
+    }
+
+    // ─── Spark ryve-c44b92e5: actor-scoped branches + cross-user refusal ──
+
+    /// `validate_actor` accepts any non-empty single-segment string and
+    /// rejects anything that would produce an invalid git ref or collide
+    /// with the reserved `<prefix>/<id>` prefixes that epic / crew / release
+    /// branches live under.
+    #[test]
+    fn validate_actor_rejects_empty_and_path_segments() {
+        assert!(super::validate_actor("alice").is_ok());
+        assert!(super::validate_actor("claude").is_ok());
+
+        assert!(matches!(
+            super::validate_actor(""),
+            Err(HandSpawnError::InvalidActor(_))
+        ));
+        assert!(matches!(
+            super::validate_actor("alice/bob"),
+            Err(HandSpawnError::InvalidActor(_))
+        ));
+    }
+
+    /// Actor resolution order: explicit override > `RYVE_ACTOR_ID` env >
+    /// `USER` env > literal `"hand"` fallback. All cases live in one
+    /// serial test because `std::env` is process-global and Rust's
+    /// default test harness runs tests in parallel — splitting these
+    /// across tests races on the same variables.
+    #[test]
+    fn resolve_actor_respects_full_priority_chain() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        struct EnvGuard(&'static str, Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _g1 = EnvGuard("RYVE_ACTOR_ID", std::env::var("RYVE_ACTOR_ID").ok());
+        let _g2 = EnvGuard("USER", std::env::var("USER").ok());
+
+        // 1. Explicit override beats both env vars.
+        unsafe {
+            std::env::set_var("RYVE_ACTOR_ID", "env-actor");
+            std::env::set_var("USER", "shell-user");
+        }
+        assert_eq!(
+            super::resolve_actor_from_env(Some("cli-actor")),
+            "cli-actor"
+        );
+
+        // 2. With no override, RYVE_ACTOR_ID wins over USER.
+        assert_eq!(super::resolve_actor_from_env(None), "env-actor");
+
+        // 3. Clearing RYVE_ACTOR_ID falls through to USER.
+        unsafe {
+            std::env::remove_var("RYVE_ACTOR_ID");
+        }
+        assert_eq!(super::resolve_actor_from_env(None), "shell-user");
+
+        // 4. Clearing both yields the literal "hand" floor.
+        unsafe {
+            std::env::remove_var("USER");
+        }
+        assert_eq!(super::resolve_actor_from_env(None), "hand");
+    }
+
+    /// Acceptance — spark ryve-c44b92e5: spawn_hand must cut `<actor>/<short>`
+    /// instead of `hand/<short>`, and the assignment row must carry the
+    /// same actor_id so downstream consumers see a consistent identity.
+    #[tokio::test]
+    async fn spawn_hand_cuts_actor_scoped_branch_and_records_actor() {
+        if !bundled_tmux_available_for_tests() {
+            eprintln!("bundled tmux not available — skipping actor-scoped spawn test");
+            return;
+        }
+        let (workshop_dir, pool, _out_path) = setup_workshop().await;
+        let stub_path = workshop_dir.join("stub-agent.sh");
+
+        let workshop_id = workshop_id_for(&workshop_dir);
+        let spark = spark_repo::create(
+            &pool,
+            NewSpark {
+                title: "actor-scoped branch".into(),
+                description: String::new(),
+                spark_type: SparkType::Epic,
+                priority: 2,
+                workshop_id: workshop_id.clone(),
+                assignee: None,
+                owner: None,
+                parent_id: None,
+                due_at: None,
+                estimated_minutes: None,
+                metadata: None,
+                risk_level: None,
+                scope_boundary: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let agent = CodingAgent {
+            display_name: "stub".into(),
+            command: stub_path.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            resume: ResumeStrategy::None,
+            compatibility: crate::coding_agents::CompatStatus::Unknown,
+        };
+
+        let spawned = spawn_hand(
+            &workshop_dir,
+            &pool,
+            &agent,
+            &spark.id,
+            HandKind::Owner,
+            SpawnContext {
+                actor_id: Some("alice"),
+                ..SpawnContext::default()
+            },
+        )
+        .await
+        .expect("spawn_hand should succeed");
+
+        // Branch check: query git directly in the workshop. The branch
+        // created by `git worktree add -b` lives in the shared ref set.
+        let short_id = &spawned.session_id[..8];
+        let out = std::process::Command::new("git")
+            .args(["branch", "--list", &format!("alice/{short_id}")])
+            .current_dir(&workshop_dir)
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            listed.contains(&format!("alice/{short_id}")),
+            "expected alice/{short_id} branch to exist after spawn; got: {listed}"
+        );
+
+        // Assignment row must carry actor_id = "alice" (not the default
+        // session_id fallback). This is the hook other consumers (branch
+        // validator, UI labels, audits) read from.
+        let recorded =
+            data::sparks::assignment_repo::actor_id_for_session(&pool, &spawned.session_id)
+                .await
+                .unwrap();
+        assert_eq!(recorded.as_deref(), Some("alice"));
+
+        let tmux_name = format!("hand-{}", spawned.session_id);
+        cleanup_tmux(&workshop_dir, &tmux_name);
+        let _ = std::fs::remove_dir_all(&workshop_dir);
+    }
+
+    /// Acceptance — spark ryve-c44b92e5: when a parent session's assignment
+    /// already pins an actor, spawning a Hand under a *different* actor
+    /// must be refused before any git or DB state is created.
+    #[tokio::test]
+    async fn spawn_hand_refuses_cross_actor() {
+        // This test needs no tmux — it short-circuits before worktree
+        // creation on the cross-actor check.
+        let (workshop_dir, pool, _out_path) = setup_workshop().await;
+        let stub_path = workshop_dir.join("stub-agent.sh");
+
+        let workshop_id = workshop_id_for(&workshop_dir);
+
+        // Stand up a parent session with an active assignment whose
+        // actor_id is "alice". `spawn_hand` reads this row via
+        // `assignment_repo::actor_id_for_session` to discover the parent's
+        // actor.
+        let parent_spark = spark_repo::create(
+            &pool,
+            NewSpark {
+                title: "parent spark".into(),
+                description: String::new(),
+                spark_type: SparkType::Epic,
+                priority: 2,
+                workshop_id: workshop_id.clone(),
+                assignee: None,
+                owner: None,
+                parent_id: None,
+                due_at: None,
+                estimated_minutes: None,
+                metadata: None,
+                risk_level: None,
+                scope_boundary: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let parent_session_id = Uuid::new_v4().to_string();
+        agent_session_repo::create(
+            &pool,
+            &data::sparks::types::NewAgentSession {
+                id: parent_session_id.clone(),
+                workshop_id: workshop_id.clone(),
+                agent_name: "stub".into(),
+                agent_command: stub_path.to_string_lossy().into_owned(),
+                agent_args: Vec::new(),
+                session_label: Some("hand".into()),
+                child_pid: None,
+                resume_id: None,
+                log_path: None,
+                parent_session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        data::sparks::assignment_repo::assign(
+            &pool,
+            NewHandAssignment {
+                session_id: parent_session_id.clone(),
+                spark_id: parent_spark.id.clone(),
+                role: AssignmentRole::Owner,
+                actor_id: Some("alice".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Child spark the cross-actor spawn would try to claim.
+        let child_spark = spark_repo::create(
+            &pool,
+            NewSpark {
+                title: "child spark".into(),
+                description: String::new(),
+                spark_type: SparkType::Epic,
+                priority: 2,
+                workshop_id: workshop_id.clone(),
+                assignee: None,
+                owner: None,
+                parent_id: None,
+                due_at: None,
+                estimated_minutes: None,
+                metadata: None,
+                risk_level: None,
+                scope_boundary: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let agent = CodingAgent {
+            display_name: "stub".into(),
+            command: stub_path.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            resume: ResumeStrategy::None,
+            compatibility: crate::coding_agents::CompatStatus::Unknown,
+        };
+
+        let result = spawn_hand(
+            &workshop_dir,
+            &pool,
+            &agent,
+            &child_spark.id,
+            HandKind::Owner,
+            SpawnContext {
+                parent_session_id: Some(&parent_session_id),
+                actor_id: Some("bob"), // different actor from the parent ("alice")
+                ..SpawnContext::default()
+            },
+        )
+        .await;
+
+        match result {
+            Err(HandSpawnError::CrossActorRefused {
+                parent_actor,
+                requested_actor,
+                ..
+            }) => {
+                assert_eq!(parent_actor, "alice");
+                assert_eq!(requested_actor, "bob");
+            }
+            other => panic!(
+                "expected CrossActorRefused, got {other:?} — cross-user boundary not enforced"
+            ),
+        }
+
+        // Nothing should have been persisted for the refused spawn —
+        // no assignment row for the child spark.
+        let claimed = data::sparks::assignment_repo::is_spark_claimed(&pool, &child_spark.id)
+            .await
+            .unwrap();
+        assert!(
+            !claimed,
+            "refused spawn must not leave an assignment behind on the child spark"
+        );
+
+        let _ = std::fs::remove_dir_all(&workshop_dir);
+    }
+
+    /// Acceptance — spark ryve-c44b92e5: when the parent and the requested
+    /// actor match, the spawn is accepted. Guards against the cross-actor
+    /// check over-rejecting legitimate same-actor spawns.
+    #[tokio::test]
+    async fn spawn_hand_allows_same_actor_child() {
+        if !bundled_tmux_available_for_tests() {
+            eprintln!("bundled tmux not available — skipping same-actor spawn test");
+            return;
+        }
+        let (workshop_dir, pool, _out_path) = setup_workshop().await;
+        let stub_path = workshop_dir.join("stub-agent.sh");
+
+        let workshop_id = workshop_id_for(&workshop_dir);
+
+        let parent_spark = spark_repo::create(
+            &pool,
+            NewSpark {
+                title: "parent".into(),
+                description: String::new(),
+                spark_type: SparkType::Epic,
+                priority: 2,
+                workshop_id: workshop_id.clone(),
+                assignee: None,
+                owner: None,
+                parent_id: None,
+                due_at: None,
+                estimated_minutes: None,
+                metadata: None,
+                risk_level: None,
+                scope_boundary: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let parent_session_id = Uuid::new_v4().to_string();
+        agent_session_repo::create(
+            &pool,
+            &data::sparks::types::NewAgentSession {
+                id: parent_session_id.clone(),
+                workshop_id: workshop_id.clone(),
+                agent_name: "stub".into(),
+                agent_command: stub_path.to_string_lossy().into_owned(),
+                agent_args: Vec::new(),
+                session_label: Some("hand".into()),
+                child_pid: None,
+                resume_id: None,
+                log_path: None,
+                parent_session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        data::sparks::assignment_repo::assign(
+            &pool,
+            NewHandAssignment {
+                session_id: parent_session_id.clone(),
+                spark_id: parent_spark.id.clone(),
+                role: AssignmentRole::Owner,
+                actor_id: Some("alice".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let child_spark = spark_repo::create(
+            &pool,
+            NewSpark {
+                title: "child".into(),
+                description: String::new(),
+                spark_type: SparkType::Epic,
+                priority: 2,
+                workshop_id: workshop_id.clone(),
+                assignee: None,
+                owner: None,
+                parent_id: None,
+                due_at: None,
+                estimated_minutes: None,
+                metadata: None,
+                risk_level: None,
+                scope_boundary: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let agent = CodingAgent {
+            display_name: "stub".into(),
+            command: stub_path.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            resume: ResumeStrategy::None,
+            compatibility: crate::coding_agents::CompatStatus::Unknown,
+        };
+
+        let spawned = spawn_hand(
+            &workshop_dir,
+            &pool,
+            &agent,
+            &child_spark.id,
+            HandKind::Owner,
+            SpawnContext {
+                parent_session_id: Some(&parent_session_id),
+                actor_id: Some("alice"),
+                ..SpawnContext::default()
+            },
+        )
+        .await
+        .expect("same-actor spawn must succeed");
+
+        let recorded =
+            data::sparks::assignment_repo::actor_id_for_session(&pool, &spawned.session_id)
+                .await
+                .unwrap();
+        assert_eq!(recorded.as_deref(), Some("alice"));
+
+        let tmux_name = format!("hand-{}", spawned.session_id);
         cleanup_tmux(&workshop_dir, &tmux_name);
         let _ = std::fs::remove_dir_all(&workshop_dir);
     }

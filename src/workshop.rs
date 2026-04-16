@@ -1608,12 +1608,18 @@ pub fn compute_image_luminance(bytes: &[u8]) -> Option<f32> {
 /// `git worktree add` takes 500ms-2s and must not block `App::update`.
 /// Spark ryve-885ed3eb.
 ///
+/// The branch is named `<actor>/<short>` so every Hand lives in its own
+/// actor-scoped namespace (spark ryve-c44b92e5). `actor` must be a single
+/// path segment — no `/` — or the resulting ref would collide with
+/// `epic/` / `crew/` / `release/` prefixes the rest of the system relies on.
+///
 /// Visible to the rest of the crate so the `hand_spawn` CLI helper can call
 /// it without re-implementing the worktree convention.
 pub(crate) async fn create_hand_worktree(
     workshop_dir: &Path,
     ryve_dir: &RyveDir,
     session_id: &str,
+    actor: &str,
 ) -> Result<PathBuf, String> {
     // Only create worktrees for git repos
     let git_dir = workshop_dir.join(".git");
@@ -1621,8 +1627,14 @@ pub(crate) async fn create_hand_worktree(
         return Err("not a git repository".to_string());
     }
 
+    if actor.is_empty() || actor.contains('/') {
+        return Err(format!(
+            "invalid actor segment '{actor}': must be non-empty and contain no '/'"
+        ));
+    }
+
     let short_id = &session_id[..8.min(session_id.len())];
-    let branch = format!("hand/{short_id}");
+    let branch = format!("{actor}/{short_id}");
     let wt_dir = ryve_dir.root().join("worktrees").join(short_id);
 
     // Skip if worktree already exists
