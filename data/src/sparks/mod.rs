@@ -28,6 +28,7 @@ pub mod spark_repo;
 pub mod stamp_repo;
 pub mod transition;
 pub mod types;
+pub mod watch_repo;
 
 pub use error::{SparksError, TransitionError};
 pub use types::*;
