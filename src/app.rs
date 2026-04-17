@@ -1899,7 +1899,12 @@ impl App {
                             full_auto,
                         )
                     };
-                    follow_up.push(Self::dispatch_worktree_task(ws, tab_id, session_id.clone()));
+                    follow_up.push(Self::dispatch_worktree_task(
+                        ws,
+                        tab_id,
+                        session_id.clone(),
+                        is_atlas,
+                    ));
                     if let Some(s) = ws.agent_sessions.iter_mut().find(|s| s.id == session_id) {
                         s.tab_id = Some(tab_id);
                     }
@@ -3990,7 +3995,7 @@ impl App {
                         )
                     };
                     let worktree_task =
-                        Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
+                        Self::dispatch_worktree_task(ws, tab_id, session_id.clone(), is_atlas);
 
                     // Update the existing session to active
                     if let Some(s) = ws.agent_sessions.iter_mut().find(|s| s.id == session_id) {
@@ -4977,10 +4982,9 @@ impl App {
                     return Task::none();
                 };
 
-                // Dispatch the worktree task (idempotent — reuses existing
-                // worktree directory).
+                // Atlas runs in the workshop root — no worktree needed.
                 let worktree_task =
-                    Self::dispatch_worktree_task(ws, tab_id, new_session_id.clone());
+                    Self::dispatch_worktree_task(ws, tab_id, new_session_id.clone(), true);
 
                 // Register the new session in memory.
                 let title = format!("Atlas ({})", agent.display_name);
@@ -5156,7 +5160,18 @@ impl App {
     /// Spark ryve-885ed3eb: callers that begin a Hand spawn via
     /// `Workshop::begin_hand_terminal` use this to kick off stage 2 without
     /// blocking the UI thread on `git worktree add`.
-    fn dispatch_worktree_task(ws: &Workshop, tab_id: u64, session_id: String) -> Task<Message> {
+    ///
+    /// When `skip_worktree` is true (Atlas sessions), no git worktree is
+    /// created and the terminal runs in the workshop root instead. Atlas is
+    /// the single user-facing Director — it never edits code, so worktree
+    /// isolation buys nothing and costs the workshop-wide view Atlas needs
+    /// to coordinate across the full workgraph. Spark ryve-40690aea.
+    fn dispatch_worktree_task(
+        ws: &Workshop,
+        tab_id: u64,
+        session_id: String,
+        skip_worktree: bool,
+    ) -> Task<Message> {
         let workshop_dir = ws.directory.clone();
         let ryve_dir = Arc::clone(&ws.ryve_dir);
         let workshop_id = ws.id;
@@ -5177,9 +5192,14 @@ impl App {
         let actor = crate::hand_spawn::resolve_ui_actor();
         Task::perform(
             async move {
-                let result =
+                let result = if skip_worktree {
+                    // Atlas: stay in the workshop root so the CLI sees
+                    // the real .ryve/sparks.db and the full git tree.
+                    Ok(workshop_dir.clone())
+                } else {
                     workshop::create_hand_worktree(&workshop_dir, &ryve_dir, &session_id, &actor)
-                        .await;
+                        .await
+                };
                 let system_prompt = match &prompt_flag {
                     Some((flag, is_file)) => {
                         workshop::resolve_system_prompt_async(
@@ -5243,7 +5263,7 @@ impl App {
         };
         // Stage 2: drive the async worktree creation. `HandWorktreeReady`
         // will finalize the `iced_term::Terminal` and focus it.
-        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
+        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone(), false);
 
         ws.agent_sessions.push(AgentSession {
             id: session_id.clone(),
@@ -5347,7 +5367,7 @@ impl App {
             session_id.clone(),
             full_auto,
         );
-        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
+        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone(), false);
 
         ws.agent_sessions.push(AgentSession {
             id: session_id.clone(),
@@ -5464,7 +5484,9 @@ impl App {
             tab.pinned = true;
             tab.is_atlas = true;
         }
-        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone());
+        // Atlas runs in the workshop root — no worktree isolation needed.
+        // Spark ryve-40690aea.
+        let worktree_task = Self::dispatch_worktree_task(ws, tab_id, session_id.clone(), true);
 
         ws.agent_sessions.push(AgentSession {
             id: session_id.clone(),
