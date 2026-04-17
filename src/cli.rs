@@ -63,6 +63,7 @@ pub const CLI_COMMANDS: &[&str] = &[
     "worktrees",
     "wt",
     "tmux",
+    "sweep",
     "hot",
     "status",
     "init",
@@ -179,6 +180,7 @@ pub async fn run(args: Vec<String>) {
             handle_worktree(&pool, &workshop_root, &args_clean[2..], json_mode).await
         }
         "tmux" => handle_tmux(&pool, &workshop_root, &ws_id, &args_clean[2..], json_mode).await,
+        "sweep" => handle_sweep(&pool, &args_clean[2..], &ws_id, json_mode).await,
         "hot" => handle_hot(&pool, &ws_id, json_mode).await,
         "status" => handle_status(&pool, &ws_id).await,
         "backup" | "backups" => {
@@ -356,6 +358,10 @@ fn print_usage() {
         "  worktree prune [--yes]               Prune stale hand worktrees (dry-run by default)"
     );
     eprintln!("  wt prune                             Alias for worktree prune");
+    eprintln!();
+    eprintln!(
+        "  sweep stalls [--abandon]             Surface orphaned in_progress sparks (owner session ended)"
+    );
     eprintln!();
     eprintln!("FLAGS:");
     eprintln!("  --json    Output as JSON (for machine consumption)");
@@ -1364,6 +1370,156 @@ async fn handle_ember(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, jso
             Err(e) => die(&format!("{e}")),
         },
         other => die(&format!("unknown ember subcommand '{other}'")),
+    }
+}
+
+// ── Sweep (workgraph stall detectors) ────────────────
+//
+// [sp-312b98ad] Build orchestration invariant: when all child sparks of
+// a build epic close, the merge/PR step must either complete, emit a
+// visible blocked/failure signal, or remain owned by a live coordinator.
+//
+// The failure mode this sweep targets: a Build Head spawns the Merger
+// via `finalize_with_merger` and exits. If the Merger subprocess later
+// dies (crash, token exhaustion, manual kill) before it closes its
+// merge spark, the `assignments` row is left `active` even though the
+// owning `agent_sessions` row flips to `ended`. Nobody is polling the
+// crew anymore, so the merge spark sits `in_progress` indefinitely —
+// exactly the silent stall observed on ryve-e208c8ac (merge of epic
+// ryve-18f4cec4). `sweep stalls` surfaces those orphans as flare
+// embers so Atlas, the UI, and humans can see them.
+
+async fn handle_sweep(pool: &sqlx::SqlitePool, args: &[String], ws_id: &str, json_mode: bool) {
+    if args.is_empty() {
+        die("sweep subcommand required (stalls)");
+    }
+    match args[0].as_str() {
+        "stalls" | "stall" => handle_sweep_stalls(pool, &args[1..], ws_id, json_mode).await,
+        other => die(&format!("unknown sweep subcommand '{other}'")),
+    }
+}
+
+async fn handle_sweep_stalls(
+    pool: &sqlx::SqlitePool,
+    args: &[String],
+    ws_id: &str,
+    json_mode: bool,
+) {
+    let mut abandon = false;
+    for a in args {
+        match a.as_str() {
+            "--abandon" => abandon = true,
+            other => die(&format!("unknown sweep stalls flag '{other}'")),
+        }
+    }
+
+    let orphans = match assignment_repo::find_orphaned_claims(pool, ws_id).await {
+        Ok(o) => o,
+        Err(e) => die(&format!("find_orphaned_claims failed: {e}")),
+    };
+
+    // Dedupe embers per (spark, session) pair so repeated sweeps do not
+    // spam the Ember bar. `find_recent_by_prefix` looks back far enough
+    // to cover the default ember TTL (1 h).
+    let mut emitted = Vec::with_capacity(orphans.len());
+    for o in &orphans {
+        let prefix = format!("stalled-claim {} ", o.spark_id);
+        let dedupe =
+            ember_repo::find_recent_by_prefix(pool, ws_id, EmberType::Flare, &prefix, 3600)
+                .await
+                .unwrap_or(None);
+        if dedupe.is_some() {
+            continue;
+        }
+        let content = format!(
+            "stalled-claim {} role={} session={} ended_at={} title={}",
+            o.spark_id,
+            o.role,
+            o.session_id,
+            o.session_ended_at.as_deref().unwrap_or("?"),
+            o.spark_title,
+        );
+        match ember_repo::create(
+            pool,
+            NewEmber {
+                ember_type: EmberType::Flare,
+                content: content.clone(),
+                source_agent: Some("ryve sweep".to_string()),
+                workshop_id: ws_id.to_string(),
+                ttl_seconds: None,
+            },
+        )
+        .await
+        {
+            Ok(e) => emitted.push(e.id),
+            Err(e) => eprintln!("warn: failed to emit ember for {}: {e}", o.spark_id),
+        }
+    }
+
+    let mut abandoned = Vec::new();
+    if abandon {
+        for o in &orphans {
+            if let Err(e) = assignment_repo::abandon(pool, &o.session_id, &o.spark_id).await {
+                eprintln!(
+                    "warn: failed to abandon phantom claim {}/{}: {e}",
+                    o.spark_id, o.session_id
+                );
+            } else {
+                abandoned.push((o.spark_id.clone(), o.session_id.clone()));
+            }
+        }
+    }
+
+    if json_mode {
+        let payload = serde_json::json!({
+            "workshop_id": ws_id,
+            "orphan_count": orphans.len(),
+            "emitted_embers": emitted,
+            "abandoned_claims": abandoned,
+            "orphans": orphans.iter().map(|o| serde_json::json!({
+                "spark_id": o.spark_id,
+                "spark_title": o.spark_title,
+                "spark_status": o.spark_status,
+                "role": o.role,
+                "session_id": o.session_id,
+                "assigned_at": o.assigned_at,
+                "last_heartbeat_at": o.last_heartbeat_at,
+                "session_ended_at": o.session_ended_at,
+            })).collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
+        return;
+    }
+
+    if orphans.is_empty() {
+        println!("No stalled claims.");
+        return;
+    }
+
+    println!("{} stalled claim(s):", orphans.len());
+    for o in &orphans {
+        println!(
+            "  {} [{}] role={} session={} status={} ended_at={}",
+            o.spark_id,
+            o.spark_title,
+            o.role,
+            o.session_id,
+            o.spark_status,
+            o.session_ended_at.as_deref().unwrap_or("?"),
+        );
+    }
+    if !emitted.is_empty() {
+        println!("emitted {} flare ember(s)", emitted.len());
+    }
+    if abandon {
+        println!("abandoned {} phantom claim(s)", abandoned.len());
+    } else if !orphans.is_empty() {
+        println!(
+            "(pass --abandon to clear phantom assignments; re-running is idempotent via ember dedupe)"
+        );
     }
 }
 
