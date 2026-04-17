@@ -415,6 +415,11 @@ pub struct PersistedAgentSession {
     /// Hands panel to attribute solo Hands to their parent Head when the
     /// child is not in any of the Head's crews.
     pub parent_session_id: Option<String>,
+    /// Hand archetype id the session was spawned under (see
+    /// `src/hand_archetypes.rs`). `None` for older rows predating the
+    /// archetype registry and for legacy Owner/Merger/Head/Investigator
+    /// spawns that still key off `session_label`.
+    pub archetype_id: Option<String>,
 }
 
 pub struct NewAgentSession {
@@ -428,6 +433,7 @@ pub struct NewAgentSession {
     pub resume_id: Option<String>,
     pub log_path: Option<String>,
     pub parent_session_id: Option<String>,
+    pub archetype_id: Option<String>,
 }
 
 // ── Structured Intent ────────────────────────────────
@@ -750,19 +756,38 @@ pub struct NewHandAssignment {
     pub session_id: String,
     pub spark_id: String,
     pub role: AssignmentRole,
+    /// Identity of the actor (human or agent namespace) owning this claim.
+    /// Used to scope the Hand's git branch (`<actor>/<short>`) and to enforce
+    /// the cross-user mutation boundary at spawn time. When `None`, falls
+    /// back to `session_id` so pre-existing callers continue to work.
+    pub actor_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Assignment {
+    pub id: i64,
     pub assignment_id: String,
     pub spark_id: String,
     pub actor_id: String,
-    pub assignment_phase: String,
+    pub assignment_phase: Option<String>,
     pub source_branch: Option<String>,
     pub target_branch: Option<String>,
     pub event_version: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub session_id: Option<String>,
+    pub status: String,
+    pub role: String,
+    pub assigned_at: Option<String>,
+    pub last_heartbeat_at: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub handoff_to: Option<String>,
+    pub handoff_reason: Option<String>,
+    pub phase_changed_at: Option<String>,
+    pub phase_changed_by: Option<String>,
+    pub phase_actor_role: Option<String>,
+    pub phase_event_id: Option<i64>,
 }
 
 pub struct NewAssignment {
