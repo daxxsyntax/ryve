@@ -284,6 +284,94 @@ pub async fn actor_id_for_session(
     .await?)
 }
 
+/// A spark that is still open in the workgraph but whose active owning
+/// Hand has exited. Returned by [`find_orphaned_claims`] so a sweeper
+/// can emit a visible signal (ember/comment) instead of letting the
+/// spark sit `in_progress` indefinitely.
+///
+/// Motivation (sp-312b98ad): build Heads exit right after spawning the
+/// Merger. If the Merger subprocess dies before it closes its merge
+/// spark, the `assignments` row stays `active` even though
+/// `agent_sessions` flips to `ended`. Nobody is polling, so the merge
+/// stalls silently. This type makes that orphan queryable.
+#[derive(Debug, Clone)]
+pub struct OrphanedClaim {
+    pub spark_id: String,
+    pub spark_title: String,
+    pub spark_status: String,
+    pub role: String,
+    pub session_id: String,
+    pub assigned_at: String,
+    pub last_heartbeat_at: Option<String>,
+    pub session_ended_at: Option<String>,
+}
+
+/// Find every active assignment whose agent session has already ended
+/// and whose spark is still open (not closed). Scoped to one workshop.
+///
+/// The workgraph invariant this protects: every open spark with an
+/// `active` owner must be owned by a live session. When the session
+/// dies without calling `assignment_repo::complete` or `abandon`, we
+/// end up in a silent-stall state. This query is the authoritative
+/// detector for that state.
+pub async fn find_orphaned_claims(
+    pool: &SqlitePool,
+    workshop_id: &str,
+) -> Result<Vec<OrphanedClaim>, SparksError> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT a.spark_id, s.title, s.status, a.role, a.session_id, \
+                a.assigned_at, a.last_heartbeat_at, ag.ended_at \
+         FROM assignments a \
+         INNER JOIN sparks s ON s.id = a.spark_id \
+         INNER JOIN agent_sessions ag ON ag.id = a.session_id \
+         WHERE a.status = 'active' \
+           AND ag.status = 'ended' \
+           AND s.status != 'closed' \
+           AND s.workshop_id = ? \
+         ORDER BY a.assigned_at ASC",
+    )
+    .bind(workshop_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                spark_id,
+                spark_title,
+                spark_status,
+                role,
+                session_id,
+                assigned_at,
+                last_heartbeat_at,
+                session_ended_at,
+            )| OrphanedClaim {
+                spark_id,
+                spark_title,
+                spark_status,
+                role,
+                session_id,
+                assigned_at,
+                last_heartbeat_at,
+                session_ended_at,
+            },
+        )
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +428,131 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    #[tokio::test]
+    async fn find_orphaned_claims_flags_active_assignments_on_ended_sessions() {
+        // [sp-312b98ad] Orphaned merge/PR handoff: the Merger session
+        // ends without closing its spark, the assignment row is left
+        // `active`, and nothing polls the crew anymore. This query is
+        // the authoritative detector for that silent-stall state.
+        let pool = fresh_pool().await;
+
+        // Orphan: session will be ended, spark stays open.
+        let orphan_sess = make_session(&pool, "ws-a").await;
+        let orphan_spark = make_spark(&pool, "ws-a", "stalled merge").await;
+        assign(
+            &pool,
+            NewHandAssignment {
+                session_id: orphan_sess.clone(),
+                spark_id: orphan_spark.clone(),
+                role: AssignmentRole::Merger,
+                actor_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::sparks::agent_session_repo::end_session(&pool, &orphan_sess)
+            .await
+            .unwrap();
+
+        // Healthy control: live session, open spark — must NOT be flagged.
+        let live_sess = make_session(&pool, "ws-a").await;
+        let live_spark = make_spark(&pool, "ws-a", "live work").await;
+        assign(
+            &pool,
+            NewHandAssignment {
+                session_id: live_sess,
+                spark_id: live_spark.clone(),
+                role: AssignmentRole::Owner,
+                actor_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Cross-workshop control: session ended in ws-b, must not leak into ws-a.
+        let other_sess = make_session(&pool, "ws-b").await;
+        let other_spark = make_spark(&pool, "ws-b", "other workshop").await;
+        assign(
+            &pool,
+            NewHandAssignment {
+                session_id: other_sess.clone(),
+                spark_id: other_spark,
+                role: AssignmentRole::Owner,
+                actor_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::sparks::agent_session_repo::end_session(&pool, &other_sess)
+            .await
+            .unwrap();
+
+        let orphans = find_orphaned_claims(&pool, "ws-a").await.unwrap();
+        assert_eq!(
+            orphans.len(),
+            1,
+            "exactly one orphan expected in ws-a; got {orphans:?}"
+        );
+        assert_eq!(orphans[0].spark_id, orphan_spark);
+        assert_eq!(orphans[0].session_id, orphan_sess);
+        assert_eq!(orphans[0].role, "merger");
+        assert!(
+            orphans[0].session_ended_at.is_some(),
+            "session_ended_at must be surfaced so the sweeper can render it"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_orphaned_claims_ignores_closed_sparks_and_completed_assignments() {
+        let pool = fresh_pool().await;
+
+        // Assignment completed cleanly — not an orphan.
+        let clean_sess = make_session(&pool, "ws-a").await;
+        let clean_spark = make_spark(&pool, "ws-a", "done cleanly").await;
+        assign(
+            &pool,
+            NewHandAssignment {
+                session_id: clean_sess.clone(),
+                spark_id: clean_spark.clone(),
+                role: AssignmentRole::Owner,
+                actor_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        complete(&pool, &clean_sess, &clean_spark).await.unwrap();
+        crate::sparks::agent_session_repo::end_session(&pool, &clean_sess)
+            .await
+            .unwrap();
+
+        // Spark closed, session ended — not an orphan (spark already terminal).
+        let closed_sess = make_session(&pool, "ws-a").await;
+        let closed_spark = make_spark(&pool, "ws-a", "closed spark").await;
+        assign(
+            &pool,
+            NewHandAssignment {
+                session_id: closed_sess.clone(),
+                spark_id: closed_spark.clone(),
+                role: AssignmentRole::Owner,
+                actor_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::sparks::spark_repo::close(&pool, &closed_spark, "completed", "test")
+            .await
+            .unwrap();
+        crate::sparks::agent_session_repo::end_session(&pool, &closed_sess)
+            .await
+            .unwrap();
+
+        let orphans = find_orphaned_claims(&pool, "ws-a").await.unwrap();
+        assert!(
+            orphans.is_empty(),
+            "completed assignments and closed sparks must not register as orphans; got {orphans:?}"
+        );
     }
 
     #[tokio::test]
