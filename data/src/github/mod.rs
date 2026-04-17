@@ -3,5 +3,7 @@
 //! GitHub Issues sync for Workgraph.
 
 pub mod sync;
+pub mod types;
 
 pub use sync::GitHubSync;
+pub use types::{CanonicalGitHubEvent, GitHubArtifactRef};
