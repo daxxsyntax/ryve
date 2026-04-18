@@ -48,6 +48,7 @@ fn live_apply(state: &mut WorldState, event: &Event) {
                     updated_at: timestamp.clone(),
                     last_heartbeat_at: None,
                     liveness: AssignmentLiveness::Healthy,
+                    repair_cycle_count: 0,
                     last_review_outcome: None,
                     last_review_at: None,
                     last_merge_precondition_failure: None,
@@ -58,11 +59,15 @@ fn live_apply(state: &mut WorldState, event: &Event) {
         Event::PhaseTransitioned {
             timestamp,
             assignment_id,
+            from_phase,
             to_phase,
             ..
         } => {
             let v = state.assignments.get_mut(assignment_id).unwrap();
             v.phase = *to_phase;
+            if *from_phase == AssignmentPhase::Rejected && *to_phase == AssignmentPhase::InRepair {
+                v.repair_cycle_count += 1;
+            }
             v.event_version += 1;
             v.updated_at = timestamp.clone();
         }

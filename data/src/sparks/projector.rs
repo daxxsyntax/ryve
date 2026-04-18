@@ -190,6 +190,14 @@ pub struct AssignmentView {
     /// advances via [`Event::LivenessTransitioned`]. Parent epic
     /// `ryve-cf05fd85`.
     pub liveness: AssignmentLiveness,
+    /// How many times this assignment has re-entered the repair loop. The
+    /// projector increments this on every `PhaseTransitioned` event whose
+    /// (from, to) is (Rejected, InRepair); the write path pairs the same
+    /// increment with a DB UPDATE so live and replayed state stay in sync.
+    /// Crossing the workshop's `repair_cycle_limit` escalates the
+    /// assignment to [`AssignmentLiveness::Stuck`] via a canonical
+    /// `LivenessTransitioned` event.
+    pub repair_cycle_count: i64,
     pub last_review_outcome: Option<ReviewOutcome>,
     pub last_review_at: Option<String>,
     pub last_merge_precondition_failure: Option<String>,
@@ -254,6 +262,7 @@ fn apply_event(state: &mut WorldState, event: &Event) {
                     updated_at: timestamp.clone(),
                     last_heartbeat_at: None,
                     liveness: AssignmentLiveness::Healthy,
+                    repair_cycle_count: 0,
                     last_review_outcome: None,
                     last_review_at: None,
                     last_merge_precondition_failure: None,
@@ -263,11 +272,17 @@ fn apply_event(state: &mut WorldState, event: &Event) {
         Event::PhaseTransitioned {
             timestamp,
             assignment_id,
+            from_phase,
             to_phase,
             ..
         } => {
             if let Some(view) = state.assignments.get_mut(assignment_id) {
                 view.phase = *to_phase;
+                if *from_phase == AssignmentPhase::Rejected
+                    && *to_phase == AssignmentPhase::InRepair
+                {
+                    view.repair_cycle_count += 1;
+                }
                 view.event_version += 1;
                 view.updated_at = timestamp.clone();
             }
@@ -608,5 +623,41 @@ mod tests {
         let replay_bytes = serde_json::to_vec(&replayed).unwrap();
         assert_eq!(live_bytes, replay_bytes, "live and replayed bytes diverge");
         assert_eq!(live, replayed);
+    }
+
+    #[test]
+    fn rejected_to_in_repair_increments_repair_cycle_count() {
+        // Every Rejected → InRepair edge is counted by the projector so a
+        // replayed WorldState ends with the same repair_cycle_count the
+        // DB carries. Other phase edges must leave the counter alone.
+        let events = vec![
+            created("e1", "2026-04-16T00:00:00Z", "asgn-1"),
+            transitioned(
+                "e2",
+                "2026-04-16T00:01:00Z",
+                "asgn-1",
+                AssignmentPhase::Rejected,
+                AssignmentPhase::InRepair,
+            ),
+            transitioned(
+                "e3",
+                "2026-04-16T00:02:00Z",
+                "asgn-1",
+                AssignmentPhase::InRepair,
+                AssignmentPhase::AwaitingReview,
+            ),
+            transitioned(
+                "e4",
+                "2026-04-16T00:03:00Z",
+                "asgn-1",
+                AssignmentPhase::Rejected,
+                AssignmentPhase::InRepair,
+            ),
+        ];
+        let state = project(&events);
+
+        let view = &state.assignments["asgn-1"];
+        assert_eq!(view.repair_cycle_count, 2);
+        assert_eq!(view.phase, AssignmentPhase::InRepair);
     }
 }
