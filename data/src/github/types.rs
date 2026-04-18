@@ -12,7 +12,7 @@
 //! [`GitHubArtifactRef`] is the persisted link from an `assignments`
 //! row to the PR it mirrors; it corresponds 1:1 to the
 //! `assignments.github_artifact_branch` + `github_artifact_pr_number`
-//! columns introduced by migration `019_github_mirror.sql`.
+//! columns introduced by migration `021_github_mirror.sql`.
 
 use serde::{Deserialize, Serialize};
 
