@@ -1522,12 +1522,27 @@ impl App {
             // IRC side, but we still gate on the set to avoid spamming
             // JOIN on every 3-second poll.
             let runtime_arc = Arc::clone(&ws.irc_runtime);
+            // Gate the "known" bookkeeping on the runtime being ready.
+            // If IRC boot is still in progress (runtime is None), skip
+            // the insert entirely so the next tick picks up these
+            // epics and calls `ensure_channel` once a client exists.
+            // Without this, an epic seen during boot would be
+            // permanently marked "known" but never get its channel.
+            let runtime_ready = ws
+                .irc_runtime
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|_| ()))
+                .is_some();
             let mut new_epics: Vec<ipc::channel_manager::Epic> = Vec::new();
             for sp in &sparks {
                 if sp.spark_type != "epic" {
                     continue;
                 }
                 if sp.status == "closed" {
+                    continue;
+                }
+                if !runtime_ready {
                     continue;
                 }
                 if ws.irc_known_epic_ids.insert(sp.id.clone()) {

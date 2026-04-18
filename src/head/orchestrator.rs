@@ -526,24 +526,34 @@ pub async fn notify_stuck(
         return Ok(0);
     }
 
+    // Dedup: the notify path is called on every poll tick; without a
+    // guard we would spam a fresh flare ember + Epic comment every
+    // 60–90s while an assignment stayed Stuck. Use a per-assignment
+    // marker in an existing Epic comment to decide whether to
+    // notify at all. First poll after a spark becomes Stuck emits;
+    // subsequent polls are no-ops until recovery.
+    //
+    // Fetch the parent epic's comments ONCE outside the loop so the
+    // poll cost stays O(comments) not O(members × comments) when
+    // multiple members are stuck simultaneously.
+    //
+    // If there is no parent_spark_id the dedup surface disappears —
+    // we can't scan an epic that doesn't exist. In that case skip the
+    // whole notify path to avoid the ember-spam failure mode
+    // (previous behaviour: never dedup, emit a fresh flare every
+    // tick while any member was Stuck).
+    let parent_id = match &crew.parent_spark_id {
+        Some(p) => p.clone(),
+        None => return Ok(0),
+    };
+    let existing_comments = comment_repo::list_for_spark(pool, &parent_id).await?;
+
     let mut notified = 0usize;
     for (spark_id, assignment_id) in &stuck {
-        // Dedup: the notify path is called on every poll tick; without a
-        // guard we would spam a fresh flare ember + Epic comment every
-        // 60–90s while an assignment stayed Stuck. Use a per-assignment
-        // marker in an existing Epic comment to decide whether to
-        // notify at all. First poll after a spark becomes Stuck emits;
-        // subsequent polls are no-ops until recovery.
         let marker = format!("stuck-notify:{assignment_id}");
-        let already_posted = match &crew.parent_spark_id {
-            Some(parent_id) => {
-                let existing = comment_repo::list_for_spark(pool, parent_id).await?;
-                existing
-                    .iter()
-                    .any(|c| c.author == "head-orchestrator" && c.body.contains(&marker))
-            }
-            None => false,
-        };
+        let already_posted = existing_comments
+            .iter()
+            .any(|c| c.author == "head-orchestrator" && c.body.contains(&marker));
         if already_posted {
             continue;
         }
@@ -565,22 +575,20 @@ pub async fn notify_stuck(
         )
         .await?;
 
-        if let Some(parent_id) = &crew.parent_spark_id {
-            let _ = comment_repo::create(
-                pool,
-                NewComment {
-                    spark_id: parent_id.clone(),
-                    author: "head-orchestrator".to_string(),
-                    body: format!(
-                        "[{marker}] Stuck assignment detected: \
-                         `{assignment_id}` on child spark `{spark_id}`. \
-                         Head/Director action required via `ryve assign \
-                         override`."
-                    ),
-                },
-            )
-            .await?;
-        }
+        let _ = comment_repo::create(
+            pool,
+            NewComment {
+                spark_id: parent_id.clone(),
+                author: "head-orchestrator".to_string(),
+                body: format!(
+                    "[{marker}] Stuck assignment detected: \
+                     `{assignment_id}` on child spark `{spark_id}`. \
+                     Head/Director action required via `ryve assign \
+                     override`."
+                ),
+            },
+        )
+        .await?;
         notified += 1;
     }
     Ok(notified)

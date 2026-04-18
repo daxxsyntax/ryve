@@ -165,6 +165,12 @@ fn heartbeat_loop_emits_multiple_heartbeat_received_events_before_assignment_com
         v
     });
 
+    // `Utc::now().to_rfc3339()` has sub-second precision, but the seed
+    // and the first tick can still land in the same microsecond on a
+    // fast runner. Sleep a hair so the loop's first emit is guaranteed
+    // to produce a strictly-later timestamp than the seed stamp.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
     // Run the sidecar body directly. `--interval-secs 0` makes the test
     // deterministic (no wall-clock sleep gap needed); `--max-ticks 3`
     // gives us a bounded run even if nothing else terminates the loop.
