@@ -10,12 +10,13 @@
 //!
 //! ```text
 //! Assigned        → InProgress
-//! InProgress      → AwaitingReview
-//! AwaitingReview  → Approved | Rejected
+//! InProgress      → AwaitingReview | Stuck
+//! AwaitingReview  → Approved | Rejected | Stuck
 //! Rejected        → InRepair
-//! InRepair        → AwaitingReview
+//! InRepair        → AwaitingReview | Stuck
 //! Approved        → ReadyForMerge
 //! ReadyForMerge   → Merged
+//! Stuck           → InProgress (Head/Director override only)
 //! ```
 //!
 //! # Role ownership
@@ -30,9 +31,15 @@
 //! | InRepair → AwaitingReview     | Hand                          |
 //! | Approved → ReadyForMerge      | MergeHand (auto)              |
 //! | ReadyForMerge → Merged        | MergeHand                     |
+//! | InProgress → Stuck            | Hand, Head, Director          |
+//! | AwaitingReview → Stuck        | Hand, Head, Director          |
+//! | InRepair → Stuck              | Hand, Head, Director          |
+//! | Stuck → InProgress            | Head, Director (override)     |
 //!
 //! Head and Director may override any transition with the explicit
-//! `override_role_check` flag.
+//! `override_role_check` flag. The `Stuck → InProgress` recovery path is
+//! the only way out of `Stuck` and is authorized exclusively to
+//! Head/Director — there is no non-override entry for it in the map.
 //!
 //! # Reviewer identity invariant
 //!
@@ -108,6 +115,33 @@ const LEGAL_TRANSITIONS: &[TransitionRule] = &[
         from: AssignmentPhase::ReadyForMerge,
         to: AssignmentPhase::Merged,
         authorized_roles: &[TransitionActorRole::MergeHand],
+    },
+    // Stuck entry paths: a Hand reports itself stuck from any active
+    // working phase. Head/Director can also drive these transitions via
+    // the override flag, but they are already covered by `can_override`
+    // and do not need their own entries.
+    TransitionRule {
+        from: AssignmentPhase::InProgress,
+        to: AssignmentPhase::Stuck,
+        authorized_roles: &[TransitionActorRole::Hand],
+    },
+    TransitionRule {
+        from: AssignmentPhase::AwaitingReview,
+        to: AssignmentPhase::Stuck,
+        authorized_roles: &[TransitionActorRole::Hand],
+    },
+    TransitionRule {
+        from: AssignmentPhase::InRepair,
+        to: AssignmentPhase::Stuck,
+        authorized_roles: &[TransitionActorRole::Hand],
+    },
+    // Stuck recovery: Head/Director only, and only via the explicit
+    // override path. The empty `authorized_roles` list means no
+    // non-override role is allowed to take this transition.
+    TransitionRule {
+        from: AssignmentPhase::Stuck,
+        to: AssignmentPhase::InProgress,
+        authorized_roles: &[],
     },
 ];
 
@@ -807,11 +841,136 @@ mod tests {
 
     #[test]
     fn all_legal_transitions_are_covered() {
-        // Ensure the transition map has exactly 8 entries matching the spec.
+        // 8 core happy-path edges + 3 Stuck entry edges + 1 Stuck
+        // recovery (Head/Director override only) = 12 total.
         assert_eq!(
             LEGAL_TRANSITIONS.len(),
-            8,
-            "legal transition map should have exactly 8 entries"
+            12,
+            "legal transition map should have exactly 12 entries"
         );
+    }
+
+    // ── Stuck transitions ───────────────────────────────
+
+    #[test]
+    fn hand_can_report_in_progress_as_stuck() {
+        validate_transition(
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            TransitionActorRole::Hand,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hand_can_report_awaiting_review_as_stuck() {
+        validate_transition(
+            AssignmentPhase::AwaitingReview,
+            AssignmentPhase::Stuck,
+            AssignmentPhase::AwaitingReview,
+            TransitionActorRole::Hand,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hand_can_report_in_repair_as_stuck() {
+        validate_transition(
+            AssignmentPhase::InRepair,
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InRepair,
+            TransitionActorRole::Hand,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stuck_to_in_progress_requires_head_or_director_override() {
+        // Hand cannot recover a stuck assignment, with or without the override flag.
+        let err = validate_transition(
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            TransitionActorRole::Hand,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, TransitionError::Unauthorized { .. }),
+            "Hand without override must be Unauthorized, got {err:?}"
+        );
+
+        let err = validate_transition(
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            TransitionActorRole::Hand,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, TransitionError::Unauthorized { .. }),
+            "Hand with override flag still cannot can_override(), got {err:?}"
+        );
+
+        // ReviewerHand and MergeHand also cannot recover even with the
+        // override flag — `can_override()` is gated on Head/Director.
+        let err = validate_transition(
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            TransitionActorRole::ReviewerHand,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(err, TransitionError::Unauthorized { .. }));
+
+        // Head and Director may override.
+        validate_transition(
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            TransitionActorRole::Head,
+            true,
+        )
+        .unwrap();
+        validate_transition(
+            AssignmentPhase::Stuck,
+            AssignmentPhase::InProgress,
+            AssignmentPhase::Stuck,
+            TransitionActorRole::Director,
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stuck_has_no_non_override_authorised_role() {
+        // Explicitly: the Stuck → InProgress rule carries an empty
+        // authorized_roles list. Without override, no role may drive it.
+        for role in &[
+            TransitionActorRole::Hand,
+            TransitionActorRole::ReviewerHand,
+            TransitionActorRole::MergeHand,
+            TransitionActorRole::Head,
+            TransitionActorRole::Director,
+        ] {
+            let err = validate_transition(
+                AssignmentPhase::Stuck,
+                AssignmentPhase::InProgress,
+                AssignmentPhase::Stuck,
+                *role,
+                false,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, TransitionError::Unauthorized { .. }),
+                "{role:?} without override must be Unauthorized, got {err:?}"
+            );
+        }
     }
 }
