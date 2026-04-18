@@ -13,7 +13,11 @@
 //! to the deny-list so they stay excluded even if the allow-list grows.
 
 /// Event types that pass the filter by exact match.
-const EXACT_ALLOW: &[&str] = &[
+///
+/// Exposed so the Golden Rule lint (`ipc/tests/irc_golden_rule.rs`) can
+/// iterate the allow-list and assert every entry has a matching
+/// [`crate::irc_renderer::event_to_irc`] arm.
+pub const EXACT_ALLOW: &[&str] = &[
     "assignment.created",
     "assignment.transitioned",
     "assignment.stuck",
@@ -27,11 +31,11 @@ const EXACT_ALLOW: &[&str] = &[
 /// Event-type prefixes that pass the filter. A candidate must have at
 /// least one character after the prefix — bare "github.pr." is not an
 /// event, it is a namespace.
-const PREFIX_ALLOW: &[&str] = &["github.pr."];
+pub const PREFIX_ALLOW: &[&str] = &["github.pr."];
 
 /// Event types that are always dropped, even if they later appear on the
 /// allow-list. Protects the invariant that heartbeats never reach IRC.
-const ALWAYS_DENY: &[&str] = &["assignment.heartbeat"];
+pub const ALWAYS_DENY: &[&str] = &["assignment.heartbeat"];
 
 /// Returns `true` when `event_type` is on the v1 IRC allow-list.
 ///
