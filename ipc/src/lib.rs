@@ -21,6 +21,7 @@ use thiserror::Error;
 pub mod channel_manager;
 pub mod irc_client;
 pub mod irc_renderer;
+pub mod outbox_relay;
 pub mod signal_discipline;
 
 /// Returns the path for the IPC socket. We prefer `$XDG_RUNTIME_DIR`
