@@ -21,18 +21,19 @@
 //!
 //! ## Failure semantics
 //!
-//! Any failure in steps 3–5 transitions the IRC state row to `failed`,
-//! increments `attempts`, and records `last_error`. The relay retries on
-//! its next cycle. Once `attempts >= max_attempts` the row stays `failed`
-//! and the relay emits a `flare` ember identifying the stuck event so an
-//! operator can intervene.
+//! Any failure in steps 3–5 increments `attempts` and records `last_error`.
+//! The state row stays `pending` (so the next `fetch_pending` cycle picks
+//! it up again) until `attempts >= max_attempts`, at which point the row
+//! transitions to the terminal `failed` state and the relay emits a
+//! `flare` ember identifying the stuck event so an operator can intervene.
 //!
 //! ## Durability
 //!
-//! Dropping the IRC server does not lose events: sends fail, rows stay
-//! in `failed`, and subsequent cycles keep trying up to `max_attempts`.
-//! The [`crate::irc_client::IrcClient`] itself also queues in-flight
-//! sends during disconnects and replays on reconnect.
+//! Dropping the IRC server does not lose events: sends fail, rows stay in
+//! `pending` with incremented `attempts`, and subsequent cycles keep
+//! trying up to `max_attempts`. The [`crate::irc_client::IrcClient`]
+//! itself also queues in-flight sends during disconnects and replays on
+//! reconnect.
 //!
 //! ## Idempotency
 //!
@@ -287,17 +288,24 @@ impl RelayHandle {
         reason: String,
     ) -> Result<StepOutcome, RelayError> {
         let attempts = row.attempts + 1;
+        let exhausted = attempts as u32 >= self.config.max_attempts;
+        // Keep retryable rows in 'pending' so `fetch_pending` picks them up
+        // again on the next cycle. Only flip to the terminal 'failed' state
+        // once the retry budget is exhausted — the migration 020 contract
+        // and module docs both treat 'failed' as "max_attempts reached".
+        let status = if exhausted { "failed" } else { "pending" };
         let now = Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO irc_outbox_state \
                 (event_id, status, attempts, last_error, sent_at, updated_at) \
-             VALUES (?, 'failed', ?, ?, NULL, ?) \
+             VALUES (?, ?, ?, ?, NULL, ?) \
              ON CONFLICT(event_id) DO UPDATE SET \
-                status='failed', attempts=excluded.attempts, \
+                status=excluded.status, attempts=excluded.attempts, \
                 last_error=excluded.last_error, \
                 updated_at=excluded.updated_at",
         )
         .bind(&row.event_id)
+        .bind(status)
         .bind(attempts)
         .bind(&reason)
         .bind(&now)
@@ -305,7 +313,7 @@ impl RelayHandle {
         .await?;
 
         let mut flared = false;
-        if attempts as u32 >= self.config.max_attempts {
+        if exhausted {
             self.emit_flare(&row.event_id, &reason, attempts).await?;
             flared = true;
         }

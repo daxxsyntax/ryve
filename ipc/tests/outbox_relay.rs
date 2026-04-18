@@ -351,42 +351,46 @@ async fn send_failure_marks_failed_and_retries_until_flare(pool: SqlitePool) {
         },
     );
 
-    // Pass 1: failure, attempts = 1, no flare yet.
+    // Pass 1: failure, attempts = 1, status stays 'pending' so the next
+    // cycle picks the row up again, no flare yet.
     let p1 = relay.drain_once().await.expect("pass 1");
     assert_eq!(p1.failed, 1);
     assert_eq!(p1.flared, 0);
     let (status, attempts, last_error) = state_row(&pool, "evt-1").await.unwrap();
-    assert_eq!(status, "failed");
+    assert_eq!(status, "pending");
     assert_eq!(attempts, 1);
     assert!(
         last_error.as_deref().unwrap().contains("irc send failed"),
         "last_error: {last_error:?}"
     );
 
-    // Pass 2: state was 'failed' and the relay should NOT retry failed
-    // rows on the same run without operator intervention — the spark
-    // says after max_attempts the row "stays failed". Confirm the row
-    // stays in the failed state and no fresh attempts mutate it.
+    // Pass 2: still under max_attempts → row is re-fetched, attempts = 2,
+    // status remains 'pending', still no flare.
     let p2 = relay.drain_once().await.expect("pass 2");
-    assert_eq!(p2.fetched, 0);
-    assert_eq!(p2.failed, 0);
-
-    // But if the operator resets the state back to 'pending', the relay
-    // picks it up again and keeps counting attempts up to max_attempts.
-    reset_to_pending(&pool, "evt-1").await;
-    let p3 = relay.drain_once().await.expect("pass 3");
-    assert_eq!(p3.failed, 1);
-    assert_eq!(p3.flared, 0);
-    let (_, attempts, _) = state_row(&pool, "evt-1").await.unwrap();
+    assert_eq!(p2.fetched, 1);
+    assert_eq!(p2.failed, 1);
+    assert_eq!(p2.flared, 0);
+    let (status, attempts, _) = state_row(&pool, "evt-1").await.unwrap();
+    assert_eq!(status, "pending");
     assert_eq!(attempts, 2);
 
-    reset_to_pending(&pool, "evt-1").await;
-    let p4 = relay.drain_once().await.expect("pass 4");
-    assert_eq!(p4.failed, 1);
-    // attempts now = 3 = max_attempts → flare.
-    assert_eq!(p4.flared, 1);
+    // Pass 3: attempts now reaches max_attempts (3) → row transitions to
+    // the terminal 'failed' state and a flare ember is emitted.
+    let p3 = relay.drain_once().await.expect("pass 3");
+    assert_eq!(p3.failed, 1);
+    assert_eq!(p3.flared, 1);
+    let (status, attempts, _) = state_row(&pool, "evt-1").await.unwrap();
+    assert_eq!(status, "failed");
+    assert_eq!(attempts, 3);
 
-    // Flare ember landed.
+    // Pass 4: row is now terminal 'failed' and excluded from fetch_pending.
+    // The relay does no further work on it without operator intervention.
+    let p4 = relay.drain_once().await.expect("pass 4");
+    assert_eq!(p4.fetched, 0);
+    assert_eq!(p4.failed, 0);
+    assert_eq!(p4.flared, 0);
+
+    // Exactly one flare ember landed (only on the max_attempts cliff).
     let flares: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM embers WHERE workshop_id = ? AND ember_type = 'flare'",
     )
@@ -397,12 +401,4 @@ async fn send_failure_marks_failed_and_retries_until_flare(pool: SqlitePool) {
     assert_eq!(flares, 1);
 
     let _ = timeout(Duration::from_secs(1), client.disconnect()).await;
-}
-
-async fn reset_to_pending(pool: &SqlitePool, event_id: &str) {
-    sqlx::query("UPDATE irc_outbox_state SET status = 'pending' WHERE event_id = ?")
-        .bind(event_id)
-        .execute(pool)
-        .await
-        .unwrap();
 }
