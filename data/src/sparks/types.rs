@@ -893,6 +893,11 @@ pub enum AssignmentPhase {
     InRepair,
     ReadyForMerge,
     Merged,
+    /// The assignment has become unworkable and needs orchestrator
+    /// intervention. A `Stuck` assignment blocks its Epic from merging;
+    /// only a Head or Director override can recover it back to
+    /// `InProgress` (see `assign_repo::override_stuck_to_in_progress`).
+    Stuck,
 }
 
 impl AssignmentPhase {
@@ -906,6 +911,7 @@ impl AssignmentPhase {
             Self::InRepair => "in_repair",
             Self::ReadyForMerge => "ready_for_merge",
             Self::Merged => "merged",
+            Self::Stuck => "stuck",
         }
     }
 
@@ -920,6 +926,7 @@ impl AssignmentPhase {
             "in_repair" => Some(Self::InRepair),
             "ready_for_merge" => Some(Self::ReadyForMerge),
             "merged" => Some(Self::Merged),
+            "stuck" => Some(Self::Stuck),
             _ => None,
         }
     }
@@ -933,6 +940,7 @@ impl AssignmentPhase {
         Self::InRepair,
         Self::ReadyForMerge,
         Self::Merged,
+        Self::Stuck,
     ];
 }
 
@@ -1700,6 +1708,7 @@ mod tests {
 
     #[test]
     fn assignment_phase_all_has_expected_count() {
-        assert_eq!(AssignmentPhase::ALL.len(), 8);
+        // 8 core phases + Stuck = 9.
+        assert_eq!(AssignmentPhase::ALL.len(), 9);
     }
 }

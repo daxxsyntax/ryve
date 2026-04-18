@@ -313,6 +313,10 @@ fn print_usage() {
     eprintln!("  assign claim <session_id> <spark_id>  Claim a spark");
     eprintln!("  assign release <session_id> <spark_id>  Release a claim");
     eprintln!("  assign list <spark_id>              Show who owns a spark");
+    eprintln!(
+        "  assign override <session_id> <spark_id> --to in_progress --reason <text>  \
+         Recover a stuck assignment (Head/Director only)"
+    );
     eprintln!();
     eprintln!("  commit link <spark_id> <hash>       Link a commit to a spark");
     eprintln!("  commit list <spark_id>              List commits for a spark");
@@ -1939,7 +1943,7 @@ async fn handle_event(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool)
 
 async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
     if args.is_empty() {
-        die("assign subcommand required (claim, release, list)");
+        die("assign subcommand required (claim, release, list, override)");
     }
     match args[0].as_str() {
         "claim" => {
@@ -1986,7 +1990,115 @@ async fn handle_assignment(pool: &sqlx::SqlitePool, args: &[String], json_mode: 
                 Err(e) => die(&format!("{e}")),
             }
         }
+        "override" => handle_assignment_override(pool, &args[1..], json_mode).await,
         other => die(&format!("unknown assign subcommand '{other}'")),
+    }
+}
+
+/// Handle `ryve assign override <session_id> <spark_id> --to in_progress --reason <text>`.
+///
+/// Head/Director only. Finds the most-recent assignment on `<spark_id>`,
+/// confirms the caller session is a Head or Director (via
+/// `agent_sessions.session_label`), and drives the
+/// `Stuck → InProgress` override through
+/// [`data::sparks::assign_repo::override_stuck_to_in_progress`]. The
+/// override reason is audit-logged in the same transaction as the phase
+/// transition.
+async fn handle_assignment_override(pool: &sqlx::SqlitePool, args: &[String], json_mode: bool) {
+    if args.len() < 2 {
+        die("assign override requires <session_id> <spark_id> \
+             --to in_progress --reason <text>");
+    }
+    let session_id = args[0].clone();
+    let spark_id = args[1].clone();
+
+    let mut target: Option<String> = None;
+    let mut reason: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--to" => {
+                if i + 1 >= args.len() {
+                    die("--to requires a value (supported: in_progress)");
+                }
+                target = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--reason" => {
+                if i + 1 >= args.len() {
+                    die("--reason requires a value");
+                }
+                reason = Some(args[i + 1].clone());
+                i += 2;
+            }
+            other => die(&format!("unknown flag '{other}' for assign override")),
+        }
+    }
+
+    let target = target.unwrap_or_else(|| die("assign override requires --to in_progress"));
+    if target != "in_progress" {
+        die(&format!(
+            "assign override only supports --to in_progress (got '{target}')"
+        ));
+    }
+    let reason = reason.unwrap_or_else(|| die("assign override requires --reason <text>"));
+    if reason.trim().is_empty() {
+        die("--reason must not be empty; the override is audit-logged");
+    }
+
+    // Derive the caller's TransitionActorRole from the session label.
+    // Only "head" and "director" are accepted — every other label (or
+    // missing label) is rejected so Hands cannot run the recovery path.
+    let actor_role = match agent_session_repo::get(pool, &session_id).await {
+        Ok(Some(s)) => match s.session_label.as_deref() {
+            Some("head") => TransitionActorRole::Head,
+            Some("director") => TransitionActorRole::Director,
+            other => die(&format!(
+                "assign override rejected: session {session_id} is labelled '{}' \
+                 but only head/director sessions may override a stuck assignment",
+                other.unwrap_or("<none>")
+            )),
+        },
+        Ok(None) => die(&format!(
+            "assign override rejected: session {session_id} not found in agent_sessions"
+        )),
+        Err(e) => die(&format!("failed to look up session {session_id}: {e}")),
+    };
+
+    let assignment =
+        match data::sparks::assign_repo::latest_assignment_for_spark(pool, &spark_id).await {
+            Ok(a) => a,
+            Err(e) => die(&format!(
+                "assign override failed to resolve assignment for {spark_id}: {e}"
+            )),
+        };
+
+    match data::sparks::assign_repo::override_stuck_to_in_progress(
+        pool,
+        &assignment.assignment_id,
+        &session_id,
+        actor_role,
+        &reason,
+    )
+    .await
+    {
+        Ok(updated) => {
+            if json_mode {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&updated).unwrap_or_default()
+                );
+            } else {
+                println!(
+                    "override: {} restored to in_progress by {} ({})",
+                    updated.assignment_id,
+                    session_id,
+                    actor_role.as_str()
+                );
+                println!("reason: {reason}");
+            }
+        }
+        Err(e) => die(&format!("assign override failed: {e}")),
     }
 }
 
@@ -3335,12 +3447,27 @@ async fn handle_head_orchestrate(
 
         if !json_mode {
             println!(
-                "[cycle {cycles}] total={} done={} stalled={} unassigned={}",
+                "[cycle {cycles}] total={} done={} stalled={} unassigned={} stuck={}",
                 report.total(),
                 report.done(),
                 report.stalled_spark_ids().len(),
-                report.unassigned_spark_ids().len()
+                report.unassigned_spark_ids().len(),
+                report.stuck_members().len(),
             );
+        }
+
+        // Stuck assignments do NOT feed into the reassign path — only
+        // a Head/Director override (`ryve assign override`) can recover
+        // them. Surface them as an ember + a comment on the parent Epic
+        // so the override actor sees the block.
+        if !report.stuck_members().is_empty() {
+            match crate::head::orchestrator::notify_stuck(pool, ws_id, &crew, &report).await {
+                Ok(n) if !json_mode => {
+                    println!("  notified {n} stuck member(s) on the parent epic");
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("warn: notify_stuck failed: {e}"),
+            }
         }
 
         if report.all_done() {
