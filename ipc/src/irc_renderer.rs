@@ -308,6 +308,105 @@ pub fn event_to_irc(event: &OutboxEvent) -> Option<IrcLine> {
     })
 }
 
+/// Every v1 event type that must have a renderer arm. Keep in lock-step
+/// with [`EventPayload`] — adding a variant means adding an entry here.
+/// The Golden Rule integration test (`ipc/tests/irc_golden_rule.rs`)
+/// iterates this list and cross-checks it against
+/// [`crate::signal_discipline`]'s allow-list so divergence breaks CI.
+pub const V1_EVENT_TYPES: &[&str] = &[
+    "assignment.created",
+    "assignment.transitioned",
+    "assignment.stuck",
+    "review.assigned",
+    "review.completed",
+    "merge.started",
+    "merge.completed",
+    "epic.blocker_raised",
+    "github.pr.opened",
+    "github.pr.closed",
+    "github.pr.merged",
+    "github.pr.review_requested",
+    "github.pr.review_submitted",
+    "github.pr.comment_added",
+];
+
+/// Default-valued [`EventPayload`] for each v1 event type. Returns `None`
+/// for strings that are not a recognised v1 type (heartbeats, unknowns)
+/// — by design, since those must never reach the renderer.
+///
+/// Exists so the Golden Rule test can turn an iteration over event-type
+/// strings into a call to [`event_to_irc`] without duplicating the
+/// constructor boilerplate. Not intended for production render paths.
+pub fn synthetic_payload(event_type: &str) -> Option<EventPayload> {
+    Some(match event_type {
+        "assignment.created" => EventPayload::AssignmentCreated {
+            assignment_id: "asg".into(),
+            actor: "a".into(),
+        },
+        "assignment.transitioned" => EventPayload::AssignmentTransitioned {
+            assignment_id: "asg".into(),
+            from: "x".into(),
+            to: "y".into(),
+            actor: "a".into(),
+        },
+        "assignment.stuck" => EventPayload::AssignmentStuck {
+            assignment_id: "asg".into(),
+            reason: "r".into(),
+        },
+        "review.assigned" => EventPayload::ReviewAssigned {
+            assignment_id: "asg".into(),
+            reviewer: "r".into(),
+            kind: "adversarial".into(),
+        },
+        "review.completed" => EventPayload::ReviewCompleted {
+            assignment_id: "asg".into(),
+            reviewer: "r".into(),
+            outcome: ReviewOutcome::Approved,
+        },
+        "merge.started" => EventPayload::MergeStarted {
+            epic_branch: "epic/1".into(),
+            sub_prs: vec![1],
+        },
+        "merge.completed" => EventPayload::MergeCompleted {
+            epic_branch: "epic/1".into(),
+            merged_pr: 1,
+        },
+        "epic.blocker_raised" => EventPayload::EpicBlockerRaised {
+            assignment_id: "asg".into(),
+            reason: "r".into(),
+        },
+        "github.pr.opened" => EventPayload::GithubPrOpened {
+            pr_number: 1,
+            author: "a".into(),
+            title: "t".into(),
+        },
+        "github.pr.closed" => EventPayload::GithubPrClosed {
+            pr_number: 1,
+            actor: "a".into(),
+        },
+        "github.pr.merged" => EventPayload::GithubPrMerged {
+            pr_number: 1,
+            actor: "a".into(),
+        },
+        "github.pr.review_requested" => EventPayload::GithubPrReviewRequested {
+            pr_number: 1,
+            reviewer: "r".into(),
+        },
+        "github.pr.review_submitted" => EventPayload::GithubPrReviewSubmitted {
+            pr_number: 1,
+            reviewer: "r".into(),
+            state: PrReviewState::Approved,
+        },
+        "github.pr.comment_added" => EventPayload::GithubPrCommentAdded {
+            pr_number: 1,
+            author: "a".into(),
+            path: None,
+            excerpt: "x".into(),
+        },
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
